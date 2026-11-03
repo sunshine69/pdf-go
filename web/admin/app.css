@@ -1,0 +1,7 @@
+/* The signing app stylesheet. Built in step 08. */
+:root { --ink: #14181d; --muted: #64707c; --line: #d7dde3; --accent: #0b57a4; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, sans-serif; color: var(--ink); }
+main { max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
+h1 { font-size: 1.35rem; }
+code { font-family: ui-monospace, monospace; }
