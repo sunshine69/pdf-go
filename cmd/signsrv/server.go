@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sunshine69/pdf-go/internal/signauth"
+	"github.com/sunshine69/pdf-go/internal/signpdf"
+	"github.com/sunshine69/pdf-go/internal/signstore"
 	"github.com/sunshine69/pdf-go/web"
 )
 
@@ -21,6 +24,20 @@ type server struct {
 	log    *slog.Logger
 	mux    *http.ServeMux
 	tokens tokenSource
+
+	// The three things the auth layer needs: the signing key, the store, and
+	// the bundles built from them. The handlers never reach into the database
+	// except through the store.
+	keys     *signauth.Keyring
+	store    *signstore.Store
+	sessions *signauth.Sessions
+	auth     *signauth.Auth
+
+	// The signing service. Built once: the CA key is read only when signing,
+	// and every signature opens its own document, so sharing it across
+	// requests is safe. nil means this node cannot sign: it serves reads, and
+	// create answers 503.
+	signer *signpdf.Service
 }
 
 // tokenSource is implemented by signauth (step 03). The server asks for a
@@ -40,8 +57,28 @@ func (randSource) NewRequestID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func newServer(cfg *Config, log *slog.Logger) *server {
-	s := &server{cfg: cfg, log: log, mux: http.NewServeMux(), tokens: randSource{}}
+// newServer loads the signing key and wires the auth layer. The key file is
+// created with 0600 on first start. A store is optional: the health and static
+// routes work without a database, which is what the shell tests exercise.
+func newServer(cfg *Config, log *slog.Logger, store *signstore.Store) *server {
+	keys, err := signauth.LoadKeyring(cfg.JWTFile())
+	if err != nil {
+		log.Error("jwt key", "error", err, "file", cfg.JWTFile())
+		return nil
+	}
+	s := &server{cfg: cfg, log: log, mux: http.NewServeMux(), tokens: randSource{},
+		keys: keys, store: store, signer: signService(cfg, log)}
+	if store != nil {
+		s.sessions = &signauth.Sessions{Keys: keys, Store: store}
+		s.auth = &signauth.Auth{
+			Verifier:   keys,
+			Revoked:    store,
+			Store:      store,
+			Epochs:     store,
+			Limits:     signauth.NewLimiter(),
+			TrustProxy: cfg.TrustProxy,
+		}
+	}
 	s.routes()
 	return s
 }

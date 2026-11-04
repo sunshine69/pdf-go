@@ -23,7 +23,20 @@ func serve(ctx context.Context, configPath string) int {
 		}
 		return 1
 	}
-	s := newServer(cfg, log)
+	// The server needs the database open: the auth layer resolves every
+	// credential against it, and the worker drains the queues from it.
+	_, store, err := openStore(ctx, configPath)
+	if err != nil {
+		log.Error("database", "error", err)
+		return 1
+	}
+	defer store.Close()
+
+	s := newServer(cfg, log, store)
+	if s == nil {
+		log.Error("server", "error", "the signing key could not be loaded")
+		return 1
+	}
 	if err := s.run(ctx); err != nil {
 		s.log.Error("serve", "error", err)
 		return 1

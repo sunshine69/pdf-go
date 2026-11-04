@@ -32,6 +32,10 @@ func run(args []string) int {
 	fs.Usage = usage
 	fs.SetOutput(os.Stderr)
 	configPath := fs.String("config", "", "path to a config file")
+	// -tsa overrides the configured timestamp authority, so `sign-selftest`
+	// can be pointed at a local TSA and at the "no TSA" case. It exists for
+	// the acceptance script; a running service never uses it.
+	tsaOverride := fs.String("tsa", "", "override tsa_url (sign-selftest)")
 	fs.Usage = usage
 	// Flags are accepted on either side of the subcommand: both
 	// `signsrv -config f serve` and `signsrv serve -config f` work.
@@ -43,14 +47,29 @@ func run(args []string) int {
 		cmd = "serve"
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Commands that take arguments of their own.
+	switch cmd {
+	case "admin":
+		return adminCmd(ctx, *configPath, rest)
+	case "client":
+		return clientCmd(ctx, *configPath, rest)
+	case "secrets":
+		return secretsCmd(*configPath, rest)
+	case "sign-selftest":
+		return signSelftest(*configPath, *tsaOverride, rest)
+	case "checkpdf":
+		return checkPDF(*configPath, *tsaOverride, rest)
+	case "sign":
+		return signCmd(*configPath, *tsaOverride, rest)
+	}
 	if len(rest) > 0 {
 		fmt.Fprintf(os.Stderr, "signsrv: unexpected argument %q\n\n", rest[0])
 		usage()
 		return 2
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	switch cmd {
 	case "serve", "server", "":
@@ -63,6 +82,12 @@ func run(args []string) int {
 		return 0
 	case "checkconfig":
 		return checkConfig(*configPath)
+	case "migrate":
+		return migrateCmd(ctx, *configPath)
+	case "sweep":
+		return sweepCmd(ctx, *configPath)
+	case "dbstatus":
+		return dbstatusCmd(ctx, *configPath)
 	default:
 		fmt.Fprintf(os.Stderr, "signsrv: unknown command %q\n\n", cmd)
 		usage()
@@ -103,6 +128,53 @@ func usage() {
   signsrv checkconfig [-config FILE]
       Validate the effective configuration. Exits non-zero with every
       problem listed. Secrets are masked in the printed output.
+
+  signsrv migrate [-config FILE]
+      Apply the pending schema migrations, print the version reached, and run
+      integrity_check. Running it again is a no-op.
+
+  signsrv sweep [-config FILE]
+      Run the sweeps by hand: expire the tokens and envelopes whose deadline
+      has passed, delete the expired revocations, requeue the batch leases that
+      were left over from a crash, and mark the failed batches.
+
+  signsrv dbstatus [-config FILE]
+      Report the schema version and the row counts of every table.
+
+  signsrv admin add EMAIL [-config FILE]
+  signsrv admin list [-config FILE]
+      Create an admin (the password is read from SIGNSRV_ADMIN_PASSWORD, or
+      from the terminal with the echo silenced) and list the admins.
+
+  signsrv admin passwd EMAIL [-config FILE]
+      Change an admin password. The change stamps the credential epoch, so
+      access tokens minted under the old password stop working, and the
+      refresh chain is deleted. This is the action to take when a token is
+      stolen.
+
+  signsrv client add NAME [SCOPES...] [-config FILE]
+  signsrv client list [-config FILE]
+  signsrv client revoke ID [-config FILE]
+      Create a machine client. Prints the issued key once; the database keeps
+      only its digest. Revoking a client ends its tokens.
+
+  signsrv secrets init [-config FILE]
+      Write the missing config secrets (keystore_pass, admin_password) into the
+      config file, keeping the ones already set. Values are prompted
+      with the keyboard echo silenced; the file ends up mode 0600.
+
+  signsrv sign NAME EMAIL IN [OUT] [-config FILE]
+      Certify IN and add one approval signature for NAME/EMAIL. Writes OUT
+      (default: the report only). The party key is generated for the call and
+      dropped; it is never written to disk. Prints the verification report.
+
+  signsrv sign-selftest [IN [OUT]] [-config FILE] [-tsa URL]
+      Certify, sign three test parties, verify. Exits 0 only when the finished
+      document is valid. The acceptance harness for docs/steps/04-pdfsign.md.
+
+  signsrv checkpdf FILE [-config FILE]
+      Verify a document on disk and print the report. Exits non-zero when it
+      is not valid.
 
   signsrv version
 

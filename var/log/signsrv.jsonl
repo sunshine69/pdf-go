@@ -1,0 +1,13 @@
+{"time":"2026-11-03T19:55:53.834221866+10:00","level":"ERROR","msg":"serve","service":"signsrv","version":"0.1.0","error":"listen tcp 127.0.0.1:8080: bind: address already in use"}
+{"time":"2026-11-03T19:56:35.66597169+10:00","level":"INFO","msg":"signsrv listening","service":"signsrv","version":"0.1.0","addr":"127.0.0.1:8090","dev":true,"go":"go1.27.1","public_url":"http://127.0.0.1:8090"}
+{"time":"2026-11-03T19:56:35.982743703+10:00","level":"INFO","msg":"login ok","service":"signsrv","version":"0.1.0","ip":"127.0.0.1","request":"413cadb611ad79de"}
+{"time":"2026-11-03T19:56:35.985244123+10:00","level":"INFO","msg":"admin stats","service":"signsrv","version":"0.1.0","actor":"admin:1","request":"0015540973d10dd1"}
+{"time":"2026-11-03T19:56:35.985506794+10:00","level":"INFO","msg":"admin stats","service":"signsrv","version":"0.1.0","actor":"admin:1","request":"4af3bbff54c6e149"}
+{"time":"2026-11-03T19:56:36.066261672+10:00","level":"INFO","msg":"login ok","service":"signsrv","version":"0.1.0","ip":"127.0.0.1","request":"802ab32bb3db6c3b"}
+{"time":"2026-11-03T19:56:37.380620476+10:00","level":"INFO","msg":"login ok","service":"signsrv","version":"0.1.0","ip":"127.0.0.1","request":"1dbc3891fc2423ca"}
+{"time":"2026-11-03T19:56:37.382929418+10:00","level":"INFO","msg":"logout","service":"signsrv","version":"0.1.0","request":"d0e3727af743e831"}
+{"time":"2026-11-03T19:56:37.476933203+10:00","level":"WARN","msg":"login refused","service":"signsrv","version":"0.1.0","ip":"127.0.0.1","email":"admin@example.org","request":"01bc02b9d1ad484a"}
+{"time":"2026-11-03T19:56:37.569409455+10:00","level":"WARN","msg":"login refused","service":"signsrv","version":"0.1.0","ip":"127.0.0.1","email":"admin@example.org","request":"99aede2ae9f0df96"}
+{"time":"2026-11-03T19:56:37.572459713+10:00","level":"WARN","msg":"route not found","service":"signsrv","version":"0.1.0","path":"/api/v1/nothing","request":"c966cc9c9bc41b5f"}
+{"time":"2026-11-03T19:56:37.57280076+10:00","level":"INFO","msg":"signal received, draining","service":"signsrv","version":"0.1.0"}
+{"time":"2026-11-03T19:56:37.572844662+10:00","level":"INFO","msg":"signsrv stopped","service":"signsrv","version":"0.1.0"}

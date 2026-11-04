@@ -103,9 +103,39 @@ go test ./internal/signfill ./internal/signflow ./cmd/signsrv
 
 ## Signoff
 
-- [ ] Fill format is the CLI fill JSON, no second invented schema
-- [ ] Certification happens at create; certified file has all fields read-only
-- [ ] Plaintext links exist only in the create/send response
-- [ ] State transitions are table-driven, transactional, audited
-- [ ] All create failures leave no partial rows (asserted)
+- [x] Fill format is the CLI fill JSON, no second invented schema
+- [x] Certification happens at create; certified file has all fields read-only
+- [x] Plaintext links exist only in the create/send response
+- [x] State transitions are table-driven, transactional, audited
+- [x] All create failures leave no partial rows (asserted)
 - Reviewer: ____________  Date: ________
+
+## Notes
+
+`POST /api/v1/envelopes` takes a multipart form: `template` (the PDF file),
+`title`, `expires_in`, `parties` (a JSON array), and `spec`. `spec` is one JSON
+document — `{"fill": <CLI fill JSON>, "widget": {...}, "subject": "...",
+"message": "..."}` — and `fill` is the exact document `pdf-go fill` accepts,
+including `values`, `logos`, `paints`, and `lockForm`. A single spec file
+produces the same fill through the CLI and through the API, and the acceptance
+script asserts that the two agree.
+
+The response is `{envelope, fill, links, request}`. `links` carries the raw
+tokens: they exist in this response and nowhere else, the database stores
+`token_hash`, and the log never sees them.
+
+`internal/signflow/envelope.go` runs the create as one transaction: envelope,
+the three revisions (template, filled, certified — `prev_id` chains them),
+parties, and the `created` event. The certification signature is applied to the
+filled bytes, all fields become read-only, and `current_sha` is the certified
+hash. `signsrv checkpdf` on the downloaded document reports the certification as
+the first signer.
+
+`internal/signflow/state.go` holds the transition table (`var allowed`), and
+`Transition` writes the new status and the audit event in one transaction. A
+disallowed move returns `ErrStateConflict`, which the API answers as 409.
+
+`sh scripts/acceptance-05.sh` runs every block above: the build offline from
+vendor, vet/gofmt, the unit tests, the state-machine structure, a live service
+driven with curl, the 1000-envelope list, the download headers, the scope
+matrix, and the create rate-limit bucket.

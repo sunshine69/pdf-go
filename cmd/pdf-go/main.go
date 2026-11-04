@@ -22,6 +22,7 @@ import (
 	"github.com/sunshine69/pdf-go/internal/pdf"
 	"github.com/sunshine69/pdf-go/internal/report"
 	"github.com/sunshine69/pdf-go/internal/schema"
+	"github.com/sunshine69/pdf-go/internal/signfill"
 )
 
 const version = "0.1.0"
@@ -258,202 +259,24 @@ func runFill(args []string) int {
 }
 
 func fillDocument(in, out, specPath string, spec schema.FillSpec, fs *flagSet) (int, report.FillReport) {
-	rep := report.FillReport{Source: in, Output: out, Spec: specPath, Locked: spec.LockForm}
-
-	doc, _, err := pdf.Load(in, fs.password)
+	inBytes, err := os.ReadFile(in)
+	if err != nil {
+		return fail(fmt.Errorf("read %s: %w", in, err), in), report.FillReport{}
+	}
+	rep, filled, err := signfill.Fill(inBytes, spec, signfill.Options{
+		Strict:   fs.strict,
+		Password: fs.password,
+		Path:     in,
+		Spec:     specPath,
+	})
 	if err != nil {
 		return fail(err, in), rep
 	}
-	schemaData, err := pdf.Extract(in, fs.password)
-	if err != nil {
-		return fail(err, in), rep
-	}
-
-	values := map[string]any{}
-	for k, v := range spec.Values {
-		values[k] = v
-	}
-
-	applied, notes, err := pdf.FillDoc(doc, schemaData.Fields, values, spec.LockForm)
-	rep.Applied, rep.Notes = applied, notes
-	if err != nil {
-		// Report the fields we did apply, so a caller can resume.
-		for _, name := range missing(values, applied) {
-			rep.Skipped = append(rep.Skipped, report.SkippedField{Name: name, Reason: "not applied"})
-		}
-		if fs.strict {
-			return fail(err, in), rep
-		}
-		rep.Warnings = append(rep.Warnings, err.Error())
-	}
-	rep.Skipped = append(rep.Skipped, skippedButtons(schemaData.Fields, values, applied)...)
-
-	// Logos, bar codes, QR codes, signatures.
-	pages := doc.Catalog.Pages.Flatten()
-	annotPage := pdf.AnnotPages(doc)
-	targets := pdf.Targets(doc)
-	for _, l := range spec.Logos {
-		var target *pdf.FieldTarget
-		if l.Field != "" {
-			t, resolved, found := pdf.LookupTarget(targets, l.Field)
-			if !found {
-				msg := fmt.Sprintf("logo %s: unknown field %q", logoLabel(l), l.Field)
-				if fs.strict {
-					return fail(fmt.Errorf("%s", msg), in), rep
-				}
-				rep.Warnings = append(rep.Warnings, msg)
-				continue
-			}
-			t.Name = resolved
-			target = &t
-		}
-		pageIdx, err := pdf.LogoPage(pages, l, pageOf(target))
-		if err != nil {
-			if fs.strict {
-				return fail(err, in), rep
-			}
-			rep.Warnings = append(rep.Warnings, err.Error())
-			continue
-		}
-		page := pages[pageIdx-1]
-		place, err := pdf.StampLogo(pageIdx, page, l, target)
-		if err != nil {
-			if fs.strict {
-				return fail(err, in), rep
-			}
-			rep.Warnings = append(rep.Warnings, fmt.Sprintf("logo %s: %s", logoLabel(l), err))
-			continue
-		}
-		rep.Logos = append(rep.Logos, report.LogoReport{
-			ID: place.ID, Page: place.Page, Box: place.Box, Position: place.Position,
-			Field: place.Field, Rect: place.Rect, Size: place.Size,
-			Rotate: place.Rotate, Note: place.Note,
-		})
-	}
-	_ = annotPage
-
-	// Text stamped directly on pages.
-	for _, p := range spec.Paints {
-		var target *pdf.FieldTarget
-		if p.Field != "" {
-			t, resolved, found := pdf.LookupTarget(targets, p.Field)
-			if !found {
-				msg := fmt.Sprintf("paint %s: unknown field %q", paintLabel(p), p.Field)
-				if fs.strict {
-					return fail(fmt.Errorf("%s", msg), in), rep
-				}
-				rep.Warnings = append(rep.Warnings, msg)
-				continue
-			}
-			t.Name = resolved
-			target = &t
-		}
-		pageIdx, err := pdf.PaintPage(pages, p, pageOf(target))
-		if err != nil {
-			if fs.strict {
-				return fail(err, in), rep
-			}
-			rep.Warnings = append(rep.Warnings, err.Error())
-			continue
-		}
-		place, err := pdf.PaintText(pageIdx, pages[pageIdx-1], p, target)
-		if err != nil {
-			if fs.strict {
-				return fail(err, in), rep
-			}
-			rep.Warnings = append(rep.Warnings, fmt.Sprintf("paint %s: %s", paintLabel(p), err))
-			continue
-		}
-		rep.Paints = append(rep.Paints, report.PaintReport{
-			ID: place.ID, Page: place.Page, Box: place.Box, Position: place.Position,
-			Field: place.Field, Rect: place.Rect, Lines: place.Lines,
-			Size: place.Size, Font: place.Font, Note: place.Note,
-		})
-	}
-
-	if err := doc.WriteFile(out, nil); err != nil {
+	if err := os.WriteFile(out, filled, 0o644); err != nil {
 		return fail(fmt.Errorf("write %s: %w", out, err), out), rep
 	}
-	sort.Strings(rep.Applied)
+	rep.Output = out
 	return report.OK, rep
-}
-
-func logoLabel(l schema.Logo) string {
-	if l.ID != "" {
-		return l.ID
-	}
-	if l.Field != "" {
-		return "field:" + l.Field
-	}
-	return l.Image
-}
-
-func paintLabel(p schema.Paint) string {
-	if p.ID != "" {
-		return p.ID
-	}
-	if len(p.Text) > 24 {
-		return fmt.Sprintf("%q...", p.Text[:24])
-	}
-	return fmt.Sprintf("%q", p.Text)
-}
-
-func pageOf(t *pdf.FieldTarget) int {
-	if t == nil {
-		return 0
-	}
-	return t.Page
-}
-
-func missing(values map[string]any, applied []string) []string {
-	done := map[string]bool{}
-	for _, a := range applied {
-		done[a] = true
-		for k := range values {
-			if pdf.NormaliseName(k) == pdf.NormaliseName(a) {
-				done[k] = true
-			}
-		}
-	}
-	var out []string
-	for k := range values {
-		if !done[k] {
-			out = append(out, k)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// skippedButtons reports the values that cannot be applied because the field
-// type has no value - the caller must know it did not land.
-func skippedButtons(fields []schema.Field, values map[string]any, applied []string) []report.SkippedField {
-	byName := map[string]schema.Field{}
-	for _, f := range fields {
-		byName[f.Name] = f
-	}
-	done := map[string]bool{}
-	for _, a := range applied {
-		done[a] = true
-	}
-	var out []report.SkippedField
-	for k := range values {
-		f, ok := byName[k]
-		if !ok {
-			continue
-		}
-		if done[k] {
-			continue
-		}
-		switch f.Type {
-		case schema.TypePushButton:
-			out = append(out, report.SkippedField{Name: k, Reason: "push buttons have no value"})
-		case schema.TypeSignature:
-			out = append(out, report.SkippedField{Name: k, Reason: "signature fields need a digital signature; stamp the artwork with a logo instead"})
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
 }
 
 // ------------------------------------------------------------- spec input ---

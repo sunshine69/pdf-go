@@ -25,13 +25,19 @@ func testConfig(t *testing.T) *Config {
 		SMTPHost:   "127.0.0.1",
 		MaxPDFMB:   25,
 		LogLevel:   "debug",
+		jwtFile:    filepath.Join(dir, "jwt.ed25519.key"),
 		env:        map[string]string{"keystore_pass": "test-passphrase", "admin_password": "test-admin-password"},
 	}
 }
 
+// newTestServer builds a server with no store: the static and health routes
+// work without a database, which is what the shell tests exercise.
 func newTestServer(t *testing.T, cfg *Config) *httptest.Server {
 	t.Helper()
-	s := newServer(cfg, logger(cfg))
+	s := newServer(cfg, logger(cfg), nil)
+	if s == nil {
+		t.Fatal("newServer returned nil")
+	}
 	ts := httptest.NewServer(s.withDefaults(s.mux))
 	t.Cleanup(ts.Close)
 	return ts

@@ -80,6 +80,10 @@ func (c *Config) SMTPPassword() string { return c.secret("smtp_pass") }
 // the source of truth.
 func (c *Config) AdminPassword() string { return c.secret("admin_password") }
 
+// JWTFile is the Ed25519 key the access tokens are signed with. It is a path,
+// not a secret, and it is 0600.
+func (c *Config) JWTFile() string { return c.jwtFile }
+
 // LoadConfig reads the optional file and then the environment, the
 // environment winning over the file. It validates the combination, not just
 // the individual values, and collects every problem it finds.
