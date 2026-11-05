@@ -69,6 +69,7 @@ func envelopeServer(t *testing.T, cfg *Config) (*httptest.Server, *signstore.Sto
 	}
 	ts := httptest.NewServer(s.withDefaults(s.mux))
 	t.Cleanup(ts.Close)
+	stores[ts] = store
 	return ts, store
 }
 

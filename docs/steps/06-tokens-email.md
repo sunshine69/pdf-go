@@ -75,9 +75,9 @@ go test ./internal/signflow ./internal/signmail
 
 ## Signoff
 
-- [ ] Tokens are 256-bit random, stored only as SHA-256, never logged
-- [ ] Link TTL honoured per envelope and capped at 30 days
-- [ ] No unsubscribe/link-expanding header contains the token
-- [ ] HTML email escapes all dynamic content; CRLF injection blocked
-- [ ] Mail failure does not corrupt envelope state; admin is notified
+- [x] Tokens are 256-bit random, stored only as SHA-256, never logged
+- [x] Link TTL honoured per envelope and capped at 30 days
+- [x] No unsubscribe/link-expanding header contains the token
+- [x] HTML email escapes all dynamic content; CRLF injection blocked
+- [x] Mail failure does not corrupt envelope state; admin is notified
 - Reviewer: ____________  Date: ________

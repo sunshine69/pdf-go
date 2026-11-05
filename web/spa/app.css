@@ -1,7 +1,26 @@
-/* The signing app stylesheet. Built in step 08. */
+/* The signing app stylesheet. No external fonts, no CDN. */
 :root { --ink: #14181d; --muted: #64707c; --line: #d7dde3; --accent: #0b57a4; }
 * { box-sizing: border-box; }
 body { margin: 0; font: 15px/1.5 system-ui, sans-serif; color: var(--ink); }
 main { max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
 h1 { font-size: 1.35rem; }
 code { font-family: ui-monospace, monospace; }
+
+.muted { color: var(--muted); }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 1.25rem; margin: 1rem 0; }
+.field { display: block; margin: 1rem 0; }
+.field label { display: block; margin-bottom: 0.35rem; font-weight: 600; }
+input[type="text"], input[type="email"], textarea {
+  width: 100%; padding: 0.5rem; font: inherit; border: 1px solid var(--line); border-radius: 6px;
+}
+.counter { text-align: right; font-size: 0.85rem; color: var(--muted); }
+button { font: inherit; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.checkline { display: flex; gap: 0.5rem; align-items: flex-start; margin: 1rem 0; }
+.checkline input { margin-top: 0.25rem; }
+iframe { width: 100%; height: 32rem; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+ul.parties { list-style: none; padding: 0; }
+ul.parties li { padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
+.row { display: flex; gap: 0.75rem; }
+.notice { background: #f4f8ff; border: 1px solid var(--line); border-radius: 6px; padding: 0.75rem 1rem; margin: 1rem 0; }

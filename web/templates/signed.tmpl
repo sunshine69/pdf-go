@@ -1,0 +1,16 @@
+{{.Subject}}
+
+All {{.Limit}} signatures are in. The signed copy of "{{plain .Title}}" is attached.
+
+The document was signed on {{plain .SignedAt}}. The SHA-256 of the attached file is:
+
+  {{.SHA256}}
+
+The file carries every signature, and each signature has a trusted timestamp.
+Check the signatures before you rely on it: pdf-go check SIGNED.pdf, or
+signsrv checkpdf SIGNED.pdf.
+
+Receipt for the signing: {{plain .Reason}}
+
+-- {{plain .From}}
+{{.Legal}}

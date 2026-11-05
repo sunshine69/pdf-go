@@ -1,0 +1,13 @@
+{{.Subject}}
+
+The document "{{plain .Title}}" is waiting for your signature.
+
+{{.DaysLeft}} days left. The link is:
+
+  {{.Link}}
+
+It stops working on {{plain .ExpiresAt}}. If you have already signed, you can
+disregard this message.
+
+-- {{plain .From}}
+{{.Legal}}

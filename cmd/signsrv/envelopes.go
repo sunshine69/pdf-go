@@ -59,6 +59,7 @@ func (s *server) flowDeps() *signflow.Deps {
 		Flow:      signflow.NewFlow(s.store),
 		CertifyAs: "signsrv",
 		Clock:     time.Now,
+		Mail:      s.mail,
 	}
 }
 
@@ -538,3 +539,68 @@ type eventView struct {
 }
 
 var _ = fmt.Sprintf
+
+// ---------------- send ----------------
+
+// handleSendEnvelope answers POST /api/v1/envelopes/{id}/send. Send is a state
+// transition (Ready -> Sent): it stamps each party token, enqueues the
+// invitations, and moves the envelope to Sent. The tokens are returned so the
+// operator can read them once, at the moment the links are created. A send on
+// an envelope that is not ready is 409; a send that finds the envelope
+// missing is 404.
+func (s *server) handleSendEnvelope(w http.ResponseWriter, r *http.Request) {
+	claims := signauth.ClaimsFrom(r.Context())
+	actor := "unknown"
+	if claims != nil {
+		actor = claims.Subject
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeProblem(w, http.StatusBadRequest, "invalid_id", "the envelope id is required",
+			"a 32 character hex id, from the create response")
+		return
+	}
+	if s.store == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "store_unavailable",
+			"this node has no store", "start with a storage directory")
+		return
+	}
+
+	links, err := s.flowDeps().Send(r.Context(), id, actor, time.Now())
+	if err != nil {
+		var v *signflow.ErrValidation
+		if signflow.AsValidation(err, &v) {
+			writeProblem(w, http.StatusBadRequest, "invalid_"+v.Field, v.Error(), v.Hint)
+			return
+		}
+		if err == signstore.ErrNotFound {
+			writeProblem(w, http.StatusNotFound, "not_found", "no envelope with this id", "")
+			return
+		}
+		if signflow.IsConflict(err) {
+			writeProblem(w, http.StatusConflict, "state_conflict", err.Error(),
+				"only a ready envelope can be sent")
+			return
+		}
+		s.logJSON(slog.LevelError, "send failed", "envelope", id, "actor", actor,
+			"error", err, "request", requestID(r.Context()))
+		writeProblem(w, http.StatusInternalServerError, "internal", "the send failed", "")
+		return
+	}
+
+	env, err := s.store.GetEnvelope(r.Context(), id)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "internal", "the send failed", "")
+		return
+	}
+
+	s.logJSON(slog.LevelInfo, "envelope sent", "envelope", id, "actor", actor,
+		"parties", len(links), "request", requestID(r.Context()))
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"envelope": envelopeViewOf(env),
+		"links":    links,
+		"request":  requestID(r.Context()),
+	})
+}

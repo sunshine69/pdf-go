@@ -39,6 +39,7 @@ type Revocations interface {
 type PartyStore interface {
 	GetPartyByTokenHash(ctx context.Context, hash string) (*signstore.Party, error)
 	GetPartyBySessionHash(ctx context.Context, hash string) (*signstore.Party, error)
+	GetEnvelope(ctx context.Context, id string) (*signstore.Envelope, error)
 }
 
 // Epochs reports the moment the credential behind a subject last stopped being
@@ -58,6 +59,29 @@ type Auth struct {
 	Epochs     Epochs
 	Limits     *Limiter
 	TrustProxy bool
+
+	// now is the clock the signing guard reads. It is nil-safe: a zero Auth
+	// uses the wall clock, so a test that builds Auth by hand gets the same
+	// behaviour as the server.
+	now func() time.Time
+}
+
+// SetClock installs the clock the signing guard reads. The server passes the
+// clock it was built with, so a test that runs the guard on a fixed time can
+// prove that a request whose deadline has passed is refused before any rule
+// that touches the database is reached.
+func (a *Auth) SetClock(c func() time.Time) {
+	if c != nil {
+		a.now = c
+	}
+}
+
+// clock is the clock, defaulted.
+func (a *Auth) clock() func() time.Time {
+	if a.now == nil {
+		return time.Now
+	}
+	return a.now
 }
 
 // Problem is the error shape the API returns. The middleware builds it so a
@@ -169,10 +193,39 @@ func (a *Auth) RequireSigner(next http.Handler) http.Handler {
 			a.writeProblem(w, r, 404, "not_found", "this link is not valid")
 			return
 		}
+		// The link's own facts come first, in the order the API table lists
+		// them, because they are facts about the link and not about the caller:
+		// a party that never claimed can still be told the link is gone.
+		// A failure to read the envelope is not itself a 404 (the party resolved
+		// fine); the guard falls through to the session check and lets the flow
+		// layer give the definitive answer.
+		if env, err := a.Store.GetEnvelope(r.Context(), party.EnvelopeID); err == nil && env != nil {
+			if ClosedStatus(string(env.Status)) {
+				a.writeProblem(w, r, 410, "request_closed", "this signing request is closed")
+				return
+			}
+			if a.linkExpired(party, env) {
+				a.writeProblem(w, r, 410, "link_expired", "this link has expired")
+				return
+			}
+		}
 		cookie, err := r.Cookie(CookieName)
 		if err != nil || cookie.Value == "" {
 			a.writeProblem(w, r, 401, "claim_required",
 				"claim this link with your email address first")
+			return
+		}
+		// The party's own state comes before its credentials, because the action
+		// that closes a party is the one that destroys its session: a party that
+		// has already consented is refused on its state, not on the cookie the
+		// consent spent.
+		if string(party.Status) == "expired" {
+			a.writeProblem(w, r, 410, "link_expired", "this link has expired")
+			return
+		}
+		if ClosedParty(string(party.Status)) {
+			a.writeProblem(w, r, 409, "state_conflict",
+				"this party cannot act in its current state")
 			return
 		}
 		session, err := a.Store.GetPartyBySessionHash(r.Context(), HashToken(cookie.Value))
@@ -188,10 +241,6 @@ func (a *Auth) RequireSigner(next http.Handler) http.Handler {
 				"this session belongs to a different signing link")
 			return
 		}
-		if party.Status == signstore.PartyExpired {
-			a.writeProblem(w, r, 410, "link_expired", "this link has expired")
-			return
-		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKeyParty{}, party)))
 	})
 }
@@ -199,6 +248,29 @@ func (a *Auth) RequireSigner(next http.Handler) http.Handler {
 // RateLimit guards one route with one limit. keyOf builds the bucket key:
 // per-address for login/claim/link opens, per-envelope for consent, which is
 // the limit a party cannot escape by changing source address.
+// RateLimitWindow is RateLimit with a window of its own, for the buckets the
+// standard window cannot express: the remind limit is two per ten minutes per
+// envelope, which is a slower clock than the one every other bucket counts on.
+func (a *Auth) RateLimitWindow(next http.Handler, name string, limit int, window time.Duration, keyOf func(*http.Request) string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.Limits != nil {
+			key := name + ":"
+			if keyOf != nil {
+				key += keyOf(r)
+			} else {
+				key += ClientIP(r, a.TrustProxy)
+			}
+			if ok, retry := a.Limits.Allow(key, limit, window); !ok {
+				w.Header().Set("Retry-After", retryAfter(retry))
+				a.writeProblem(w, r, http.StatusTooManyRequests, "rate_limited",
+					"too many requests, retry later")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (a *Auth) RateLimit(next http.Handler, name string, limit int, keyOf func(*http.Request) string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if a.Limits != nil {
@@ -311,4 +383,43 @@ func (a *Auth) writeProblem(w http.ResponseWriter, r *http.Request, status int, 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// ClosedStatus reports the envelope states that close every link on them: a
+// request that has failed, been cancelled, expired, or is already finished is
+// over, and a live token into it is a dead link.
+func ClosedStatus(status string) bool {
+	switch status {
+	case "failed", "cancelled", "expired", "completed", "delivered",
+		"consented", "declined":
+		return true
+	}
+	return false
+}
+
+// ClosedParty reports the party states that have had their say: consented,
+// declined and expired are all closed, and on the API's table they are a 409
+// for consented and declined and a 410 for expired, because an expired
+// party's link is expired too.
+func ClosedParty(status string) bool {
+	switch status {
+	case "consented", "declined", "expired":
+		return true
+	}
+	return false
+}
+
+// linkExpired reports whether the link or its envelope is past its deadline,
+// read off rows the guard already holds.
+func (a *Auth) linkExpired(p *signstore.Party, env *signstore.Envelope) bool {
+	now := a.clock()
+	for _, at := range []string{p.TokenExpires, env.ExpiresAt} {
+		if at == "" {
+			continue
+		}
+		if exp, err := time.Parse(time.RFC3339, at); err == nil && exp.Before(now()) {
+			return true
+		}
+	}
+	return false
 }

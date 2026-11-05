@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/sunshine69/pdf-go/internal/signauth"
 )
@@ -42,9 +43,65 @@ func (s *server) routes() {
 	s.mux.Handle("POST /api/v1/envelopes",
 		s.apiBucket(s.handleCreateEnvelopes, "create", signauth.CreateLimit,
 			signauth.ScopeEnvelopeWrite))
+	s.mux.Handle("POST /api/v1/envelopes/{id}/send",
+		s.apiBucket(s.handleSendEnvelope, "send", signauth.SendLimit,
+			signauth.ScopeEnvelopeWrite))
 	s.mux.Handle("GET /api/v1/envelopes/{id}", s.api(s.handleGetEnvelope, signauth.ScopeEnvelopeRead))
 	s.mux.Handle("GET /api/v1/envelopes/{id}/document", s.api(s.handleGetDocument, signauth.ScopeEnvelopeRead))
 	s.mux.Handle("GET /api/v1/envelopes/{id}/revisions/{rid}", s.api(s.handleGetRevision, signauth.ScopeEnvelopeRead))
+
+	// The admin endpoints of step 09. The audit log, the settings, the machine
+	// clients and the admin logout live under /admin and need the admin
+	// scope; the envelope actions sit on the envelope and ride the envelope
+	// scopes, the same way send does, so a machine client that may write an
+	// envelope may also remind, cancel, reissue and trigger its batch.
+	s.mux.Handle("GET /api/v1/admin/events", s.api(s.handleAdminEvents, signauth.ScopeAdminRead))
+	s.mux.Handle("GET /api/v1/admin/settings", s.api(s.handleSettingsGet, signauth.ScopeAdminRead))
+	s.mux.Handle("POST /api/v1/admin/settings", s.api(s.handleSettingsPost, signauth.ScopeAdminRead))
+	// The settings page writes with PATCH, so the verb says "these fields
+	// change" rather than "the whole settings document is replaced": a page
+	// that only knows two of the four values must not blank the other two.
+	s.mux.Handle("PATCH /api/v1/admin/settings", s.api(s.handleSettingsPatch, signauth.ScopeAdminRead))
+	// The client list is how the operator finds the id to revoke. The key is
+	// never in it.
+	s.mux.Handle("GET /api/v1/admin/clients", s.api(s.handleClientsList, signauth.ScopeAdminRead))
+	s.mux.Handle("DELETE /api/v1/admin/clients/{id}", s.api(s.handleClientRevoke, signauth.ScopeAdminRead))
+	s.mux.Handle("POST /api/v1/admin/clients", s.api(s.handleClientCreate, signauth.ScopeAdminRead))
+	s.mux.Handle("POST /api/v1/admin/clients/{id}/revoke", s.api(s.handleClientRevoke, signauth.ScopeAdminRead))
+	s.mux.Handle("POST /api/v1/admin/logout", s.api(s.handleAdminLogout, signauth.ScopeAdminRead))
+
+	s.mux.Handle("POST /api/v1/envelopes/{id}/remind",
+		s.envelopeBucket(s.handleEnvelopeRemind, "remind", signauth.RemindLimit,
+			signauth.RemindWindow, signauth.ScopeEnvelopeWrite))
+	s.mux.Handle("POST /api/v1/envelopes/{id}/cancel",
+		s.apiBucket(s.handleEnvelopeCancel, "cancel", signauth.SendLimit,
+			signauth.ScopeEnvelopeWrite))
+	s.mux.Handle("POST /api/v1/envelopes/{id}/reissue",
+		s.apiBucket(s.handleEnvelopeReissue, "reissue", signauth.SendLimit,
+			signauth.ScopeEnvelopeWrite))
+	s.mux.Handle("POST /api/v1/envelopes/{id}/sign",
+		s.apiBucket(s.handleEnvelopeSign, "sign", signauth.SendLimit,
+			signauth.ScopeEnvelopeWrite))
+	s.mux.Handle("GET /api/v1/envelopes/{id}/report",
+		s.api(s.handleEnvelopeReport, signauth.ScopeEnvelopeRead))
+	s.mux.Handle("GET /api/v1/envelopes/{id}/audit.zip",
+		s.api(s.handleEnvelopeAuditZip, signauth.ScopeEnvelopeRead))
+	// The public signing endpoints. A link token is the credential, so these
+	// are guarded by the signer chain, not by a bearer token. Claim is
+	// rate-limited per address (10/min) because it runs the address check;
+	// consent and decline are limited per envelope (10/min), which is the
+	// limit a party cannot escape by changing source address. The view and
+	// the document are per address, which is what a forwarded link saturates.
+	s.mux.Handle("POST "+signAPI+"/claim",
+		s.signGuard(s.handleSignerClaim, "claim", signauth.ClaimLimit, false))
+	s.mux.Handle("GET "+signAPI+"/envelope",
+		s.signGuard(s.handleSignerEnvelope, "link-read", signauth.LinkLimit, false))
+	s.mux.Handle("GET "+signAPI+"/document",
+		s.signGuard(s.handleSignerDocument, "link-doc", signauth.LinkLimit, true))
+	s.mux.Handle("POST "+signAPI+"/consent",
+		s.signGuard(s.handleSignerConsent, "consent", signauth.ConsentLimit, true))
+	s.mux.Handle("POST "+signAPI+"/decline",
+		s.signGuard(s.handleSignerDecline, "consent", signauth.ConsentLimit, true))
 
 	// Static faces. The apps are built in steps 08 and 09; the handlers
 	// below serve whatever is embedded, so the routes never move again.
@@ -143,9 +200,47 @@ func (s *server) api(next http.HandlerFunc, scopes ...string) http.Handler {
 // address. The endpoints that cost more than a read (a create, a send) use it,
 // so their cost is limited on its own terms and cannot exhaust the generic
 // budget the reads share.
+// envelopeBucket is the envelope-keyed bucket: the cost being limited is the
+// mail the endpoint queues for one envelope's parties, so the budget belongs
+// to the envelope, not to the address that called. The remind limit is also on
+// a slower clock than every other bucket (two per ten minutes), which is why
+// it takes its window as a parameter.
+func (s *server) envelopeBucket(next http.HandlerFunc, name string, limit int, window time.Duration, scope string) http.Handler {
+	if s.auth == nil {
+		return noStore()
+	}
+	keyOf := func(r *http.Request) string { return r.PathValue("id") }
+	return s.auth.RateLimitWindow(s.auth.RequireAPI(next, scope), name, limit, window, keyOf)
+}
+
 func (s *server) apiBucket(next http.HandlerFunc, name string, limit int, scope string) http.Handler {
 	if s.auth == nil {
 		return noStore()
 	}
 	return s.auth.RateLimit(s.auth.RequireAPI(next, scope), name, limit, nil)
+}
+
+// signAPI is the path prefix of the party-facing endpoints. The token is a path
+// value, so every route of the family is this prefix plus its verb.
+const signAPI = "/api/v1/sign/{token}"
+
+// signGuard wraps a signing endpoint in its rate bucket and, for the routes
+// that need a claim, the signer chain. The claim route is deliberately not
+// behind RequireSigner: the claim is what mints the session, so it cannot
+// require one.
+func (s *server) signGuard(next http.HandlerFunc, name string, limit int, claimed bool) http.Handler {
+	if s.auth == nil {
+		return noStore()
+	}
+	h := http.Handler(http.HandlerFunc(next))
+	if claimed {
+		h = s.auth.RequireSigner(h)
+	}
+	keyOf := func(r *http.Request) string { return signauth.ClientIP(r, s.cfg.TrustProxy) }
+	if name == "consent" {
+		// Per envelope: a party behind a shared address cannot be starved by
+		// its neighbours, and consent is the action that must not be farmed.
+		keyOf = func(r *http.Request) string { return r.PathValue("token") }
+	}
+	return s.auth.RateLimit(h, name, limit, keyOf)
 }

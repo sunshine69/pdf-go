@@ -19,11 +19,19 @@ import (
 type stubStore struct {
 	byToken   map[string]*signstore.Party
 	bySession map[string]*signstore.Party
+	envelopes map[string]*signstore.Envelope
 }
 
 func (s *stubStore) GetPartyByTokenHash(_ context.Context, hash string) (*signstore.Party, error) {
 	if p, ok := s.byToken[hash]; ok {
 		return p, nil
+	}
+	return nil, signstore.ErrNotFound
+}
+
+func (s *stubStore) GetEnvelope(_ context.Context, id string) (*signstore.Envelope, error) {
+	if e, ok := s.envelopes[id]; ok {
+		return e, nil
 	}
 	return nil, signstore.ErrNotFound
 }

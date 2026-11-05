@@ -64,6 +64,10 @@ func run(args []string) int {
 		return checkPDF(*configPath, *tsaOverride, rest)
 	case "sign":
 		return signCmd(*configPath, *tsaOverride, rest)
+	case "worker":
+		return workerCmd(ctx, *configPath)
+	case "mail-test":
+		return mailTestCmd(*configPath, rest)
 	}
 	if len(rest) > 0 {
 		fmt.Fprintf(os.Stderr, "signsrv: unexpected argument %q\n\n", rest[0])

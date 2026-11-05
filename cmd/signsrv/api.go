@@ -81,11 +81,33 @@ func (s *server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	if claims != nil {
 		actor = claims.Subject
 	}
+	// The dashboard payload proper: counts per status, the overdue list and
+	// the collecting list with consent progress. The table counts stay in the
+	// answer as well, because they are the numbers dbstatus and the operator's
+	// sanity check read.
+	flowStats, err := s.flowDeps().Stats(r.Context(), s.clockNow())
+	if err != nil {
+		s.logJSON(slog.LevelError, "admin stats flow", "error", err, "request", requestID(r.Context()))
+		writeProblem(w, http.StatusInternalServerError, "internal", "the counts failed", "")
+		return
+	}
+	// The queue depth rides along: the dashboard that polls stats is where an
+	// operator notices that nothing is draining.
+	backlog, err := s.store.QueueBacklog(r.Context())
+	if err != nil {
+		s.logJSON(slog.LevelError, "admin stats queues", "error", err, "request", requestID(r.Context()))
+		writeProblem(w, http.StatusInternalServerError, "internal", "the queue counts failed", "")
+		return
+	}
 	s.logJSON(slog.LevelInfo, "admin stats", "actor", actor, "request", requestID(r.Context()))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"counts":  counts,
-		"actor":   actor,
-		"request": requestID(r.Context()),
+		"counts":     counts,
+		"by_status":  flowStats.Counts,
+		"overdue":    flowStats.Overdue,
+		"collecting": flowStats.Collecting,
+		"queues":     backlog,
+		"actor":      actor,
+		"request":    requestID(r.Context()),
 	})
 }
 

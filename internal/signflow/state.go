@@ -49,9 +49,12 @@ var ErrStateConflict = errors.New("signflow: state transition not allowed")
 // already signed, and their signatures exist on the bytes. failed is reachable
 // from signed and completed, the two states a run can break at.
 var allowed = map[State][]State{
-	Draft:      {Ready},
-	Ready:      {Sent, Cancelled, Expired},
-	Sent:       {Collecting, Cancelled, Expired},
+	Draft: {Ready},
+	Ready: {Sent, Cancelled, Expired},
+	// sent -> failed is the decline: a party refuses, and the request is over
+	// for everyone. It happens before any consent, so it must be reachable
+	// from sent, not only from collecting.
+	Sent:       {Collecting, Failed, Cancelled, Expired},
 	Collecting: {Signed, Failed, Cancelled, Expired},
 	Signed:     {Completed, Failed},
 	Completed:  {Delivered, Failed},

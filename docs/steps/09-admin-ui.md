@@ -86,8 +86,8 @@ go test ./cmd/signsrv -run Admin
 
 ## Signoff
 
-- [ ] Every admin mutation writes an audit event with the actor
-- [ ] audit.zip is reproducible and includes the verification report
-- [ ] Cancel/reissue invalidate outstanding tokens (tested)
-- [ ] Client key material is shown exactly once, never stored plaintext
+- [x] Every admin mutation writes an audit event with the actor
+- [x] audit.zip is reproducible and includes the verification report
+- [x] Cancel/reissue invalidate outstanding tokens (tested)
+- [x] Client key material is shown exactly once, never stored plaintext
 - Reviewer: ____________  Date: ________

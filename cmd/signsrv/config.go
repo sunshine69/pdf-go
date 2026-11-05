@@ -29,9 +29,12 @@ type Config struct {
 	Outbox     string
 	TrustProxy bool
 	Dev        bool
-	LogPath    string
-	LogLevel   string
-	MaxPDFMB   int
+	// WorkerInterval is how often the worker drains the mail queue and
+	// advances expiries. A zero interval means the worker does not run.
+	WorkerInterval time.Duration
+	LogPath        string
+	LogLevel       string
+	MaxPDFMB       int
 
 	// Signing policy.
 	TSAURL  string
@@ -139,6 +142,8 @@ func LoadConfig(path string) (*Config, error) {
 	c.SMTPUser = get("smtp_user", "")
 	c.MailFrom = get("mail_from", "")
 	c.jwtFile = get("jwt_secret_file", "var/jwt.ed25519.key")
+
+	c.WorkerInterval, _ = duration(get("worker_interval", "15s"), 15*time.Second)
 
 	c.Dev = boolVal("dev", false)
 	c.TrustProxy = boolVal("trust_proxy", false)
@@ -303,6 +308,11 @@ var configKeys = map[string]bool{
 	"smtp_host": true, "smtp_port": true, "smtp_starttls": true,
 	"smtp_user": true, "smtp_pass": true, "mail_from": true,
 	"trust_proxy": true, "dev": true, "log_level": true, "log_path": true,
+	// worker_interval is read by Load (below) and documented in
+	// config.example.env, so the parser has to accept it: an operator who sets
+	// it in a config file gets a hard error otherwise, which is how a documented
+	// knob becomes an unreachable one.
+	"worker_interval": true,
 }
 
 func duration(s string, def time.Duration) (time.Duration, error) {

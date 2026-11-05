@@ -8,14 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/mail"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/sunshine69/pdf-go/internal/schema"
-	"github.com/sunshine69/pdf-go/internal/signauth"
 	"github.com/sunshine69/pdf-go/internal/signfill"
+	"github.com/sunshine69/pdf-go/internal/signmail"
 	"github.com/sunshine69/pdf-go/internal/signpdf"
 	"github.com/sunshine69/pdf-go/internal/signstore"
 )
@@ -102,6 +103,21 @@ type Deps struct {
 	// Clock is the signing clock. It is injected so a test can make the
 	// certification time deterministic.
 	Clock func() time.Time
+	// Mail carries the renderer, the sender, the from address, and the link
+	// base. A send with no sender enqueues and returns; the queue is drained
+	// by the worker.
+	Mail *Mailer
+	// Log is where the batch reports what it did. A batch runs in the worker
+	// and in the CLI, so it needs a log; without one it writes to the default.
+	Log *slog.Logger
+}
+
+// Mailer is what a send needs to build and deliver a message.
+type Mailer struct {
+	Renderer *signmail.Renderer
+	Sender   signmail.Sender
+	From     string
+	LinkBase string
 }
 
 // ErrValidation carries a field-level problem. The API maps it to 400 with a
@@ -199,6 +215,14 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 				"orders are 1..n, each once")
 		}
 		orders[p.Order] = true
+		// A name is put in a mail header, so a CR or LF in it is header
+		// injection. The check is on the raw bytes, not on the parsed address,
+		// because a name is not an address and quoting does not remove a line
+		// break.
+		if strings.ContainsAny(p.Name, "\r\n") {
+			return nil, validation("parties[].name", "contains a line break",
+				"a name has no CR or LF")
+		}
 		if p.Name == "" {
 			r.Parties[i].Name = addr.Address
 		}
@@ -208,6 +232,16 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 			return nil, validation("parties[].order", fmt.Sprintf("missing %d", n),
 				fmt.Sprintf("orders must be contiguous 1..%d with no gaps", len(r.Parties)))
 		}
+	}
+
+	// subject and message go in a mail header and in a body. A CR or LF in
+	// them is header injection: a subject with a newline writes an extra
+	// header. The raw bytes are checked, not the parsed value.
+	if strings.ContainsAny(r.Subject, "\r\n") {
+		return nil, validation("subject", "contains a line break", "a subject has no CR or LF")
+	}
+	if strings.ContainsAny(r.Message, "\r\n") {
+		return nil, validation("message", "contains a line break", "a message has no CR or LF")
 	}
 
 	// Fill spec: resolves against the extracted schema. An unknown field is a
@@ -280,6 +314,10 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 
 	id := newID()
 	expiresAt := formatTime(now.Add(r.ExpiresIn))
+	envExpiry, err := time.Parse(timeFormat, expiresAt)
+	if err != nil {
+		envExpiry = now.Add(r.ExpiresIn)
+	}
 	envelope := &signstore.Envelope{
 		ID:          id,
 		Title:       r.Title,
@@ -297,7 +335,7 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 	partyRows := make([]signstore.Party, 0, len(r.Parties))
 	links := make([]Link, 0, len(r.Parties))
 	for _, p := range r.Parties {
-		token, err := signauth.NewToken()
+		token, err := NewLinkToken()
 		if err != nil {
 			return nil, fmt.Errorf("signflow: link token: %w", err)
 		}
@@ -308,8 +346,8 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 			Email:        strings.ToLower(p.Email),
 			Name:         p.Name,
 			Status:       signstore.PartyInvited,
-			TokenHash:    signauth.HashToken(token),
-			TokenExpires: expiresAt,
+			TokenHash:    HashLink(token),
+			TokenExpires: formatTime(TokenExpiry(now, r.ExpiresIn, envExpiry)),
 			Reason:       p.Reason,
 		}
 		partyRows = append(partyRows, party)
@@ -318,8 +356,8 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 			Email:     party.Email,
 			Order:     p.Order,
 			Token:     token,
-			ExpiresAt: expiresAt,
-			URL:       linkURL(r.LinkBase, token),
+			ExpiresAt: party.TokenExpires,
+			URL:       LinkFor(r.LinkBase, token),
 		})
 	}
 
@@ -362,6 +400,9 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 				return err
 			}
 		}
+		// No invite is queued here: the token exists only after the send, so
+		// the queue rows are written by Send, in the same step that marks the
+		// envelope sent. A create leaves mail_queue untouched.
 		payload, err := json.Marshal(map[string]any{
 			"title":     r.Title,
 			"parties":   len(r.Parties),
@@ -386,6 +427,14 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 	// outside the table.
 	if err := d.Flow.Transition(ctx, envelope, Ready, r.Actor, `{"to":"ready"}`); err != nil {
 		return nil, fmt.Errorf("signflow: ready: %w", err)
+	}
+
+	// The plaintext link lives in memory only, for the duration of the
+	// process, so the mail worker can render an invite for a party whose row
+	// stores the hash. A restart drops the map, which is why a reminder sent
+	// after a restart is built from a link the API reissued.
+	for _, l := range links {
+		RememberToken(l.PartyID, l.Token)
 	}
 
 	return &Created{Envelope: envelope, Links: links, Fill: sum}, nil
@@ -420,5 +469,6 @@ func linkURL(base, token string) string {
 	return strings.TrimSuffix(base, "/") + "/s/" + token
 }
 
-// linkURLRegex is exported for tests that check a built link.
-var linkURLRegex = regexp.MustCompile(`^/s/[A-Za-z0-9_-]{43}$`)
+// linkURLRegex is exported for tests that check a built link: 52 lowercase
+// base32 characters, the URL-safe form of 32 random bytes.
+var linkURLRegex = regexp.MustCompile(`^/s/[a-z2-7]{52}$`)

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/sunshine69/pdf-go/internal/signauth"
+	"github.com/sunshine69/pdf-go/internal/signflow"
+	"github.com/sunshine69/pdf-go/internal/signmail"
 	"github.com/sunshine69/pdf-go/internal/signpdf"
 	"github.com/sunshine69/pdf-go/internal/signstore"
 	"github.com/sunshine69/pdf-go/web"
@@ -25,6 +27,11 @@ type server struct {
 	mux    *http.ServeMux
 	tokens tokenSource
 
+	// clock is the wall clock of the service. It is a field so a test can
+	// move time forward and prove an expired link is refused; production
+	// sets it to time.Now. Every deadline check reads it, so there is one
+	// notion of now in the process.
+	clock func() time.Time
 	// The three things the auth layer needs: the signing key, the store, and
 	// the bundles built from them. The handlers never reach into the database
 	// except through the store.
@@ -38,6 +45,12 @@ type server struct {
 	// requests is safe. nil means this node cannot sign: it serves reads, and
 	// create answers 503.
 	signer *signpdf.Service
+
+	// mail carries the renderer, the sender, the from address, and the link
+	// base. The renderer is parsed once at startup, so a template that does
+	// not parse is a startup error. nil sender means the queue is not drained
+	// by the send: the worker (step 07) drains it.
+	mail *signflow.Mailer
 }
 
 // tokenSource is implemented by signauth (step 03). The server asks for a
@@ -66,8 +79,8 @@ func newServer(cfg *Config, log *slog.Logger, store *signstore.Store) *server {
 		log.Error("jwt key", "error", err, "file", cfg.JWTFile())
 		return nil
 	}
-	s := &server{cfg: cfg, log: log, mux: http.NewServeMux(), tokens: randSource{},
-		keys: keys, store: store, signer: signService(cfg, log)}
+	s := &server{cfg: cfg, log: log, mux: http.NewServeMux(), tokens: randSource{}, clock: time.Now,
+		keys: keys, store: store, signer: signService(cfg, log), mail: newMailer(cfg, log)}
 	if store != nil {
 		s.sessions = &signauth.Sessions{Keys: keys, Store: store}
 		s.auth = &signauth.Auth{
@@ -78,6 +91,10 @@ func newServer(cfg *Config, log *slog.Logger, store *signstore.Store) *server {
 			Limits:     signauth.NewLimiter(),
 			TrustProxy: cfg.TrustProxy,
 		}
+		// The signing guard reads the same clock as every other deadline in
+		// the process. A test that moves the server clock moves the guard with
+		// it, so "the request is over" is decided in one place.
+		s.auth.SetClock(s.clockNow)
 	}
 	s.routes()
 	return s
@@ -242,4 +259,51 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(v)
+}
+
+// newMailer builds the mailer from the config. The renderer is parsed once:
+// a template that does not parse is a startup error, not a failure at send
+// time. The sender is the file sender in dev mode, so SIGNSRV_DEV=1 writes
+// .eml files into var/outbox; in production it is SMTP. A config with no SMTP
+// host and dev mode off has no sender, and the send endpoint enqueues without
+// delivering.
+func newMailer(cfg *Config, log *slog.Logger) *signflow.Mailer {
+	r, err := signmail.NewRenderer(web.Templates())
+	if err != nil {
+		log.Error("mail templates", "error", err)
+		return nil
+	}
+	var sender signmail.Sender
+	if cfg.Dev {
+		sender = &signmail.FileSender{Dir: cfg.Outbox}
+	} else if cfg.SMTPHost != "" {
+		sender = &signmail.SMTPSender{
+			Host:     cfg.SMTPHost,
+			Port:     cfg.SMTPPort,
+			StartTLS: cfg.SMTPStartTLS,
+			User:     cfg.SMTPUser,
+			Password: cfg.SMTPPassword(),
+		}
+	}
+	if sender == nil {
+		// No transport. The queue is filled by create and send; nothing is
+		// delivered. Logged once, at startup, so an operator sees it.
+		log.Warn("no mail sender configured", "dev", cfg.Dev, "smtp_host", cfg.SMTPHost)
+	}
+	return &signflow.Mailer{
+		Renderer: r,
+		Sender:   sender,
+		From:     cfg.MailFrom,
+		LinkBase: cfg.PublicURL,
+	}
+}
+
+// clockNow is the service's now. Every deadline check reads it, so there is
+// one notion of time in the process, and a test that moves it moves every
+// deadline at once.
+func (s *server) clockNow() time.Time {
+	if s.clock == nil {
+		return time.Now()
+	}
+	return s.clock()
 }

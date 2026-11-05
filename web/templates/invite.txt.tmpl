@@ -1,0 +1,15 @@
+{{.Subject}}
+
+{{plain .Signer}}, you are asked to sign "{{plain .Title}}".
+
+Reason shown at signing: {{plain .Reason}}
+You are party {{.Order}} of {{.N}}.
+
+Sign: {{.Link}}
+
+This link expires {{plain .ExpiresAt}} and is for {{plain .Email}} only.
+The document will be sent to all parties once everyone has signed.
+You can review the document before signing; you may decline.
+
+-- {{plain .From}}
+{{.Legal}}

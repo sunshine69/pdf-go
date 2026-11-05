@@ -47,6 +47,13 @@ func insertRevision(ctx context.Context, tx *sql.Tx, r *signstore.Revision) erro
 	return err
 }
 
+func insertMailQueue(ctx context.Context, tx *sql.Tx, envelopeID, partyID, kind string) error {
+	_, err := tx.ExecContext(ctx,
+		"insert into mail_queue(envelope_id, party_id, kind, next_at) values(?,?,?,?)",
+		envelopeID, partyID, kind, timeNow())
+	return err
+}
+
 func insertEvent(ctx context.Context, tx *sql.Tx, envelopeID, actor, kind, payload string) error {
 	if actor == "" {
 		actor = "system"

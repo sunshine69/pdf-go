@@ -31,6 +31,24 @@ const (
 	// a working office and small enough that a script cannot fill the
 	// storage directory.
 	CreateLimit = 20
+
+	// SendLimit is the per-minute budget of the send endpoint. A send writes a
+	// queue row per party and, when a sender is configured, renders and sends
+	// each message. It is cheaper than a create and more expensive than a read,
+	// so it gets its own bucket: a client that spam-sends cannot exhaust the
+	// create budget, and cannot use send to mail a party thousands of times.
+	SendLimit = 30
+
+	// RemindLimit is the budget of the remind endpoint, counted per envelope
+	// on a ten-minute window rather than the standard one: two reminders an
+	// envelope per ten minutes is enough to nudge a slow signer and not enough
+	// to turn the service into someone's mail cannon.
+	RemindLimit = 2
+
+	// RemindWindow is the window RemindLimit counts on. It is the only limit
+	// in the service that does not use Window, which is why the remind route
+	// is wired through RateLimitWindow.
+	RemindWindow = 10 * time.Minute
 )
 
 // Window is the span a limiter counts.

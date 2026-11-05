@@ -178,6 +178,21 @@ func (s *Store) UpdateEnvelopeStatus(ctx context.Context, id string, status Enve
 	return expectOne(res, "envelope "+id)
 }
 
+// SetEnvelopeCurrentSHA points an envelope at the document it currently holds.
+// The batch writes it after every signature, so the download endpoint and the
+// report always agree on which bytes are the document.
+func (s *Store) SetEnvelopeCurrentSHA(ctx context.Context, id, sha string) error {
+	if sha == "" {
+		return fmt.Errorf("signstore: empty document hash")
+	}
+	res, err := s.db.ExecContext(ctx,
+		"update envelopes set current_sha = ?, updated_at = ? where id = ?", sha, timeNow(), id)
+	if err != nil {
+		return err
+	}
+	return expectOne(res, "envelope "+id)
+}
+
 // scanRow reads a row, mapping a NULL in a text column to the empty string.
 // Every nullable column in the schema is a plain string in the model, so a
 // direct Scan of NULL fails with "converting NULL to string is unsupported".
@@ -699,6 +714,17 @@ func (s *Store) EnqueueBatch(ctx context.Context, envelopeID string, nextAt stri
 	return err
 }
 
+// CountBatchQueue reports how many signing batches are waiting. The worker
+// logs it, and it is the number an operator reads when an envelope is stuck:
+// a row here means a batch is queued and not yet run.
+func (s *Store) CountBatchQueue(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, "select count(*) from batch_queue").Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // ClaimBatch takes the lease on one due batch, incrementing its attempt
 // count. Returns ErrNotFound when nothing is due. The worker must finish with
 // CompleteBatch (success) or RequeueBatch (failure, with a backoff); a lease
@@ -736,7 +762,44 @@ func (s *Store) ClaimBatch(ctx context.Context, lease time.Duration) (*BatchItem
 	return &b, nil
 }
 
-// CompleteBatch drops a batch from the queue once it has run.
+// ClaimBatchFor claims one envelope's batch row. It is the operator's path:
+// "sign this document now" is about a specific envelope, so the claim is on
+// that row and not on whatever the queue happens to hold first. A row another
+// process holds under a live lease is not taken (ErrNotFound), so two
+// processes cannot sign the same document.
+func (s *Store) ClaimBatchFor(ctx context.Context, envelopeID string, lease time.Duration) (*BatchItem, error) {
+	until := formatTime(time.Now().UTC().Add(lease))
+	var b BatchItem
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		var has bool
+		err := tx.QueryRowContext(ctx,
+			`select (lease_until is null or lease_until < ?) from batch_queue where envelope_id = ?`,
+			until, envelopeID).Scan(&has)
+		if err == sql.ErrNoRows {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !has {
+			return ErrNotFound
+		}
+		if _, err := tx.ExecContext(ctx,
+			"update batch_queue set lease_until = ?, attempts = attempts + 1 where envelope_id = ?",
+			until, envelopeID); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx,
+			"select envelope_id, attempts, next_at, lease_until, enqueued_at"+
+				" from batch_queue where envelope_id = ?",
+			envelopeID).Scan(&b.EnvelopeID, &b.Attempts, &b.NextAt, &b.LeaseUntil, &b.EnqueuedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
 func (s *Store) CompleteBatch(ctx context.Context, envelopeID string) error {
 	_, err := s.db.ExecContext(ctx, "delete from batch_queue where envelope_id = ?", envelopeID)
 	return err
@@ -756,6 +819,65 @@ func (s *Store) RequeueBatch(ctx context.Context, envelopeID string, delay time.
 }
 
 // EnqueueMail adds a message to the mail queue.
+// QueueBacklog is the queue depth an operator watches: how many rows are
+// waiting, how many are in flight under a lease, and how late the oldest
+// waiting row is. The counts exclude each other: a row is either waiting or
+// leased, so the two add up to the queue's size.
+type QueueBacklog struct {
+	MailWaiting   int `json:"mail_waiting"`
+	MailClaimed   int `json:"mail_claimed"`
+	MailOldest    int `json:"mail_oldest_seconds"`
+	BatchWaiting  int `json:"batch_waiting"`
+	BatchClaimed  int `json:"batch_claimed"`
+	BatchOldest   int `json:"batch_oldest_seconds"`
+	BatchFailures int `json:"batch_failures"`
+}
+
+func (s *Store) queuedBacklog(ctx context.Context, table string) (waiting, claimed, oldest, failures int, err error) {
+	if err := s.db.QueryRowContext(ctx,
+		"select count(*) from "+table+" where lease_until is null or lease_until < ?", timeNow()).Scan(&waiting); err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("signstore: %s waiting count: %w", table, err)
+	}
+	if err := s.db.QueryRowContext(ctx,
+		"select count(*) from "+table+" where lease_until is not null and lease_until >= ?", timeNow()).Scan(&claimed); err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("signstore: %s claimed count: %w", table, err)
+	}
+	// The oldest wait is computed in Go, not in SQL: the timestamps are RFC3339
+	// text and the store's own parser is the only thing that knows their shape.
+	var oldestAt sql.NullString
+	err = s.db.QueryRowContext(ctx, "select min(next_at) from "+table).Scan(&oldestAt)
+	if err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("signstore: %s oldest read: %w", table, err)
+	}
+	if oldestAt.String != "" {
+		if at, err := parseTime(oldestAt.String); err == nil {
+			if wait := time.Now().UTC().Sub(at); wait > 0 {
+				oldest = int(wait.Seconds())
+			}
+		}
+	}
+	if err := s.db.QueryRowContext(ctx,
+		"select coalesce(max(attempts), 0) from "+table).Scan(&failures); err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("signstore: %s attempts read: %w", table, err)
+	}
+	return waiting, claimed, oldest, failures, nil
+}
+
+// QueueBacklog reads the depth of both queues in one round of queries.
+func (s *Store) QueueBacklog(ctx context.Context) (*QueueBacklog, error) {
+	out := &QueueBacklog{}
+	var err error
+	out.MailWaiting, out.MailClaimed, out.MailOldest, _, err = s.queuedBacklog(ctx, "mail_queue")
+	if err != nil {
+		return nil, err
+	}
+	out.BatchWaiting, out.BatchClaimed, out.BatchOldest, out.BatchFailures, err = s.queuedBacklog(ctx, "batch_queue")
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *Store) EnqueueMail(ctx context.Context, envelopeID, partyID, kind, sha256 string) error {
 	_, err := s.db.ExecContext(ctx,
 		"insert into mail_queue(envelope_id, party_id, kind, sha256, next_at) values(?,?,?,?,?)",
@@ -802,6 +924,42 @@ func (s *Store) ClaimMail(ctx context.Context, lease time.Duration) (*MailItem, 
 	return &m, nil
 }
 
+// ClaimMailFor takes the lease on one unsent message of one envelope. The
+// scoped form is what a send uses: draining a send must not pick up a row of
+// another envelope, which a global claim would do and then have to release.
+func (s *Store) ClaimMailFor(ctx context.Context, envelopeID string, lease time.Duration) (*MailItem, error) {
+	now := timeNow()
+	until := formatTime(time.Now().UTC().Add(lease))
+	var m MailItem
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		var id int64
+		err := tx.QueryRowContext(ctx,
+			`select id from mail_queue where sent_at is null and envelope_id = ?
+			 and next_at <= ? and (lease_until is null or lease_until < ?)
+			 order by id limit 1`,
+			envelopeID, now, now).Scan(&id)
+		if err == sql.ErrNoRows {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			"update mail_queue set lease_until = ?, attempts = attempts + 1 where id = ?",
+			until, id); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx,
+			"select "+mailCols+" from mail_queue where id = ?", id).
+			Scan(&m.ID, &m.EnvelopeID, &m.PartyID, &m.Kind, &m.SHA256, &m.Attempts,
+				&m.NextAt, &m.LeaseUntil, &m.SentAt, &m.LastError)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 // MarkMailSent records a delivered message.
 func (s *Store) MarkMailSent(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx,
@@ -819,6 +977,19 @@ func (s *Store) MarkMailFailed(ctx context.Context, id int64, nextAt, reason str
 	res, err := s.db.ExecContext(ctx,
 		"update mail_queue set lease_until = null, next_at = ?, last_error = ? where id = ?",
 		nextAt, truncate(reason, 400), id)
+	if err != nil {
+		return err
+	}
+	return expectOne(res, "mail item")
+}
+
+// GiveUpMail closes a row after MaxAttempts failures: no lease, no next time,
+// and the last error kept. It is not retried by Sweep, so a permanently
+// failing message stays visible in the queue as a failed row.
+func (s *Store) GiveUpMail(ctx context.Context, id int64, reason string) error {
+	res, err := s.db.ExecContext(ctx,
+		"update mail_queue set lease_until = null, next_at = '9999-12-31T00:00:00Z', last_error = ? where id = ?",
+		truncate(reason, 400), id)
 	if err != nil {
 		return err
 	}
@@ -879,6 +1050,46 @@ func (s *Store) ListEvents(ctx context.Context, envelopeID string) ([]Event, err
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// ListRecentEvents is the audit log in the shape the operator reads it: newest
+// first, one page, and with the total number of rows the filter matches so the
+// page can tell the operator how far the log goes. An empty envelopeID is the
+// whole log — the settings writes live there, with no envelope to hang from.
+func (s *Store) ListRecentEvents(ctx context.Context, envelopeID string, limit, offset int) ([]Event, int, error) {
+	total := 0
+	var err error
+	if envelopeID == "" {
+		err = s.db.QueryRowContext(ctx, "select count(*) from events").Scan(&total)
+	} else {
+		err = s.db.QueryRowContext(ctx,
+			"select count(*) from events where envelope_id = ?", envelopeID).Scan(&total)
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("signstore: events total: %w", err)
+	}
+	query := "select id, coalesce(envelope_id, ''), actor, kind, payload, created_at from events"
+	args := []any{}
+	if envelopeID != "" {
+		query += " where envelope_id = ?"
+		args = append(args, envelopeID)
+	}
+	query += " order by id desc limit ? offset ?"
+	args = append(args, limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("signstore: recent events: %w", err)
+	}
+	defer rows.Close()
+	out := []Event{}
+	for rows.Next() {
+		var e Event
+		if err := scanRow(rows, &e.ID, &e.EnvelopeID, &e.Actor, &e.Kind, &e.Payload, &e.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, e)
+	}
+	return out, total, rows.Err()
 }
 
 // GetSetting reads one setting.

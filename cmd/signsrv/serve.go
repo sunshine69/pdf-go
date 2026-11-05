@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // serve is the `signsrv serve` entry point. It runs until ctx is cancelled
@@ -36,6 +37,13 @@ func serve(ctx context.Context, configPath string) int {
 	if s == nil {
 		log.Error("server", "error", "the signing key could not be loaded")
 		return 1
+	}
+	// The queues are part of the service, so the process that serves also
+	// drains them. A deployment that wants the worker elsewhere sets
+	// worker_interval to 0 and runs `signsrv worker` as its own unit.
+	if cfg.WorkerInterval > 0 {
+		w := newWorker(cfg, log, store)
+		go w.run(ctx, cfg.WorkerInterval)
 	}
 	if err := s.run(ctx); err != nil {
 		s.log.Error("serve", "error", err)
@@ -111,3 +119,29 @@ func slogLevel(s string) slog.Level {
 }
 
 func printOut(s string) { _, _ = os.Stdout.WriteString(s + "\n") }
+
+// workerCmd is `signsrv worker`: the queue drainer on its own, for a
+// deployment that runs it as a second systemd unit so mail delivery and batch
+// signing cannot stall the HTTP service. It exits when ctx is cancelled.
+func workerCmd(ctx context.Context, configPath string) int {
+	cfg, err := LoadConfig(configPath)
+	log := logger(cfg)
+	if err != nil {
+		log.Error("configuration", "error", err)
+		return 1
+	}
+	_, store, err := openStore(ctx, configPath)
+	if err != nil {
+		log.Error("database", "error", err)
+		return 1
+	}
+	defer store.Close()
+
+	interval := cfg.WorkerInterval
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	log.Info("worker starting", "interval", interval.String())
+	newWorker(cfg, log, store).run(ctx, interval)
+	return 0
+}
