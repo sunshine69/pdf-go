@@ -35,6 +35,9 @@ type Config struct {
 	LogPath        string
 	LogLevel       string
 	MaxPDFMB       int
+	// AuditDir is where the nightly audit files are written. The chain of
+	// hashes across the files is what makes a tampered audit log detectable.
+	AuditDir string
 
 	// Signing policy.
 	TSAURL  string
@@ -53,8 +56,10 @@ type Config struct {
 	file            map[string]string
 	keystoreDigest  string
 	jwtFile         string
+	keystoreSet     bool
 	smtpPassDigest  string
 	adminPassDigest string
+	warnings        []string
 
 	problems []string
 }
@@ -135,6 +140,7 @@ func LoadConfig(path string) (*Config, error) {
 	c.DBPath = firstNonEmpty(get("db", ""), get("db_path", "var/signsrv.db"))
 	c.StorageDir = get("storage_dir", "var/storage")
 	c.Keystore = get("keystore_dir", "var/keystore")
+	c.keystoreSet = env["keystore_dir"] != "" || file["keystore_dir"] != ""
 	c.Outbox = get("outbox_dir", "var/outbox")
 	c.TSAURL = get("tsa_url", "https://freetsa.org/tsr")
 	c.SMTPHost = get("smtp_host", "")
@@ -166,6 +172,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	c.LogPath = get("log_path", "var/log/signsrv.jsonl")
+	c.AuditDir = get("audit_dir", "var/audit")
 	c.LogLevel = strings.ToLower(get("log_level", "info"))
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error", "warning":
@@ -230,14 +237,57 @@ func (c *Config) validate() {
 	if c.MaxPDFMB <= 0 || c.MaxPDFMB > 200 {
 		cproblems(c, "max_pdf_mb must be between 1 and 200")
 	}
-	if isLoopback(c.Listen) && !c.TrustProxy {
-		// Fine: behind a local proxy the operator must opt in to
-		// X-Forwarded-For. Nothing to report.
+	// The listener is plain HTTP. TLS is terminated in front of it, so a
+	// loopback listener is the intended shape, and a public listener is a
+	// problem: the signing link reaches the party over HTTPS at the proxy,
+	// and the party's token must not travel over a plain path that anyone
+	// on the route can read.
+	if !isLoopback(c.Listen) {
+		cproblems(c, "listen must be a loopback address (TLS is terminated in front of the service)")
+	}
+
+	// The keystore holds the CA private key. If the directory the operator
+	// named is not there, the service starts and fails at the first
+	// signature. The default path is a relative one, used in dev, so it is
+	// not checked: it is created at first use.
+	if c.keystoreSet {
+		if f, err := os.Stat(c.Keystore); err != nil {
+			cproblems(c, "keystore_dir is not readable: "+c.Keystore)
+		} else if !f.IsDir() {
+			cproblems(c, "keystore_dir is not a directory: "+c.Keystore)
+		}
+	}
+
+	// The API signing key mints admin tokens, so it is readable by the
+	// service and by nobody else.
+	if c.jwtFile != "" {
+		if f, err := os.Stat(c.jwtFile); err == nil {
+			if f.Mode().Perm()&0o077 != 0 {
+				cproblems(c, "jwt_secret_file is readable by others: mode must be 0600")
+			}
+		}
+	}
+
+	// The timestamp authority signs the time in the signature. Over plain
+	// HTTP a man in the middle can substitute a timestamp, which is the
+	// one field a forged document needs.
+	if strings.HasPrefix(c.TSAURL, "http://") {
+		cwarnings(c, "tsa_url is not HTTPS: the timestamp is unauthenticated")
+	}
+
+	// The service reads the keystore and the signing key as the user it runs
+	// as. As root, a compromised process has the whole machine.
+	if os.Geteuid() == 0 {
+		cwarnings(c, "running as root: run signsrv as the signsrv user")
 	}
 }
 
 // Problems lists every configuration problem found.
 func (c *Config) Problems() []string { return c.problems }
+
+// Warnings lists every configuration warning found. A warning does not stop
+// the service: it names a setting that works and should not be used.
+func (c *Config) Warnings() []string { return c.warnings }
 
 // Redacted prints the configuration with secrets replaced by digests.
 func (c *Config) Redacted() string {
@@ -255,6 +305,7 @@ func (c *Config) Redacted() string {
 		"link_ttl=" + dur,
 		"max_pdf_mb=" + strconv.Itoa(c.MaxPDFMB),
 		"log_path=" + c.LogPath,
+		"audit_dir=" + c.AuditDir,
 		"log_level=" + c.LogLevel,
 		"smtp_host=" + c.SMTPHost,
 		"smtp_port=" + strconv.Itoa(c.SMTPPort),
@@ -308,6 +359,7 @@ var configKeys = map[string]bool{
 	"smtp_host": true, "smtp_port": true, "smtp_starttls": true,
 	"smtp_user": true, "smtp_pass": true, "mail_from": true,
 	"trust_proxy": true, "dev": true, "log_level": true, "log_path": true,
+	"audit_dir": true,
 	// worker_interval is read by Load (below) and documented in
 	// config.example.env, so the parser has to accept it: an operator who sets
 	// it in a config file gets a hard error otherwise, which is how a documented
@@ -376,3 +428,5 @@ func digest(s string) string {
 }
 
 func cproblems(c *Config, msg string) { c.problems = append(c.problems, msg) }
+
+func cwarnings(c *Config, msg string) { c.warnings = append(c.warnings, msg) }

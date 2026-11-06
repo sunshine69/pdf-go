@@ -2,14 +2,29 @@ package signfill
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
+	"image"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/sunshine69/pdf-go/internal/pdf"
 	"github.com/sunshine69/pdf-go/internal/report"
 	"github.com/sunshine69/pdf-go/internal/schema"
+
+	_ "image/gif"  // registered for image.DecodeConfig
+	_ "image/jpeg" // registered for image.DecodeConfig
+)
+
+// MaxImageBytes is the ceiling of one logo's artwork, and MaxImageEdge its
+// pixel ceiling. The API's create endpoint reads these bytes from the client,
+// so the limits are checked at the same point the fill is validated: a logo
+// that is 20 MB or 10000 pixels wide is refused with 400, not stored.
+const (
+	MaxImageBytes = 512 * 1024
+	MaxImageEdge  = 2000
 )
 
 // Fill writes a fill specification into a PDF and returns the bytes of the
@@ -249,6 +264,9 @@ func Validate(schemaData schema.FormSchema, spec schema.FillSpec) error {
 				return fmt.Errorf("logo %s: unknown field %q", logoLabel(l), l.Field)
 			}
 		}
+		if err := logoAcceptable(l); err != nil {
+			return err
+		}
 	}
 	for _, p := range spec.Paints {
 		if p.Field != "" {
@@ -258,6 +276,86 @@ func Validate(schemaData schema.FormSchema, spec schema.FillSpec) error {
 		}
 	}
 	return nil
+}
+
+// logoAcceptable checks a logo's artwork against the accepted image formats.
+// The bytes come from a file path or from base64 in the spec, so the check
+// reads them; this is what Fill will do anyway, and running it here means the
+// create endpoint answers 400 before it stores an envelope.
+//
+// The accepted set is the set the PDF writer can embed: PNG, JPEG, GIF, TIFF.
+// A file whose extension says .png and whose bytes say something else is
+// refused: a client that renames an executable is not signing a document.
+func logoAcceptable(l schema.Logo) error {
+	data, err := logoData(l)
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("logo %s: image is empty", logoLabel(l))
+	}
+	if len(data) > MaxImageBytes {
+		return fmt.Errorf("logo %s: image is larger than %d KB", logoLabel(l), MaxImageBytes/1024)
+	}
+	if !isImage(data) {
+		return fmt.Errorf("logo %s: image is not PNG, JPEG, GIF or TIFF", logoLabel(l))
+	}
+	cfg, _, cerr := image.DecodeConfig(bytes.NewReader(data))
+	if cerr != nil {
+		return fmt.Errorf("logo %s: image cannot be decoded: %v", logoLabel(l), cerr)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return fmt.Errorf("logo %s: image has no size", logoLabel(l))
+	}
+	if cfg.Width > MaxImageEdge || cfg.Height > MaxImageEdge {
+		return fmt.Errorf("logo %s: image is larger than %dx%d pixels",
+			logoLabel(l), MaxImageEdge, MaxImageEdge)
+	}
+	return nil
+}
+
+// logoData returns the artwork bytes of a logo, from base64 (with an optional
+// data: URL prefix) or from the file the spec names.
+func logoData(l schema.Logo) ([]byte, error) {
+	if s := strings.TrimSpace(l.ImageData); s != "" {
+		if i := strings.Index(s, ","); strings.HasPrefix(s, "data:") && i >= 0 {
+			s = s[i+1:]
+		}
+		b, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("logo %s: imageData is not base64: %w", logoLabel(l), err)
+		}
+		return b, nil
+	}
+	name := strings.TrimSpace(l.Image)
+	if name == "" {
+		return nil, fmt.Errorf("logo %s: set \"image\" (file path) or \"imageData\" (base64)",
+			logoLabel(l))
+	}
+	b, err := os.ReadFile(name)
+	if err != nil {
+		return nil, fmt.Errorf("logo %s: read image: %w", logoLabel(l), err)
+	}
+	return b, nil
+}
+
+// isImage reports whether the bytes start with the magic bytes of one of the
+// accepted formats. The test is on the bytes, not on a name.
+func isImage(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	switch {
+	case bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n")):
+		return true
+	case data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff:
+		return true
+	case data[0] == 'G' && data[1] == 'I' && data[2] == 'F':
+		return true
+	case bytes.Equal(data[:4], []byte("II*\x00")) || bytes.Equal(data[:4], []byte("MM\x00*")):
+		return true
+	}
+	return false
 }
 
 // CountFillable reports how many fields a schema can accept a value for, so

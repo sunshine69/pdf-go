@@ -15,7 +15,7 @@ import (
 var schemaSQL string
 
 // CurrentVersion is the schema version this build expects.
-const CurrentVersion = 3
+const CurrentVersion = 4
 
 type migration struct {
 	version int
@@ -41,6 +41,11 @@ var migrations = []migration{
 		// from one template, and version 1's UNIQUE on revisions.sha256
 		// refuses the second one.
 		_, err := tx.ExecContext(ctx, schemaV3)
+		return err
+	}},
+	{version: 4, apply: func(ctx context.Context, tx *sql.Tx) error {
+		// Deliveries and large-document download links, added in step 10.
+		_, err := tx.ExecContext(ctx, schemaV4)
 		return err
 	}},
 }

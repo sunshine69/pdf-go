@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -29,6 +30,18 @@ type Message struct {
 	Subject    string
 	Text       string
 	HTML       string
+
+	// Files are attachments. A delivery message carries the signed document
+	// and its receipt; a message with no Files is a plain text/html message.
+	Files []File
+}
+
+// File is one attachment. The bytes are the bytes Gate 2 verified: what was
+// verified is what is sent, from the same read.
+type File struct {
+	Name string
+	Type string // media type, e.g. application/pdf
+	Data []byte
 }
 
 // Sender delivers one message. Two implementations: SMTP for production,
@@ -71,6 +84,13 @@ func HeaderDate(t time.Time) string { return RFC1123(t) }
 // quoted-printable, so a body with non-ASCII names (Patrick, Müller) survives
 // a 7-bit transport.
 func (m *Message) Build(date time.Time) []byte {
+	// An attachment changes the message's shape: the text/html pair becomes one
+	// part of an outer multipart/mixed whose remaining parts are the files. A
+	// client that reads the alternative pair must still find it, and a client
+	// that reads attachments must find them, and neither may have to guess.
+	if len(m.Files) > 0 {
+		return m.buildMixed(date)
+	}
 	if m.HTML == "" {
 		return m.buildSinglePart(date)
 	}
@@ -94,6 +114,107 @@ func (m *Message) Build(date time.Time) []byte {
 	b.WriteString(EncodeQP(m.HTML))
 	b.WriteString("\r\n--signsrv1--\r\n")
 	return b.Bytes()
+}
+
+// The two boundaries a message with attachments needs.
+const (
+	altBoundary   = "signsrv1"
+	mixedBoundary = "signsrv2"
+)
+
+// buildMixed writes a message with attachments: an outer multipart/mixed
+// holding the alternative text/html pair, then one base64 part per file.
+// Base64 is what attachments require (a PDF is not 7-bit safe) and the encoded
+// lines stay under 76 characters so no relay rejects them.
+func (m *Message) buildMixed(date time.Time) []byte {
+	var b bytes.Buffer
+	b.WriteString("From: " + m.From + "\r\n")
+	b.WriteString("To: " + m.To + "\r\n")
+	b.WriteString("Subject: " + m.Subject + "\r\n")
+	b.WriteString("Date: " + HeaderDate(date) + "\r\n")
+	b.WriteString("Message-Id: " + MessageID(m.EnvelopeID, m.From) + "\r\n")
+	b.WriteString("MIME-Version: 1.0\r\n")
+	b.WriteString("Content-Type: multipart/mixed; boundary=\"" + mixedBoundary + "\"\r\n\r\n")
+
+	// Part 1: the message body, as an alternative pair when there is HTML.
+	b.WriteString("--" + mixedBoundary + "\r\n")
+	if m.HTML != "" {
+		b.WriteString("Content-Type: multipart/alternative; boundary=\"" + altBoundary + "\"\r\n\r\n")
+		b.WriteString("--" + altBoundary + "\r\n")
+		b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+		b.WriteString(EncodeQP(m.Text))
+		b.WriteString("\r\n--" + altBoundary + "\r\n")
+		b.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+		b.WriteString(EncodeQP(m.HTML))
+		b.WriteString("\r\n--" + altBoundary + "--\r\n")
+	} else {
+		b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+		b.WriteString(EncodeQP(m.Text))
+		b.WriteString("\r\n")
+	}
+
+	// The remaining parts: one per attachment.
+	for _, f := range m.Files {
+		name := sanitizeFilename(f.Name)
+		ct := f.Type
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		b.WriteString("--" + mixedBoundary + "\r\n")
+		b.WriteString("Content-Type: " + ct + "; name=\"" + name + "\"\r\n")
+		b.WriteString("Content-Transfer-Encoding: base64\r\n")
+		b.WriteString("Content-Disposition: attachment; filename=\"" + name + "\"\r\n\r\n")
+		b.WriteString(wrapBase64(f.Data))
+		b.WriteString("\r\n")
+	}
+	b.WriteString("--" + mixedBoundary + "--\r\n")
+	return b.Bytes()
+}
+
+// wrapBase64 encodes bytes as base64 in lines of at most 76 characters, which
+// is what MIME asks for and what relays expect to see.
+func wrapBase64(data []byte) string {
+	enc := base64.StdEncoding.EncodeToString(data)
+	var out strings.Builder
+	for i := 0; i < len(enc); i += 76 {
+		end := i + 76
+		if end > len(enc) {
+			end = len(enc)
+		}
+		out.WriteString(enc[i:end])
+		out.WriteString("\r\n")
+	}
+	return out.String()
+}
+
+// sanitizeFilename keeps a file name to characters that cannot carry a header
+// break or a path: the name comes from a document title, which is user data,
+// and a header is not a place user data gets to run.
+func sanitizeFilename(name string) string {
+	if name == "" {
+		return "attachment"
+	}
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.', r == ' ':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return "attachment"
+	}
+	if len(out) > 120 {
+		out = out[:120]
+	}
+	return out
 }
 
 func (m *Message) buildSinglePart(date time.Time) []byte {
@@ -283,7 +404,7 @@ func (s *SMTPSender) Send(ctx context.Context, m *Message) error {
 // file is a valid message with the link inside it, rather than grepping a
 // string that could appear in any part of the file.
 func Parse(raw []byte) (*Message, map[string]string, error) {
-	text, html, ok := splitMIME(raw)
+	text, html, files, ok := splitMIME(raw)
 	if !ok {
 		return nil, nil, errors.New("signmail: message has no text body")
 	}
@@ -297,28 +418,123 @@ func Parse(raw []byte) (*Message, map[string]string, error) {
 		Subject: headers["Subject"],
 		Text:    strings.TrimSpace(text),
 		HTML:    strings.TrimSpace(html),
+		Files:   files,
 	}, headers, nil
+}
+
+// splitHead separates a MIME part into its headers and its RAW body: no
+// transfer decoding. parseHeaders decodes quoted-printable, which is right for
+// a text body and wrong for a base64 one, so the walker needs the bytes as
+// they were written.
+func splitHead(raw []byte) (map[string]string, []byte, bool) {
+	i := bytes.Index(raw, []byte("\r\n\r\n"))
+	if i < 0 {
+		return nil, nil, false
+	}
+	h := map[string]string{}
+	for _, line := range strings.Split(string(raw[:i]), "\r\n") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, " ") {
+			if len(h) > 0 {
+				last := lastIndex(h)
+				h[last] += strings.TrimSpace(line)
+			}
+			continue
+		}
+		k, v, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		h[textproto.CanonicalMIMEHeaderKey(k)] = strings.TrimSpace(v)
+	}
+	return h, raw[i+4:], true
 }
 
 // splitMIME returns the text/plain and text/html bodies. A single-part
 // message has no boundary, so parseHeaders of the whole message finds the
 // text body and ok is true.
-func splitMIME(raw []byte) (text, html string, ok bool) {
-	for _, p := range bytes.Split(raw, []byte("--signsrv1")) {
-		h, rest, found := parseHeaders(p)
+func splitMIME(raw []byte) (text, html string, files []File, ok bool) {
+	// Walk the boundaries rather than splitting on one of them: an attached
+	// document nests the alternative pair inside a multipart/mixed, and a single
+	// boundary split would see the outer part and miss the bodies.
+	var walk func(part []byte)
+	walk = func(part []byte) {
+		h, body, found := splitHead(part)
 		if !found {
-			continue
+			return
 		}
 		ct := strings.ToLower(h["Content-Type"])
-		if strings.HasPrefix(ct, "text/plain") {
-			text = DecodeQP(rest)
+		switch {
+		case strings.HasPrefix(ct, "multipart/"):
+			boundary := boundaryOf(h["Content-Type"])
+			if boundary == "" {
+				return
+			}
+			for _, sub := range strings.Split(string(body), "--"+boundary) {
+				walk([]byte(sub))
+			}
+		case strings.HasPrefix(ct, "text/plain"):
+			text = DecodeQP(string(body))
 			ok = true
-		}
-		if strings.HasPrefix(ct, "text/html") {
-			html = DecodeQP(rest)
+		case strings.HasPrefix(ct, "text/html"):
+			html = DecodeQP(string(body))
+		default:
+			// An attachment: base64 bytes, named by the Content-Disposition the
+			// builder writes. The body is taken raw — quoted-printable decoding
+			// would eat the "=" padding and any "=XX" sequence inside the base64.
+			name := filenameOf(h["Content-Disposition"])
+			if name == "" || !strings.EqualFold(strings.TrimSpace(h["Content-Transfer-Encoding"]), "base64") {
+				return
+			}
+			// The builder wraps base64 at 76 characters, as MIME asks; the line
+			// breaks are not part of the payload.
+			payload := strings.Map(func(r rune) rune {
+				if r == '\n' || r == '\r' || r == ' ' || r == '\t' {
+					return -1
+				}
+				return r
+			}, string(body))
+			data, err := base64.StdEncoding.DecodeString(payload)
+			if err != nil {
+				return
+			}
+			files = append(files, File{Name: name, Type: mediaTypeOf(ct), Data: data})
 		}
 	}
-	return text, html, ok
+	walk(raw)
+	return text, html, files, ok
+}
+
+// boundaryOf reads the boundary parameter out of a Content-Type value.
+func boundaryOf(ct string) string {
+	i := strings.Index(strings.ToLower(ct), "boundary=")
+	if i < 0 {
+		return ""
+	}
+	v := strings.Trim(strings.TrimSpace(ct[i+len("boundary="):]), `";`)
+	if j := strings.IndexAny(v, "; "); j >= 0 {
+		v = v[:j]
+	}
+	return v
+}
+
+// filenameOf reads the filename parameter of a Content-Disposition header.
+func filenameOf(cd string) string {
+	i := strings.Index(strings.ToLower(cd), "filename=")
+	if i < 0 {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(cd[i+len("filename="):]), `";`)
+}
+
+// mediaTypeOf drops the parameters from a Content-Type value.
+func mediaTypeOf(ct string) string {
+	if i := strings.IndexAny(ct, ";"); i >= 0 {
+		return strings.TrimSpace(ct[:i])
+	}
+	return strings.TrimSpace(ct)
 }
 
 // parseHeaders reads the header block of a message or a MIME part.

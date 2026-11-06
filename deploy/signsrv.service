@@ -1,0 +1,76 @@
+# signsrv runs as a service, not as a user, and not as root.
+#
+# The state directory is /var/lib/signsrv: the SQLite database, the document
+# store, the keystore, the JWT signing key, the audit files, and the mail outbox.
+# Every one of those is written by the process at runtime, so the directory
+# must exist and be owned by the service user before the first start.
+#
+# secrets: the keystore passphrase and the admin password come from the
+# environment. They are not in this file. A systemd credential
+# (LoadCredential) is the supported way, so the secret is not in the unit
+# file, not in the shell history, and not in /proc/<pid>/environ for any
+# reader who can see the process.
+
+[Unit]
+Description=signsrv PDF signing service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=signsrv
+Group=signsrv
+
+WorkingDirectory=/var/lib/signsrv
+
+# The binary takes one argument: the config file. Secrets are not in it.
+ExecStart=/usr/local/bin/signsrv serve -config /etc/signsrv/signsrv.env
+ExecReload=/bin/kill -HUP $MAINPID
+
+# The process keeps only the capabilities it needs. It binds a high port
+# (8080), so it does not need NET_BIND_SERVICE. It writes files under its
+# own state directory, so it needs no read access to the rest of the
+# filesystem beyond the CA certificates.
+NoNewPrivileges=true
+AmbientCapabilities=
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+# The service user must not be able to read a secret from a shell. Secrets
+# are mounted as credentials, which the process reads through
+# $CREDENTIALS_DIRECTORY.
+LoadCredential=keystore-pass /etc/signsrv/keystore.pass
+LoadCredential=admin-password /etc/signsrv/admin.pass
+Environment=SIGNSRV_KEYSTORE_PASS=%kkeystore-pass
+Environment=SIGNSRV_ADMIN_PASSWORD=%kadmin-password
+
+# The socket is loopback. TLS is terminated by the proxy.
+# A plain-HTTP listener on 0.0.0.0 is a configuration `checkconfig` refuses.
+
+# A request that is signing takes up to 90 seconds (the TSA call). A
+# shutdown that kills it mid-write leaves an envelope in the middle of a
+# batch, which is why the unit gives the drain time to finish.
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=signsrv
+
+[Install]
+WantedBy=multi-user.target

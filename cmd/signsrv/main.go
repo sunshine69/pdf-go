@@ -66,8 +66,14 @@ func run(args []string) int {
 		return signCmd(*configPath, *tsaOverride, rest)
 	case "worker":
 		return workerCmd(ctx, *configPath)
+	case "batch":
+		return batchCmd(ctx, *configPath, argAt(rest, 0))
 	case "mail-test":
 		return mailTestCmd(*configPath, rest)
+	case "audit-verify":
+		return auditCmd(ctx, *configPath, "audit-verify", rest)
+	case "audit-write":
+		return auditCmd(ctx, *configPath, "audit-write", rest)
 	}
 	if len(rest) > 0 {
 		fmt.Fprintf(os.Stderr, "signsrv: unexpected argument %q\n\n", rest[0])
@@ -103,6 +109,14 @@ func run(args []string) int {
 // it, so `signsrv -config f serve` and `signsrv serve -config f` behave the
 // same. Flags are any argument starting with '-' (and the value that
 // follows -config when written as two arguments).
+// argAt returns the i-th positional argument, or "" when there is none.
+func argAt(args []string, i int) string {
+	if i < len(args) {
+		return args[i]
+	}
+	return ""
+}
+
 func splitArgs(args []string) (cmd string, flags, rest []string) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -141,6 +155,16 @@ func usage() {
       Run the sweeps by hand: expire the tokens and envelopes whose deadline
       has passed, delete the expired revocations, requeue the batch leases that
       were left over from a crash, and mark the failed batches.
+
+  signsrv audit-verify [-config FILE]
+      Walk the audit files in date order and check the hash chain: every line's
+      hash matches its content, every prev_hash matches the line before it, and
+      the event ids strictly increase. Prints the number of events verified, or
+      the first break, and exits non-zero on a break.
+
+  signsrv audit-write [-config FILE] [DAY]
+      Append the events newer than the last written position to the audit file
+      for DAY (default: today, YYYY-MM-DD). The nightly job in runbook.md.
 
   signsrv dbstatus [-config FILE]
       Report the schema version and the row counts of every table.

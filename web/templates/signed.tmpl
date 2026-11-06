@@ -1,8 +1,14 @@
 {{.Subject}}
 
-All {{.Limit}} signatures are in. The signed copy of "{{plain .Title}}" is attached.
+All {{.N}} signatures are in.
 
-The document was signed on {{plain .SignedAt}}. The SHA-256 of the attached file is:
+{{if .Attachment}}The signed copy of "{{plain .Title}}" is attached as {{.Attachment}}.{{else}}The signed copy of "{{plain .Title}}" is too large to attach, so it is offered as a download:
+
+  {{.DownloadURL}}
+
+The download is retained for {{.RetainedDays}} hours, and is for {{plain .Email}} only.{{end}}
+
+The document was signed on {{plain .SignedAt}}. The SHA-256 of the signed file is:
 
   {{.SHA256}}
 
@@ -10,7 +16,8 @@ The file carries every signature, and each signature has a trusted timestamp.
 Check the signatures before you rely on it: pdf-go check SIGNED.pdf, or
 signsrv checkpdf SIGNED.pdf.
 
-Receipt for the signing: {{plain .Reason}}
+The receipt of the signing travels with this message as {{.ReceiptName}}. It
+lists each signature, its timestamp, and the hash of the document it describes.
 
 -- {{plain .From}}
 {{.Legal}}

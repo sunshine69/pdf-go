@@ -107,6 +107,12 @@ type Deps struct {
 	// base. A send with no sender enqueues and returns; the queue is drained
 	// by the worker.
 	Mail *Mailer
+	// TSAOverride replaces the timestamp authority for the party signatures the
+	// batch writes, and nothing else. The create path certifies against the
+	// service's own TSA, so an operator who moves tsa_url to an unreachable
+	// host sees the signing attempts fail, while the document they already
+	// certified is untouched.
+	TSAOverride string
 	// Log is where the batch reports what it did. A batch runs in the worker
 	// and in the CLI, so it needs a log; without one it writes to the default.
 	Log *slog.Logger

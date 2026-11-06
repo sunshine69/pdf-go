@@ -173,10 +173,12 @@ func (s *server) withDefaults(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.set("Cache-Control", "no-store")
 		}
+		start := time.Now()
 		next.ServeHTTP(&h, r)
 		if !h.written() {
 			w.WriteHeader(http.StatusOK)
 		}
+		s.logAccess(r, &h, start)
 	})
 }
 
@@ -239,6 +241,26 @@ func (s *server) setCSRFCookie(w http.ResponseWriter, name, value string, ttl ti
 
 func withRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestKey{}, id)
+}
+
+// logAccess writes one request line. The path is redacted, the cookie header
+// is reduced to names, and the authorization header is reduced to its scheme.
+// The status and the duration are the useful part of a request log; the
+// credentials in a request are not.
+func (s *server) logAccess(r *http.Request, h *header, start time.Time) {
+	status := h.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	s.logJSON(slog.LevelInfo, "request",
+		"method", r.Method,
+		"path", redactPath(r.URL.Path),
+		"status", status,
+		"dur_ms", time.Since(start).Milliseconds(),
+		"ip", signauth.ClientIP(r, s.cfg.TrustProxy),
+		"cookies", redactCookie(r.Header.Get("Cookie")),
+		"auth", redactAuthorization(r.Header.Get("Authorization")),
+		"request", requestID(r.Context()))
 }
 
 func requestID(ctx context.Context) string {
@@ -306,4 +328,70 @@ func (s *server) clockNow() time.Time {
 		return time.Now()
 	}
 	return s.clock()
+}
+
+// Redaction of the credentials in the request line.
+//
+// A request that carries a link token, a bearer token, or a session cookie
+// logs the request: the path, the cookie names, the method, the status. It
+// never logs the value, because a log line is read by operators, shipped to a
+// central collector, and kept for months. A log containing a link token is a
+// log containing a signature: whoever reads it can sign as that party until the
+// link expires.
+//
+// So the rule is: names in, values out. A path segment that looks like a
+// credential is replaced. A cookie header keeps the cookie names. An
+// authorization header keeps the scheme. Nothing else is logged, and the raw
+// header is never logged in any handler.
+
+// redactPath replaces the credential segment of a path. The two shapes that
+// carry a credential in the path are the signing page (/s/<token>) and the
+// signer API (/api/v1/sign/<token>/<action>). Position is enough: the service
+// knows where its tokens sit, so nothing is guessed.
+//
+// An envelope id is not redacted. It is an identifier, not a capability:
+// knowing it gets nothing, and it is the key every log line is searched by.
+func redactPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	segs := strings.Split(p, "/")
+	if len(segs) >= 3 && segs[1] == "s" {
+		segs[2] = "[token]"
+	}
+	if len(segs) >= 5 && segs[1] == "api" && segs[3] == "sign" {
+		segs[4] = "[token]"
+	}
+	return strings.Join(segs, "/")
+}
+
+// redactCookie keeps the cookie names and drops the values.
+func redactCookie(h string) string {
+	if h == "" {
+		return ""
+	}
+	var names []string
+	for _, part := range strings.Split(h, ";") {
+		name, _, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, ",")
+}
+
+// redactAuthorization keeps the scheme and drops the credential.
+func redactAuthorization(h string) string {
+	if h == "" {
+		return ""
+	}
+	i := strings.Index(h, " ")
+	if i < 0 {
+		return "[credential]"
+	}
+	return h[:i] + " [credential]"
 }

@@ -125,10 +125,10 @@ go test ./internal/signflow -run "Batch|Deliver"
 
 ## Signoff
 
-- [ ] Signing happens only in RunBatch; verified by grep (no `SignParty` call
+- [x] Signing happens only in RunBatch; verified by grep (no `SignParty` call
       outside batch.go and tests)
-- [ ] Batch is idempotent and resumable; a crashed job is re-claimed
-- [ ] Two verification gates, both tested (3, 7)
-- [ ] Delivery is per-party accepted; `delivered` requires all
-- [ ] receipt.json states consent time and signing time separately and honestly
+- [x] Batch is idempotent and resumable; a crashed job is re-claimed
+- [x] Two verification gates, both tested (3, 7)
+- [x] Delivery is per-party accepted; `delivered` requires all
+- [x] receipt.json states consent time and signing time separately and honestly
 - Reviewer: ____________  Date: ________

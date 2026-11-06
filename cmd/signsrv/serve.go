@@ -80,6 +80,12 @@ func checkConfig(configPath string) int {
 		}
 		return 1
 	}
+	for _, w := range cfg.Warnings() {
+		printOut("warning: " + w)
+	}
+	if len(cfg.Warnings()) > 0 {
+		printOut("")
+	}
 	printOut("config ok")
 	return 0
 }

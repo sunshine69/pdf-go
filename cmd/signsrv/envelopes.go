@@ -53,7 +53,7 @@ func signService(cfg *Config, log *slog.Logger) *signpdf.Service {
 // base travel with the request, not with the service: they are per-call
 // facts, and the signing service is shared.
 func (s *server) flowDeps() *signflow.Deps {
-	return &signflow.Deps{
+	d := &signflow.Deps{
 		Store:     s.store,
 		Signer:    s.signer,
 		Flow:      signflow.NewFlow(s.store),
@@ -61,6 +61,16 @@ func (s *server) flowDeps() *signflow.Deps {
 		Clock:     time.Now,
 		Mail:      s.mail,
 	}
+	// A tsa_url the operator set after this process started is the TSA the
+	// signatures from here on are stamped against. `sign` runs the batch in this
+	// request, so the same rule has to apply here as in the worker.
+	if s.signer != nil && s.store != nil {
+		if url, err := s.store.GetSetting(context.Background(), "tsa_url"); err == nil &&
+			url != "" && url != s.signer.TSAURL() {
+			d.TSAOverride = url
+		}
+	}
+	return d
 }
 
 // ---------------- create ----------------

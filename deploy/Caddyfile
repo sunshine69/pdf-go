@@ -1,0 +1,78 @@
+# TLS termination is external. signsrv listens on loopback; Caddy (or nginx)
+# holds the certificate and adds HSTS.
+#
+# The reference config is the deployment the tests were written against:
+# automatic HTTPS, HSTS with a one-year max-age and includeSubDomains, the
+# request headers signsrv needs to see the client address (TRUST_PROXY=1),
+# a request body cap that matches signsrv's own 22 MB upload limit, and
+# /admin limited to the admin CIDR.
+#
+# signsrv.example.org is a placeholder. Replace it, and replace the CIDR.
+
+signsrv.example.org {
+	# automatic_https is on by default: Caddy obtains and renews the
+	# certificate, and redirects HTTP to HTTPS. The redirect is what makes
+	# a signing link typed as http:// work: the link is built from
+	# public_url, which must be https.
+
+	encode gzip
+
+	# HSTS. One year, includeSubDomains, preload-ready. A signing page is
+	# a page where a token is typed into the URL, so an https-only policy
+	# is not cosmetic: it removes the downgrade that ships the token to a
+	# listener.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		# The server sets these too. Duplicating them here is not harmful;
+		# it means a cached response carries them even when signsrv is down.
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+	}
+
+	# A request body over the upload limit is refused at the edge, so the
+	# connection is dropped before the request reaches signsrv's process.
+	# max_bytes is per request body; 24 MB clears signsrv's 22 MB template
+	# limit plus the multipart framing.
+	request_body {
+		max_bytes 24000000
+	}
+
+	# The rate bucket signsrv maintains is per address, and it reads the
+	# address from X-Forwarded-For. That header is only trusted when
+	# SIGNSRV_TRUST_PROXY=1, and only when this proxy is the one in front.
+	# Do not expose signsrv on a socket that is reachable without going
+	# through this proxy: the header can be forged, and the rate limit
+	# becomes a limit on an address the attacker chose.
+	reverse_proxy /api/* 127.0.0.1:8080
+
+	# The SPA, the signing page and the admin page are served by signsrv.
+	reverse_proxy /* 127.0.0.1:8080
+
+	# The admin console is not a public page. Limit it to the network the
+	# operators are on. Without this, a leaked admin password is enough to
+	# run the service from anywhere.
+	#
+	# @admin path /admin /admin/* /api/v1/admin/*
+	# respond @admin 403
+	# The CIDR rule replaces the respond block, scoped to the admin paths:
+	# remote_ip 203.0.113.0/24
+
+	log {
+		output file /var/log/caddy/signsrv.access.log
+		format json
+	}
+}
+
+# Plain HTTP is allowed on loopback only, and only for development.
+# 127.0.0.1:8080 is what signsrv listens on; nothing is reachable over
+# plain HTTP from outside the host. If you need a plain-HTTP host name
+# for local testing, do it in a config file that is not deployed:
+#
+#   http://127.0.0.1:8080 {
+#       reverse_proxy 127.0.0.1:8080
+#   }
+#
+# `signsrv checkconfig` refuses a configuration whose public_url is not
+# https when dev mode is off, so the deployment cannot ship a plain-HTTP
+# signing link by accident.

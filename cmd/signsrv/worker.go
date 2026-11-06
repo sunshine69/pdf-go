@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/sunshine69/pdf-go/internal/signflow"
@@ -68,6 +70,49 @@ type worker struct {
 	// batchBudget caps the batches one tick runs, so a queue of documents
 	// does not make one tick outlast the mail it is also supposed to send.
 	batchBudget int
+}
+
+// batchCmd is `signsrv batch ENVELOPE_ID`: run one envelope's signing batch
+// now, in this process, the same way the worker would. It is the operator's
+// lever for a batch that is stuck behind a queue, and the way an acceptance
+// script drives the signing without starting a server.
+//
+// The run is the worker's own code path (RunBatchFor), so the gates, the
+// receipt and the delivery are the ones the service uses. Exit code 0 is a
+// batch that reached a terminal state; anything else exits 1 with the batch's
+// reason on stderr.
+func batchCmd(ctx context.Context, configPath, envelopeID string) int {
+	cfg, err := LoadConfig(configPath)
+	log := logger(cfg)
+	if err != nil {
+		log.Error("configuration", "error", err)
+		return 1
+	}
+	if envelopeID == "" {
+		fmt.Fprintln(os.Stderr, "signsrv: batch takes an envelope id")
+		return 2
+	}
+	_, store, err := openStore(ctx, configPath)
+	if err != nil {
+		log.Error("database", "error", err)
+		return 1
+	}
+	defer store.Close()
+
+	w := newWorker(cfg, log, store)
+	out, runErr := w.deps.RunBatchFor(ctx, envelopeID, batchLease)
+	if out != nil {
+		fmt.Printf("envelope %s status %s: signed %d of %d, delivered %d\n",
+			envelopeID, out.Status, out.Signed, out.Total, out.Delivered)
+		if out.Final != "" {
+			fmt.Printf("final sha256 %s\n", out.Final)
+		}
+	}
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "signsrv: batch: %v\n", runErr)
+		return 1
+	}
+	return 0
 }
 
 func newWorkerWith(deps *signflow.Deps, log *slog.Logger) *worker {
@@ -227,16 +272,44 @@ func (w *worker) failMail(ctx context.Context, item *signstore.MailItem, reason 
 // transaction, and the row is completed or requeued at the end — the contract
 // the queue exists to enforce. The batch itself is idempotent, so a row that a
 // crashed process left behind can be run again by whoever claims it next.
+// applyTSAOverride points the batch at the tsa_url the operator has set, when
+// the signing service in this process was built with a different one.
+//
+// The certification signature is already on the document and carries the TSA it
+// was made against; nothing changes that after the fact. The party signatures
+// follow the current setting, which is what makes tsa_url the knob that means
+// "stop timestamping new signatures against that host" without a restart.
+func (w *worker) applyTSAOverride(ctx context.Context) {
+	if w.deps.Store == nil || w.deps.Signer == nil {
+		return
+	}
+	url, err := w.deps.Store.GetSetting(ctx, "tsa_url")
+	if err != nil || url == "" {
+		// No stored setting: the process config is the answer, and that is what
+		// the signing service was built with.
+		return
+	}
+	if url == w.deps.Signer.TSAURL() {
+		w.deps.TSAOverride = ""
+		return
+	}
+	w.deps.TSAOverride = url
+}
+
 func (w *worker) drainBatches(ctx context.Context) {
 	if w.deps.Store == nil || w.deps.Signer == nil {
 		return // no signing service in this process: the queue waits
 	}
 	for ran := 0; ran < w.batchBudget; ran++ {
+		w.applyTSAOverride(ctx)
 		out, err := w.deps.RunBatch(ctx, batchLease)
 		if err != nil {
+			// One envelope's failure is its own. The row it left is requeued
+			// with a backoff, so the rest of the queue is served on this tick
+			// rather than waiting for the next one behind a dead TSA.
 			w.log.Error("batch run", "error", err,
 				"envelope", outEnvelope(out))
-			return
+			continue
 		}
 		if out == nil {
 			return // queue empty

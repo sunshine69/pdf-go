@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/sunshine69/pdf-go/internal/signauth"
 	"github.com/sunshine69/pdf-go/internal/signstore"
@@ -79,6 +80,52 @@ func sweepCmd(ctx context.Context, configPath string) int {
 	fmt.Printf("  mail requeued     : %d\n", r.MailRequeued)
 	fmt.Printf("  revoked jtis cut  : %d\n", r.JTIsDeleted)
 	fmt.Printf("  refresh chains cut: %d\n", r.RefreshDeleted)
+	return 0
+}
+
+// auditCmd is `signsrv audit-verify` and `signsrv audit-write [DAY]`.
+//
+// audit-verify walks the audit files in date order and checks the hash chain:
+// every recorded hash matches its line, every prev_hash matches the line
+// before it, and the event ids strictly increase. A break is reported with the
+// day and line number, and the exit code is non-zero. A directory with no files
+// verifies: there is nothing to have been tampered with.
+//
+// audit-write appends the events newer than the last written position to the
+// file for the day given (default: today). It is the nightly job in runbook.md.
+func auditCmd(ctx context.Context, configPath, verb string, args []string) int {
+	cfg, store, err := openStore(ctx, configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "signsrv:", err)
+		return 1
+	}
+	defer store.Close()
+
+	if verb == "audit-write" {
+		day := time.Now().UTC().Format(signstore.AuditDay)
+		if len(args) > 0 {
+			day = args[0]
+			if _, err := time.Parse(signstore.AuditDay, day); err != nil {
+				fmt.Fprintf(os.Stderr, "signsrv audit: day %q is not %s\n", day, signstore.AuditDay)
+				return 2
+			}
+		}
+		n, err := signstore.AuditWrite(ctx, store.DB(), cfg.AuditDir, day)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "signsrv audit: %v\n", err)
+			return 1
+		}
+		fmt.Printf("audit %s: %d event(s) appended\n", signstore.AuditPath(cfg.AuditDir, day), n)
+		return 0
+	}
+
+	n, err := signstore.AuditVerify(store.DB(), cfg.AuditDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		fmt.Fprintf(os.Stderr, "audit chain INVALID\n")
+		return 1
+	}
+	fmt.Printf("audit dir %s: %d event(s), chain valid\n", cfg.AuditDir, n)
 	return 0
 }
 

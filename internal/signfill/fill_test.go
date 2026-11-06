@@ -2,7 +2,10 @@ package signfill
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/png"
 	"io"
 	"log"
 	"os"
@@ -255,6 +258,7 @@ func TestValidateRejectsUnknownLogoAndPaintTarget(t *testing.T) {
 	in := sampleBytes(t)
 	s, err := Extract(in)
 	if err != nil {
+
 		t.Fatal(err)
 	}
 	if err := Validate(s, schema.FillSpec{
@@ -317,4 +321,149 @@ func repShape() map[string]any {
 		"warnings":   []string{},
 		"lockedForm": true,
 	}
+}
+
+// The logo artwork is client-supplied bytes: base64 in the spec, or a file the
+// spec names. Validate reads them, because the create endpoint runs Validate
+// before it stores an envelope. A file whose name says .png is not a PNG, so
+// the test is on the bytes.
+func TestValidateChecksLogoMagicBytes(t *testing.T) {
+	in := sampleBytes(t)
+	s, err := Extract(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := s.Fields[0].Name
+
+	// A real PNG passes.
+	png := tinyPNG(t)
+	if err := Validate(s, schema.FillSpec{
+		Logos: []schema.Logo{{ID: "m", Field: name, ImageData: base64.StdEncoding.EncodeToString(png)}},
+	}); err != nil {
+		t.Fatalf("Validate rejected a real PNG: %v", err)
+	}
+
+	// The same bytes with a .png name on disk also pass.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "logo.png")
+	if err := os.WriteFile(path, png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(s, schema.FillSpec{
+		Logos: []schema.Logo{{ID: "disk", Field: name, Image: path}},
+	}); err != nil {
+		t.Fatalf("Validate rejected a PNG on disk: %v", err)
+	}
+
+	for _, bad := range []struct {
+		name string
+		data []byte
+	}{
+		{"an executable renamed .png", []byte("MZ\x90\x00\x03\x00\x00\x00")},
+		{"a PDF renamed .png", []byte("%PDF-1.7\n")},
+		{"plain text", []byte("not an image at all, and long enough to be a file")},
+		{"a truncated PNG header", []byte("\x89PNG\r\n\x1a")},
+		{"empty", []byte("")},
+	} {
+		spec := schema.FillSpec{Logos: []schema.Logo{
+			{ID: bad.name, Field: name, ImageData: base64.StdEncoding.EncodeToString(bad.data)},
+		}}
+		err := Validate(s, spec)
+		if err == nil {
+			t.Errorf("Validate accepted %s", bad.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), bad.name) {
+			t.Errorf("the error for %s does not name the logo: %v", bad.name, err)
+		}
+	}
+
+	// A JPEG is accepted; the accepted set is PNG, JPEG, GIF, TIFF.
+	jpeg := []byte{0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43}
+	if err := Validate(s, schema.FillSpec{
+		Logos: []schema.Logo{{ID: "j", Field: name, ImageData: base64.StdEncoding.EncodeToString(jpeg)}},
+	}); err == nil {
+		t.Fatal("Validate accepted a JPEG stub that cannot be decoded")
+	}
+	gif := []byte("GIF89a")
+	if err := Validate(s, schema.FillSpec{
+		Logos: []schema.Logo{{ID: "g", Field: name, ImageData: base64.StdEncoding.EncodeToString(gif)}},
+	}); err == nil {
+		t.Fatal("Validate accepted a GIF stub that cannot be decoded")
+	}
+
+	// A data: URL prefix is stripped before the base64 is read.
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	if err := Validate(s, schema.FillSpec{
+		Logos: []schema.Logo{{ID: "u", Field: name, ImageData: dataURL}},
+	}); err != nil {
+		t.Fatalf("Validate rejected a data: URL: %v", err)
+	}
+
+	// A logo with no artwork at all is refused, naming the logo.
+	if err := Validate(s, schema.FillSpec{
+		Logos: []schema.Logo{{ID: "none", Field: name}},
+	}); err == nil || !strings.Contains(err.Error(), "none") {
+		t.Fatalf("Validate accepted a logo with no artwork: %v", err)
+	}
+}
+
+// TestValidateChecksLogoSize pins the ceilings: a logo whose bytes are over
+// the byte ceiling is refused, and one whose pixels are over the edge ceiling
+// is refused. A create request that accepts a 40 MB image is a create request
+// that stores a 40 MB blob per envelope.
+func TestValidateChecksLogoSize(t *testing.T) {
+	in := sampleBytes(t)
+	s, err := Extract(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := s.Fields[0].Name
+
+	big := make([]byte, MaxImageBytes+1)
+	copy(big, []byte("\x89PNG\r\n\x1a\n"))
+	err = Validate(s, schema.FillSpec{
+		Logos: []schema.Logo{{ID: "big", Field: name,
+			ImageData: base64.StdEncoding.EncodeToString(big)}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("Validate accepted a logo over the byte ceiling: %v", err)
+	}
+
+	// A PNG with a header claiming a huge size is refused by the pixel check.
+	img := image.NewRGBA(image.Rect(0, 0, MaxImageEdge+1, 4))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	err = Validate(s, schema.FillSpec{
+		Logos: []schema.Logo{{ID: "wide", Field: name,
+			ImageData: base64.StdEncoding.EncodeToString(buf.Bytes())}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "pixels") {
+		t.Fatalf("Validate accepted a logo over the pixel ceiling: %v", err)
+	}
+
+	// At the ceiling it passes.
+	ok := image.NewRGBA(image.Rect(0, 0, MaxImageEdge, MaxImageEdge))
+	var okbuf bytes.Buffer
+	if err := png.Encode(&okbuf, ok); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(s, schema.FillSpec{
+		Logos: []schema.Logo{{ID: "ok", Field: name,
+			ImageData: base64.StdEncoding.EncodeToString(okbuf.Bytes())}},
+	}); err != nil {
+		t.Fatalf("Validate rejected a logo at the ceiling: %v", err)
+	}
+}
+
+// tinyPNG is a 4x4 PNG, the smallest artwork a spec can carry.
+func tinyPNG(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 4, 4))); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

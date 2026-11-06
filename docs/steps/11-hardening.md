@@ -85,9 +85,27 @@ Kill -TERM mid-request: in-flight signing requests finish, then exit.
 
 ## Signoff
 
-- [ ] Tokens and bearer secrets are redacted in logs (test proves it)
-- [ ] events table is append-only; audit chain verifies
-- [ ] TLS/HSTS reference config committed; plain-HTTP only allowed on loopback
-- [ ] Body size limits and magic-byte checks on every upload path
-- [ ] `checkconfig` fails loudly on every insecure combination
+- [x] Tokens and bearer secrets are redacted in logs (test proves it) —
+  `cmd/signsrv/redaction_test.go`: a log-capture handler is installed, a real
+  claim/consent/sign round trip runs against it, and every captured line is
+  checked for the link token, the session cookie value and the bearer token.
+  The access log records `/api/v1/sign/[token]/claim`, `cookies=signsrv_s`,
+  `auth=Bearer [credential]`. The config report is checked the same way.
+- [x] events table is append-only; audit chain verifies —
+  `grep -rn "UPDATE events\|DELETE FROM events" internal cmd` is empty (the
+  scan is a test: `internal/signstore/store_test.go`), and
+  `signsrv audit-verify` walks the date files and checks the hash chain.
+- [x] TLS/HSTS reference config committed; plain-HTTP only allowed on loopback —
+  `deploy/Caddyfile` (automatic_https, HSTS max-age=31536000 includeSubDomains,
+  nosniff, frame-deny, no-store on /api), `deploy/signsrv.service`,
+  `deploy/Dockerfile`. `checkconfig` refuses a non-loopback listener outside
+  dev mode, and warns when `tsa_url` is not HTTPS.
+- [x] Body size limits and magic-byte checks on every upload path —
+  `cmd/signsrv/upload_test.go`: 25 MB multipart (413, no rows created),
+  64 KB JSON (400), `.pdf` magic bytes on the template, PNG/JPEG/GIF/TIFF
+  magic bytes on logo artwork, the 512 KB and 4096-pixel ceilings.
+- [x] `checkconfig` fails loudly on every insecure combination —
+  `cmd/signsrv/checkconfig_test.go`: non-loopback listener, public_url not
+  https, loose JWT key mode, missing keystore, missing secrets, a plain-HTTP
+  TSA (warning, service still starts), and the report contains digests only.
 - Reviewer: ____________  Date: ________

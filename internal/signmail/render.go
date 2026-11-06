@@ -19,26 +19,34 @@ import (
 // Data is what a template is given. Every field is plain, so a template cannot
 // reach into the store.
 type Data struct {
-	Kind         string // invite, reminder, cancelled, signed
-	Subject      string
-	Title        string
-	Sender       string
-	Signer       string
-	Link         string
-	ExpiresAt    string
-	DaysLeft     int
-	Reason       string
-	SignedAt     string
-	SHA256       string
-	Bytes        int
-	Order        int // the party's place in the signing order
-	N            int // the number of parties
-	Email        string
-	Limit        int
+	Kind      string // invite, reminder, cancelled, signed
+	Subject   string
+	Title     string
+	Sender    string
+	Signer    string
+	Link      string
+	ExpiresAt string
+	DaysLeft  int
+	Reason    string
+	SignedAt  string
+	SHA256    string
+	Bytes     int
+	Order     int // the party's place in the signing order
+	N         int // the number of parties
+	Email     string
+	Limit     int
+	From      string
+	MailFrom  string
+	Legal     string
+
+	// The signed message names the attachments it carries, and always names the
+	// URL the signed copy lives at: the attachment for a normal document, a
+	// time-limited download for one too large to attach. RetainedDays is the
+	// life of that link in hours, so the message can state it.
+	Attachment   string
+	ReceiptName  string
+	DownloadURL  string
 	RetainedDays int
-	From         string
-	MailFrom     string
-	Legal        string
 }
 
 // DefaultLegal is the footer line every message carries.

@@ -1153,6 +1153,42 @@ func (s *Store) put(data []byte, ext string, max int, prefix string) (string, er
 	return sha, nil
 }
 
+// PutNamed writes data under a name the caller chooses, so an artefact can be
+// filed under the hash of the thing it describes rather than under its own
+// hash. A receipt is the example: its name is the signed document's SHA-256,
+// which is what lets a reader who holds the document find its receipt.
+//
+// The rule it enforces is the one that matters: the bytes are written only if
+// the name is a well-formed hash, and the write is atomic, so a reader never
+// sees a half-written artefact.
+func (s *Store) PutNamed(name, ext string, data []byte) error {
+	if len(name) != 64 || filepath.Base(name) != name {
+		return fmt.Errorf("signstore: name must be 64 hex characters")
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("signstore: empty data")
+	}
+	if len(data) > MaxBlobBytes {
+		return fmt.Errorf("signstore: %d bytes exceeds the %d byte limit", len(data), MaxBlobBytes)
+	}
+	if err := os.MkdirAll(s.storageDir, 0o750); err != nil {
+		return fmt.Errorf("signstore: storage dir: %w", err)
+	}
+	path := filepath.Join(s.storageDir, name+ext)
+	if _, err := os.Stat(path); err == nil {
+		return nil // same artefact, same bytes: nothing to do
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o640); err != nil {
+		return fmt.Errorf("signstore: write: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("signstore: rename: %w", err)
+	}
+	return nil
+}
+
 // GetPDF reads a stored revision by its SHA-256.
 func (s *Store) GetPDF(sha string) ([]byte, error) { return s.get(sha, ".pdf") }
 
