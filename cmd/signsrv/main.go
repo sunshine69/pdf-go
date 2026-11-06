@@ -107,8 +107,8 @@ func run(args []string) int {
 
 // splitArgs finds the subcommand and collects the flags on both sides of
 // it, so `signsrv -config f serve` and `signsrv serve -config f` behave the
-// same. Flags are any argument starting with '-' (and the value that
-// follows -config when written as two arguments).
+// same. Flags are any argument starting with '-', together with the value
+// that follows a flag listed in valueFlags.
 // argAt returns the i-th positional argument, or "" when there is none.
 func argAt(args []string, i int) string {
 	if i < len(args) {
@@ -117,12 +117,21 @@ func argAt(args []string, i int) string {
 	return ""
 }
 
+// valueFlags are the flags that take a value. splitArgs has to know them,
+// because it separates flags from the subcommand and its arguments, and a
+// value it does not recognize as belonging to a flag becomes a positional
+// argument — `checkpdf -tsa URL file` would then look like two files.
+var valueFlags = map[string]bool{"-config": true, "-tsa": true}
+
 func splitArgs(args []string) (cmd string, flags, rest []string) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if strings.HasPrefix(a, "-") {
 			flags = append(flags, a)
-			if a == "-config" && i+1 < len(args) {
+			// A flag that takes a value has to carry it into the flag set,
+			// and the value must not be read as a positional argument:
+			// `checkpdf -tsa URL file` names one file, not two.
+			if _, ok := valueFlags[a]; ok && i+1 < len(args) {
 				i++
 				flags = append(flags, args[i])
 			}
@@ -200,7 +209,7 @@ func usage() {
       Certify, sign three test parties, verify. Exits 0 only when the finished
       document is valid. The acceptance harness for docs/steps/04-pdfsign.md.
 
-  signsrv checkpdf FILE [-config FILE]
+  signsrv checkpdf FILE [-config FILE] [-tsa URL]
       Verify a document on disk and print the report. Exits non-zero when it
       is not valid.
 

@@ -58,6 +58,8 @@ func run(args []string) int {
 	case "doc", "guide":
 		fmt.Print(guide)
 		return report.OK
+	case "envelope":
+		return envelopeCommand(rest)
 	case "version", "-v", "--version":
 		fmt.Println("pdf-go", version)
 		return report.OK
@@ -103,6 +105,22 @@ func usage() {
       (media, crop, trim, bleed, art, content, header, footer) place it;
       --field NAME anchors it on the widget of a form field.
 
+  pdf-go envelope create --server URL --template in.pdf --spec fill.json \
+      --parties parties.json [--title T] [--expires 72h] [--send]
+      Upload the document and the fill spec, create the envelope, and print
+      each party's signing link. The server URL comes from SIGNSRV_URL, the
+      client token from SIGNSRV_TOKEN (or --token). The links are written to
+      envelope-<id>.links.json, mode 0600.
+
+  pdf-go envelope get <id> | send <id> | report <id>
+      Read the envelope, drive the send transition, or fetch the verification
+      report of the signed document.
+
+  pdf-go envelope links <id>
+      Print the signing links that create or send recorded locally. This reads
+      the local file: the service never returns a signing link twice.
+
+  pdf-go doc
   pdf-go doc
       The JSON formats in full detail. Start here if you are an agent.
 

@@ -165,7 +165,14 @@ func (w *worker) run(ctx context.Context, interval time.Duration) {
 			// picks them up.
 			return
 		case <-mail.C:
+			// Batches ride the mail tick, not a tick of their own: a batch
+			// row appears the moment the last consent arrives, and the only
+			// reason to wait for it is the queue's own backoff. A drain that
+			// ran only on the sweep tick would leave a signed envelope
+			// unsigned for the whole sweep period, and a batch queued after
+			// this process started would never run at all.
 			w.drainMail(ctx)
+			w.drainBatches(ctx)
 		case <-sweep.C:
 			w.runSweep(ctx)
 		}

@@ -1,0 +1,437 @@
+# Build and test, step by step
+
+A single page that answers two questions: *how do I build this*, and *how do I
+test each of the 12 steps by hand*. Every command is runnable as written. Every
+step ends with a **Verification status** block that says, honestly, what is
+proven by a test you can run today and what is still **TODO**.
+
+The convention of `docs/steps/` is that the **reviewer** ticks the signoff
+boxes, not the implementer. The boxes in steps 02, 03, 07, 08 and 12 are
+deliberately left unticked: several of their acceptance items have no
+mechanical check today, and ticking them on the strength of "the code looks
+right" is exactly what the signoff is meant to prevent.
+
+Related: [docs/README.md](README.md), [runbook.md](../runbook.md),
+[SECURITY.md](../SECURITY.md), [docs/runbook-e2e.md](runbook-e2e.md).
+
+## 0. The build
+
+```sh
+go build -mod=vendor ./cmd/signsrv       # the service: API, apps, worker
+go build -mod=vendor ./cmd/pdf-go        # the CLI: PDF probe/fill/verify + envelope client
+```
+
+Both binaries are built by `e2e/run.sh` itself, so the acceptance run always
+tests the tree it is in. `vendor/` is committed: `go build` needs no network.
+`go.mod` is the source of truth for the dependency list; `vendor/modules.txt`
+must match it.
+
+```sh
+go vet -mod=vendor ./...                  # silent
+go vet -mod=vendor -tags e2e ./e2e        # silent, includes the acceptance run
+gofmt -l cmd internal web                 # silent
+```
+
+Dependencies are `modernc.org/sqlite` (pure Go driver), `github.com/go-chi/cors`,
+`github.com/yeasy/pdfsign`, `golang.org/x/{crypto,mod}`. Nothing is fetched
+during a build; nothing runs a Node build step. The web assets are committed
+plain HTML/CSS/vanilla JS, embedded with `go:embed`.
+
+## 1. The unit suite — one command
+
+```sh
+go test -mod=vendor -count=1 ./cmd/pdf-go ./cmd/signsrv \
+    ./internal/pdf ./internal/report ./internal/schema \
+    ./internal/signauth ./internal/signfill ./internal/signflow \
+    ./internal/signmail ./internal/signpdf ./internal/signstore \
+    ./web/spa ./web/admin
+```
+
+- `-count=1` defeats the test cache: the run you see is the run that happened.
+- No package needs a network, a browser, a service, or a real mailbox. Every
+  test starts its own in-memory or temp-file SQLite store, its own mock TSA, and
+  its own in-process HTTP handler.
+- The acceptance run carries `//go:build e2e`, so `go test ./...` never compiles
+  it. It is a program that drives real processes, not a test in the suite.
+
+Current state: **all 11 tested packages pass.** Test counts, by package:
+`cmd/signsrv` 70, `internal/signflow` 48, `internal/signauth` 41,
+`internal/signstore` 32, `internal/signfill` 11, `web/spa` 11, `web/admin` 11,
+`internal/signmail` 7, `internal/signpdf` 7, `cmd/pdf-go` 7. Total 220.
+
+`internal/pdf`, `internal/report`, `internal/schema` and `internal/logos` have
+**no package-level tests** — they are exercised through the CLI, the fill layer
+and the signing tests. That is a coverage gap; see *TODO ledger* at the end.
+
+```sh
+go test -mod=vendor -race ./cmd/signsrv ./internal/signflow   # race detector
+go test -mod=vendor -cover ./...                              # coverage report
+```
+
+## 2. The acceptance run — one command
+
+```sh
+e2e/run.sh                     # every phase
+e2e/run.sh -list               # list the phases
+e2e/run.sh "send + outbox"     # every phase up to the one named
+E2E_SKIP_BROWSER=1 e2e/run.sh  # the phases up to "send + outbox"
+```
+
+Prerequisites: `go`, and — only for the browser phase — `node`, `playwright-core`
+(installed into `/tmp/pw` by `run.sh` on first use) and a Chrome/Chromium
+(`CHROME=/path/to/chrome` to point at one). The run does not use the network
+beyond loopback: the TSA is a mock on `127.0.0.1`, the mail is written to a
+dev outbox as `.eml` files.
+
+Evidence lands in a temp work dir, printed as `evidence: …/reports`. The signed
+artefacts are copied into `./signing-artefacts/` on a green run, together with
+the private keys and the mock TSA root, so a human can check the chain with a
+standard tool:
+
+```sh
+openssl verifysig -in signing-artefacts/approval_sig.p7b -in signing-artefacts/certified.pdf \
+    -certs signing-artefacts/tsa-root.pem
+```
+
+Current state: **14 of 17 phases pass.** The 3 that fail are listed in the TODO
+ledger; they are failures of the test code, not of the service.
+
+## 3. Step-by-step: how to verify each step
+
+For each step: the test command that proves it, the manual command that
+demonstrates it, and the status. `TODO` means "no mechanical check today".
+
+### Step 02 — database
+
+```sh
+go test -mod=vendor -count=1 ./internal/signstore
+```
+Manual:
+```sh
+signsrv -config CFG migrate       # prints version reached, runs integrity_check
+signsrv -config CFG migrate       # run twice: the second is a no-op
+signsrv -config CFG dbstatus      # schema version + row count of every table
+signsrv -config CFG sweep         # expire overdue rows, requeue crashed leases
+```
+Proven: migration is idempotent and versioned, refuses a newer schema,
+cascades deletes, rejects duplicate parties, token-hash lookup, `PutPDF`
+refuses non-PDF bytes, sweeps expire an old envelope, batch queue lease and
+backoff, mail queue lifecycle, consent once per party, list search/paging,
+status validation, JTI revocation, `events` has no UPDATE/DELETE path, settings
+round trip, NULL scan mapping. Driver probe pins the driver contract.
+
+> **Verification status:** [x] idempotent versioned migration · [x] sweeps tested
+> · [ ] *no string-built SQL* — no grep/AST check, review by eye (**TODO**)
+> · [ ] *no plaintext secret in any column* — only the JWT key ring is
+> permissions-checked in tests; a column-level audit of `signstore` is
+> **TODO**
+
+### Step 03 — auth
+
+```sh
+go test -mod=vendor -count=1 ./internal/signauth
+go test -mod=vendor -count=1 -run 'TestLogin|TestPassword|TestRefresh|TestLogout|TestClient|TestRequire|TestRateLimit|TestPathToken|TestSession' ./internal/signauth
+```
+Manual:
+```sh
+SIGNSRV_ADMIN_PASSWORD='…' signsrv -config CFG admin add ADMIN@OPS.EXAMPLE
+signsrv -config CFG admin list
+signsrv -config CFG admin passwd ADMIN@OPS.EXAMPLE   # stamps the credential epoch
+signsrv -config CFG client add ops-tool envelope:write envelope:read
+signsrv -config CFG client revoke ID
+```
+Proven: access round trip; tampered signature, `alg:none`, wrong audience,
+expired, wrong keyring, revoked `jti`, pre-epoch tokens all refused; key ring
+file permissions; argon2id round trip, salt is random, foreign format refused;
+login cost is the same for an unknown address (no address enumeration);
+refresh single-use, chain deleted as a unit, sweep deletes stale chains;
+logout ends the chain and touches no other subject; admin scope cannot reach a
+signer route and a signer cookie cannot reach the API; client login for
+unknown/revoked clients; bearer scheme, missing bearer, missing scope;
+signer cookie flags, claim required, session match, session cross-link,
+expired link; rate limit 429, per-envelope limit, proxy trust, path token.
+
+> **Verification status:** [x] all five items **proven by named tests** —
+> `TestAccessAlgNone`, `TestAccessWrongAudience`, `TestRequireAPIRevokedJTI`,
+> `TestRequireSignerSessionCrossLink`, `TestPasswordRoundTrip`,
+> `TestLoginUnknownEmailCostsTheSame`, `TestRefreshSpendsTheToken`,
+> `TestRequireAPIMissingScope`, `TestAdminClientTokenCannotReadStats`.
+> The boxes in `docs/steps/03-auth.md` are still unticked for the reviewer.
+
+### Step 04 — pdfsign adapter
+
+```sh
+go test -mod=vendor -count=1 ./internal/signpdf ./internal/signfill
+signsrv -config CFG sign-selftest testdata/sample2.pdf /tmp/out.pdf -tsa http://127.0.0.1:8999
+signsrv -config CFG checkpdf /tmp/out.pdf
+```
+`sign-selftest` is the acceptance harness for this step: certify, sign three
+test parties, verify; exit 0 only when the finished document is valid.
+Proven: certify happens before any change; three parties nest in order;
+a tampered document fails; missing TSA is an error, never a silent skip;
+leaf certificates have a lifetime and no private key; widgets stay inside the
+crop box; key file is owner-only (0600).
+
+> **Verification status:** all five boxes **proven by named tests**.
+
+### Step 05 — envelopes
+
+```sh
+go test -mod=vendor -count=1 -run 'TestCreate|TestGetEnvelope|TestEnvelopeScopes|TestList|TestDownload' ./cmd/signsrv
+go test -mod=vendor -count=1 -run 'TestCreate|TestCertifiedDocument|TestTransition|TestDocumentDownload' ./internal/signflow
+```
+Manual:
+```sh
+signsrv -config CFG serve                                  # dev = true
+pdf-go envelope create --server http://127.0.0.1:PORT --token TOK \
+    --template testdata/sample2.pdf --spec fill.json --parties parties.json \
+    --title "NDA" --expires 72h --links-out links.txt --send
+pdf-go envelope get ID --server http://127.0.0.1:PORT --token TOK
+pdf-go envelope links ID --links-out links.txt
+pdf-go envelope report ID --server http://127.0.0.1:PORT --token TOK
+```
+Proven: create via API; an unknown field leaves **no rows**; duplicate and
+gapped party orders refused; get and document download; every scope boundary;
+list paging; download name is slugified; the certified document is read-only;
+illegal state advances are refused.
+
+> **Verification status:** all five boxes **proven by named tests**.
+
+### Step 06 — tokens and email
+
+```sh
+go test -mod=vendor -count=1 ./internal/signmail
+go test -mod=vendor -count=1 -run 'TestToken|TestSend|TestExpired|TestLinkExpiry|TestMailFailure|TestHostileName|TestNameWith' ./internal/signflow
+```
+Manual:
+```sh
+ls OUTBOX/                       # one .eml per party in dev mode
+grep -c '^Message-ID:' OUTBOX/*.eml
+```
+Proven: tokens are unique and 52 characters; lookup round trip; send produces
+one `.eml` per party; sending twice is a conflict; a hostile display name is
+inert in the HTML and a name containing a line break is rejected (no header
+injection); expired lookup is expired; link expiry is capped by the envelope;
+create queues no mail and send queues one per party; a mail failure leaves the
+envelope state and notifies the admin. Render tests: the full link, no markup,
+the link needs no escaping, RFC 1123 date, Message-ID shape, quoted-printable,
+the dev outbox file parses.
+
+> **Verification status:** all five boxes **proven by named tests**.
+
+### Step 07 — consent
+
+```sh
+go test -mod=vendor -count=1 ./internal/signflow
+go test -mod=vendor -count=1 -run 'TestConsent|TestDecline|TestClaim|TestLastConsent|TestSignerDocument' ./cmd/signsrv
+```
+Proven: consent is data only, no PDF touched in the request; consent carries
+the certified document's sha, and a stale digest is refused; twice is refused;
+the session is invalidated (claim after consent is refused); the declaration
+(text, checkbox, image, `strict`) is validated; the signature image rules
+(PNG/JPEG magic, size, count); decline refuses the envelope and twice is
+refused; consent on an expired link is `gone`; the last consent enqueues
+**one** batch row; the consent input carries no power (no fill, no key, no
+signing); the state table and illegal advances.
+
+> **Verification status:** all five boxes **proven by named tests** —
+> `TestConsentInputCarriesNoPower`, `TestConsentIsBoundToTheCertifiedDigest`,
+> `TestConsentTwiceIsRefused`, `TestLastConsentEnqueuesOneBatch`,
+> `TestEnvelopeViewBeforeClaim` (other parties' addresses absent).
+
+### Step 08 — signer SPA
+
+```sh
+go test -mod=vendor -count=1 ./web/spa
+go test -mod=vendor -count=1 -run 'TestCSP|TestStaticRoutes|TestSignerShell' ./cmd/signsrv
+```
+Proven: the embedded files exist; no external URLs in HTML, JS or CSS; the
+token is read from the path, never written to `localStorage`/`sessionStorage`;
+`fetch` uses `same-origin` credentials; CSP signer directives; the consent
+checkbox is required and not pre-checked; the timeout; every status code is
+handled. The server tests prove the CSP header and that the signer shell hides
+the token.
+
+> **Verification status:** [x] all four boxes **proven by named tests**.
+> [ ] *Verified in a real browser* (devtools shows the header, no request leaves
+> the origin) is a **TODO** — the SPA tests read source, not a running browser.
+
+### Step 09 — admin UI
+
+```sh
+go test -mod=vendor -count=1 ./web/admin
+go test -mod=vendor -count=1 -run 'TestAdmin' ./cmd/signsrv
+```
+Proven: 11 static-asset tests (files exist, no external URLs, `textContent`
+not `innerHTML`, same-origin fetch, visibility check on polling, the key is
+shown once, the cancel action requires a reason); 10 server tests (the
+collecting tile, a client token cannot read stats, cancel a collecting
+envelope, cancel a delivered one is a conflict, the second reminder is
+limited, reissue links, sign-now, audit zip, report, settings and clients,
+events and logout).
+
+> **Verification status:** all four boxes **proven by named tests**.
+
+### Step 10 — batch signing
+
+```sh
+go test -mod=vendor -count=1 ./internal/signflow
+go test -mod=vendor -count=1 -run 'TestBatch|TestDelivery' ./internal/signflow
+```
+Proven: all parties signed in order, signatures nest; the consent enqueues the
+batch row; a TSA failure retries, keeps the envelope open for retry, then fails
+cleanly; the batch runs a consented party without re-running consent; **gate 1**
+refuses a missing party signature; the receipt is written; one delivery per
+party; a large document uses a download link; **gate 2** refuses a tampered
+document, and reissuing over tampered bytes keeps the accepted records;
+settings are validated at the boundary; the batch is idempotent; a tampered
+input fails and sends **no** email; the report matches the stored leaf
+certificates; party rows are marked and signing links are closed; one consent
+leaves the envelope open.
+
+> **Verification status:** all five boxes **proven by named tests**.
+
+### Step 11 — hardening
+
+```sh
+go test -mod=vendor -count=1 -run 'TestSecrets|TestRedaction|TestAccessLog|TestCheckConfig' ./cmd/signsrv
+go test -mod=vendor -count=1 -run 'TestAudit' ./internal/signstore
+signsrv -config CFG checkconfig      # exits non-zero, secrets printed as digests
+signsrv -config CFG audit-verify     # hash chain, prev_hash, monotonic ids
+```
+Proven: tokens, passwords, keys, secrets and signing addresses never reach the
+log; the redaction helper is honest; the access log shape; `checkconfig`
+accepts a loopback dev config, refuses a non-loopback listener, a loose JWT key
+mode, a missing keystore, warns on a plain TSA, and its report contains no
+secrets; audit write then verify, write is idempotent, verify catches
+tampering and missing events, write refuses a tampered tail, a tampered tail
+behind an empty day, a backwards day, empty dir is fine, files are owner-only;
+rate limits per address and per envelope, body caps, magic-byte refusals.
+
+> **Verification status:** [x] redaction · [x] append-only audit ·
+> [x] body limits and magic bytes · [x] `checkconfig` fails loudly ·
+> [x] TLS/HSTS reference config (`deploy/Caddyfile`) committed.
+> [ ] *Verified on a real TLS deployment* and [ ] *log rotation verified*
+> are **TODO**.
+
+### Step 12 — end-to-end
+
+```sh
+e2e/run.sh
+```
+The 17 phases: build, mock tsa, config, start service, admin login, client key,
+cli create, send + outbox, browser signing, cli watch, cli report, audit chain,
+artefacts, negatives, rate limit, log redaction, graceful stop.
+
+Proven today (14 phases green): the CLI creates the envelope through the API,
+the service sends, **real Chrome** drives a party through claim → document →
+declination → consent, the worker signs the batch, the CLI polls to delivered,
+the CLI writes the verification report, the audit chain verifies, the signed
+artefacts are kept, tokens/keys/passwords are absent from 252 log lines,
+SIGTERM drains in 111 ms, refusals assert a state (expired link, cancel,
+non-PDF upload, login limit, link limit).
+
+> **Verification status:** [x] artefacts kept for inspection ·
+> [x] CLI integration uses the shared fill spec, no duplicated logic ·
+> [x] no network beyond loopback ·
+> [ ] **Happy path runs green from a clean checkout** — the browser phase is
+> green, the run as a whole is red: **TODO** (see ledger).
+> [ ] **All negative paths assert a state** — 5 of 8 negative checks pass;
+> 3 fail in test code: **TODO**.
+
+## 4. TODO ledger — the checks that do not exist yet
+
+Every item below is a **gap I am not pretending is closed**. None is a service
+defect found by a test; all are missing checks.
+
+### 4.1 Three negative checks fail in test code
+
+| # | Item | What is wrong | What fixes it |
+|---|---|---|---|
+| 1 | `negatives / duplicate consent` | the consent bodies in `e2e/negatives.go` omit `document_sha`, so the *first* consent is refused as `document_changed` (409) and the second-consent test never runs | read the sha from the envelope view and include it in the valid consent |
+| 2 | `negatives / consent rules` | all phases claim from `127.0.0.1`; claim is 10/min **per address**, so the 11th claim across phases gets 429 | give each negative check its own loopback source address (`net.Dialer{LocalAddr: 127.0.0.40+i}`) |
+| 3 | `negatives / consent limit` | same cause as 2 | same fix |
+| 4 | `rate limit` phase | the phase floods one endpoint, then the client-key token exchange lands inside the same window and gets 429, so the 429 is attributed to the wrong call | sleep past the window before the exchange, and count the 429s per endpoint |
+
+No service change is implied by any of these. The service refused as designed in
+all four cases.
+
+### 4.2 Missing checks in the unit tree
+
+| Step | Missing check | Why it matters |
+|---|---|---|
+| 02 | no automated scan for string-built SQL | the box is "no string-built SQL"; today it is true by inspection, not by a check |
+| 02 | no column-level audit that no plaintext secret is stored | refresh and consent records are proven to hold digests; the full set is unproven |
+| 03 | no test that the **signing address** is stored hashed, in the store | `TestTokenHashLookup` proves link and refresh hashing; the signing address is the third secret in the table and has no test |
+| 03 | no test for `admin passwd` on a live store | `TestPasswordChangeEndsTokens` covers the epoch in `signauth`; the operator command is not covered |
+| 04, 05 | `internal/pdf`, `internal/report`, `internal/schema`, `internal/logos` have **zero package tests** | they are covered through the CLI and the fill/signing tests; a direct test for `pdf.Parse`, `report.Render`, `schema` validation is absent |
+| 07 | no test that consent **cannot** be replayed from a second browser profile | session cookie scoping is tested; a cross-profile replay is not |
+| 08 | no browser-level CSP assertion | tests read JS source; nobody has opened devtools |
+| 10 | no test for a **key rotation** mid-batch | the key ring is read once at start |
+| 11 | log rotation not verified | `deploy/signsrv.service` ships a logrotate file; nothing runs it |
+| 11 | TLS not verified on a real deployment | the reference Caddyfile is committed; the acceptance run is loopback plain HTTP in dev mode, which `checkconfig` permits and `checkconfig`'s own test proves a non-loopback listener is refused |
+| 12 | no negative check for **concurrency** (two parties consenting at the same moment) | the last-consent enqueue is tested for one consent, not for two racing consents |
+| 12 | no negative check for **delivery of a document whose gate-2 sha was recomputed after the queue** | gate 2 is tested on a tampered input; the reissue-then-batch path is tested, the race is not |
+
+### 4.3 Signoff boxes still unticked
+
+```
+docs/steps/02-database.md   4 boxes
+docs/steps/03-auth.md       5 boxes
+docs/steps/07-consent.md    5 boxes
+docs/steps/08-spa.md        4 boxes
+docs/steps/12-e2e.md        4 boxes
+```
+Steps 01, 04, 05, 06, 09, 10, 11 are ticked. For the unticked ones, the
+"proven by named tests" lines above tell you which boxes can be ticked from a
+test run today, and the TODO ledger tells you which boxes must be ticked only
+after a new check is written.
+
+## 5. The full pre-release checklist, in order
+
+```sh
+# 1. clean tree
+go vet -mod=vendor ./...
+go vet -mod=vendor -tags e2e ./e2e
+gofmt -l cmd internal web
+
+# 2. every package
+go test -mod=vendor -count=1 ./cmd/pdf-go ./cmd/signsrv \
+    ./internal/pdf ./internal/report ./internal/schema \
+    ./internal/signauth ./internal/signfill ./internal/signflow \
+    ./internal/signmail ./internal/signpdf ./internal/signstore \
+    ./web/spa ./web/admin
+
+# 3. race detector on the code that runs in the server
+go test -mod=vendor -count=1 -race ./cmd/signsrv ./internal/signflow
+
+# 4. the acceptance run, all phases
+e2e/run.sh
+
+# 5. config and audit on a real deployment
+signsrv -config /etc/signsrv/signsrv.env checkconfig
+signsrv -config /etc/signsrv/signsrv.env audit-verify
+signsrv -config /etc/signsrv/signsrv.env migrate   # no-op on a current schema
+```
+
+Step 5 is the only part that needs a machine that is not this checkout. Steps 1
+to 4 need only `go`, plus `node` and Chrome for the browser phase.
+
+## 6. Reading the evidence
+
+| Where | What |
+|---|---|
+| `$E2E_WORK/reports/` | one file per phase, named for the phase, with the command and its output |
+| `$E2E_WORK/outbox/` | one `.eml` per invitation, readable in any mail client |
+| `$E2E_WORK/audit/` | the audit files, verified by `audit-verify` |
+| `$E2E_WORK/browser/` | screenshots of the signing page at each step |
+| `$E2E_WORK/browser/console.log` | console output, must be empty |
+| `./signing-artefacts/` | the signed PDFs, the keys, the TSA root, kept on a green run |
+| `$E2E_WORK/log/signsrv.jsonl` | the access log; `grep` for a token must find nothing |
+
+The signed PDFs are openable in any viewer. `pdf-go verify` re-checks them:
+
+```sh
+pdf-go verify signing-artefacts/signed.pdf fill.json
+signsrv -config CFG checkpdf signing-artefacts/signed.pdf
+```

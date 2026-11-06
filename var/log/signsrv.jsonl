@@ -235,3 +235,21 @@
 {"time":"2026-11-06T18:10:55.984067379+10:00","level":"INFO","msg":"signsrv stopped","service":"signsrv","version":"0.1.0"}
 {"time":"2026-11-06T18:11:59.219683583+10:00","level":"INFO","msg":"signal received, draining","service":"signsrv","version":"0.1.0"}
 {"time":"2026-11-06T18:11:59.219846618+10:00","level":"INFO","msg":"signsrv stopped","service":"signsrv","version":"0.1.0"}
+{"time":"2026-11-06T19:28:29.333959604+10:00","level":"ERROR","msg":"signing service unavailable","service":"signsrv","version":"0.1.0","error":"signpdf: keystore passphrase is wrong (the key did not open)","keystore":"var/keystore","create":"endpoint will answer 503"}
+{"time":"2026-11-06T19:28:29.454103109+10:00","level":"ERROR","msg":"signing service unavailable","service":"signsrv","version":"0.1.0","error":"signpdf: keystore passphrase is wrong (the key did not open)","keystore":"var/keystore","create":"endpoint will answer 503"}
+{"time":"2026-11-06T19:28:29.454516671+10:00","level":"INFO","msg":"signsrv listening","service":"signsrv","version":"0.1.0","addr":"127.0.0.1:8093","dev":true,"go":"go1.27.1","public_url":""}
+{"time":"2026-11-06T19:28:29.454532982+10:00","level":"INFO","msg":"dev admin password","service":"signsrv","version":"0.1.0","password":"dev-bbd33958f224ff1b","note":"dev mode only; set SIGNSRV_ADMIN_PASSWORD to fix it"}
+{"time":"2026-11-06T19:28:32.174131738+10:00","level":"INFO","msg":"request","service":"signsrv","version":"0.1.0","method":"GET","path":"/healthz","status":200,"dur_ms":0,"ip":"127.0.0.1","cookies":"","auth":"","request":"22eff850f701096f"}
+{"time":"2026-11-06T19:28:32.193605229+10:00","level":"WARN","msg":"route not found","service":"signsrv","version":"0.1.0","path":"/favicon.ico","request":"d62e7f97ca004f0a"}
+{"time":"2026-11-06T19:28:32.193773433+10:00","level":"INFO","msg":"request","service":"signsrv","version":"0.1.0","method":"GET","path":"/favicon.ico","status":200,"dur_ms":0,"ip":"127.0.0.1","cookies":"","auth":"","request":"d62e7f97ca004f0a"}
+{"time":"2026-11-06T20:15:07.268930835+10:00","level":"INFO","msg":"signal received, draining","service":"signsrv","version":"0.1.0"}
+{"time":"2026-11-06T20:15:07.269086776+10:00","level":"INFO","msg":"signsrv stopped","service":"signsrv","version":"0.1.0"}
+{"time":"2026-11-06T21:07:31.374514322+10:00","level":"ERROR","msg":"signing service unavailable","service":"signsrv","version":"0.1.0","error":"signpdf: keystore passphrase is wrong (the key did not open)","keystore":"var/keystore","create":"endpoint will answer 503"}
+{"time":"2026-11-06T21:07:31.486327794+10:00","level":"ERROR","msg":"signing service unavailable","service":"signsrv","version":"0.1.0","error":"signpdf: keystore passphrase is wrong (the key did not open)","keystore":"var/keystore","create":"endpoint will answer 503"}
+{"time":"2026-11-06T21:07:31.486717772+10:00","level":"INFO","msg":"signsrv listening","service":"signsrv","version":"0.1.0","addr":"127.0.0.1:8097","dev":true,"go":"go1.27.1","public_url":""}
+{"time":"2026-11-06T21:07:31.486731228+10:00","level":"INFO","msg":"dev admin password","service":"signsrv","version":"0.1.0","password":"dev-ca6fff11cfdc8ff2","note":"dev mode only; set SIGNSRV_ADMIN_PASSWORD to fix it"}
+{"time":"2026-11-06T21:07:33.31678141+10:00","level":"INFO","msg":"signer shell","service":"signsrv","version":"0.1.0","request":"ee193d1f98a7710c","token":"[token:hidden]"}
+{"time":"2026-11-06T21:07:33.316847273+10:00","level":"INFO","msg":"request","service":"signsrv","version":"0.1.0","method":"GET","path":"/s/[token]","status":200,"dur_ms":0,"ip":"127.0.0.1","cookies":"","auth":"","request":"ee193d1f98a7710c"}
+{"time":"2026-11-06T21:07:33.322191325+10:00","level":"INFO","msg":"request","service":"signsrv","version":"0.1.0","method":"GET","path":"/assets/spa/app.js","status":200,"dur_ms":0,"ip":"127.0.0.1","cookies":"","auth":"","request":"4e3f2e4b784b16c0"}
+{"time":"2026-11-06T22:09:34.619760154+10:00","level":"INFO","msg":"signal received, draining","service":"signsrv","version":"0.1.0"}
+{"time":"2026-11-06T22:09:34.621450311+10:00","level":"INFO","msg":"signsrv stopped","service":"signsrv","version":"0.1.0"}

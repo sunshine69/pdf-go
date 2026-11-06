@@ -149,7 +149,7 @@ func signSelftest(configPath, tsaOverride string, rest []string) int {
 	return 0
 }
 
-// checkPDF is `signsrv checkpdf -in FILE`: run the same verification the
+// checkPDF is `signsrv checkpdf FILE`: run the same verification the
 // delivery path uses over a document on disk, print the report, and exit
 // non-zero when it is not valid. The operator's tool for "is this file the
 // one we signed, and is it intact".

@@ -17,9 +17,12 @@ const state = {
 // token + api
 
 function tokenFromPath() {
-  // The shell route is /s/<token>. The token is a 128-bit hex string; nothing
-  // else is on the path, so there is nothing to strip beyond the prefix.
-  const m = /^\/s\/([0-9a-f]+)\/?$/.exec(location.pathname);
+  // The shell route is /s/<token>. The token is 32 random bytes written as
+  // lowercase base32 ([a-z2-7], 52 characters) so it survives a URL path with
+  // no escaping; nothing else is on the path, so there is nothing to strip
+  // beyond the prefix. Anything that is not that shape is not a token, and the
+  // app says so instead of sending it to the API.
+  const m = /^\/s\/([a-z2-7]{52,64})\/?$/.exec(location.pathname);
   return m ? m[1] : "";
 }
 
@@ -394,8 +397,14 @@ function closedStatus(status) {
   const res = await api("/envelope");
   if (res.status !== 200) { await handle(res); return; }
   state.envelope = await res.json();
-  const mine = state.envelope.my || {};
-  state.claimed = mine.status && mine.status !== "invited";
-  state.view = state.envelope.status === "sent" || state.envelope.status === "collecting" ? "document" : "consent";
+  // The envelope view answers with the title and the deadline only until the
+  // address is claimed: the party slot ("my") is the proof that this browser
+  // proved its address, so it is what the first view is chosen from. A claimed
+  // party still reviewing sees the document; a party that has consented sees
+  // the record of its own consent.
+  state.claimed = Boolean(state.envelope.my);
+  if (!state.claimed) { state.view = "claim"; render(); return; }
+  const reviewing = state.envelope.status === "sent" || state.envelope.status === "collecting";
+  state.view = reviewing && state.envelope.my.status === "invited" ? "document" : "consent";
   render();
 })();
