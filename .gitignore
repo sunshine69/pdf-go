@@ -1,3 +1,6 @@
+.base-wt/**
+envelop**
+testdata/**
 vendor/**
 var/log/**
 tmp/**

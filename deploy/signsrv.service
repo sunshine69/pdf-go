@@ -21,6 +21,10 @@ Type=simple
 User=signsrv
 Group=signsrv
 
+# Files the process creates are group-unreadable and other-unreadable, so the
+# key material, the JWT key and the audit files never land world-readable.
+UMask=0027
+
 WorkingDirectory=/var/lib/signsrv
 
 # The binary takes one argument: the config file. Secrets are not in it.

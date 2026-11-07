@@ -129,9 +129,14 @@ func TestSendProducesOneEmlPerParty(t *testing.T) {
 		if err != nil {
 			t.Fatalf("outbox file is not a valid message: %v", err)
 		}
-		n := len(regexp.MustCompile(`https?://[^ ]*/s/[a-z2-7]{52}`).FindAllString(msg.Text, -1))
+		// The invite is one text/html part. The rule is one signing URL per
+		// message: a party must not have to choose between two links.
+		n := len(regexp.MustCompile(`https?://[^"]*/s/[a-z2-7]{52}`).FindAllString(msg.HTML, -1))
 		if n != 1 {
-			t.Fatalf("text body has %d signing URLs, want exactly one", n)
+			t.Fatalf("html body has %d signing URLs, want exactly one:\n%s", n, msg.HTML)
+		}
+		if !strings.Contains(msg.HTML, `href="http`) {
+			t.Fatalf("html body has no anchor:\n%s", msg.HTML)
 		}
 		if strings.Contains(strings.ToLower(string(f)), "content-disposition") {
 			t.Fatal("the invite carries an attachment header")

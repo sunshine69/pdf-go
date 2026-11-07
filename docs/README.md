@@ -19,6 +19,8 @@ docs/
   10-batch-sign.md       signing batch, verification gates, delivery, receipt
   11-hardening.md        rate limits, audit, sweeps, TLS, deployment
   12-e2e.md              end-to-end test and runbook
+  build-and-test.md      how to build, and how to test each step by hand
+  tsa-roadmap.md         TSA: the policy, the options, the tests to write
 ```
 
 Conventions used by every step doc:

@@ -214,7 +214,7 @@ inert in the HTML and a name containing a line break is rejected (no header
 injection); expired lookup is expired; link expiry is capped by the envelope;
 create queues no mail and send queues one per party; a mail failure leaves the
 envelope state and notifies the admin. Render tests: the full link, no markup,
-the link needs no escaping, RFC 1123 date, Message-ID shape, quoted-printable,
+the link needs no escaping, RFC 1123 date, Message-ID shape, one text/html 8bit
 the dev outbox file parses.
 
 > **Verification status:** all five boxes **proven by named tests**.

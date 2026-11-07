@@ -30,7 +30,8 @@ emitted; no query string carries a secret (no referrer leakage).
    fail the send).
 4. `Transition(ready -> sent)`.
 
-Email content (plain text + HTML, same copy):
+Email content (HTML body; the same copy is the text body the renderer keeps as
+a fallback, used when a message has no HTML part):
 
 ```
 Subject: Signature requested: {{title}}
@@ -51,6 +52,35 @@ leak the token to mail proxies; the admin "cancel" path is the opt-out.
 **Mail.** `signmail.Sender` interface with two implementations:
 `smtpSender` (net/smtp with STARTTLS, auth LOGIN/PLAIN, 15s dial, 30s write) and
 `fileSender` (writes `.eml` to `var/outbox`, used when `SIGNSRV_DEV=1`).
+Message shape (fixed 2026-11-07, replaces the earlier multipart/alternative +
+quoted-printable design): **one `text/html; charset=utf-8` part,
+`Content-Transfer-Encoding: 8bit`, body written as itself.**
+
+The reason is the link. A quoted-printable body must keep lines under 76
+characters and ends a long line with a soft break, an `=` at end of line. A
+signing link is 95 characters of unbroken text inside an `href`, so the soft
+break lands **inside** the value; a client that does not undo it shows the
+signer a link with an `=` in it, and the page then refuses the token
+("This page must be opened from your signing link"). The link is the only
+thing in the message a signer has to get right, so the body carries no
+transfer encoding. `8bit` is in the MIME standard, accepted by every relay,
+and adds no bytes to the body. `multipart/alternative` is dropped for the
+same reason: a client that reads the first part gets the plaintext and no
+clickable anchor.
+
+Rules that follow, and are asserted by tests:
+- The invite is one part, `text/html`, `8bit`; the href is one unbroken
+  string; the body contains no `=\r\n` soft break.
+- A message with attachments is `multipart/mixed`: the `text/html` part, then
+  one `base64` part per file (a PDF is not printable ASCII).
+- A message whose renderer produces no HTML (reminder, cancellation, signed
+  copy) is one `text/plain; charset=utf-8` part, also `8bit`.
+- A `Subject` that is not printable ASCII, or contains a line break, is sent
+  as `=?UTF-8?B?...?=`; a plain subject is sent as itself. No header field can
+  carry a byte that ends the field.
+- The plaintext copy is still rendered and kept (`Message.Text`): it is the
+  fallback body and the source for CLI/dev inspection.
+
 Subject and body escaping: text template escapes nothing (plain text), HTML
 template escapes all interpolated fields with `html/template`. Address header
 building uses `net/mail`-shaped quoting so a name with `"` cannot inject headers.
@@ -72,6 +102,10 @@ go test ./internal/signflow ./internal/signmail
    a name containing `\r\n` is rejected at create.
 6. `mail-test` sends one message through the configured SMTP and reports the
    SMTP code; in `SIGNSRV_DEV=1` writes to `var/outbox`.
+7. The invite is one `text/html` part with `Content-Transfer-Encoding: 8bit`,
+   no `multipart/alternative`, no `=\r\n` soft break in the body, and
+   `href="<the 95-character link>"` in one piece; a non-ASCII subject is sent
+   `=?UTF-8?B?...?=` and decodes back unchanged.
 
 ## Signoff
 

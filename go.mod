@@ -2,18 +2,20 @@ module github.com/sunshine69/pdf-go
 
 go 1.27.1
 
+replace github.com/digitorus/pdfsign => github.com/sunshine69/pdfsign v1.0.1
+
 require (
 	github.com/benoitkugler/pdf v0.0.15
+	github.com/digitorus/pdf v0.3.0
 	github.com/digitorus/pdfsign v1.0.0
+	github.com/digitorus/timestamp v0.0.0-20250524132541-c45532741eea
 	golang.org/x/crypto v0.57.0
 	modernc.org/sqlite v1.61.1
 )
 
 require (
 	github.com/benoitkugler/pstokenizer v1.0.1 // indirect
-	github.com/digitorus/pdf v0.3.0 // indirect
 	github.com/digitorus/pkcs7 v0.0.0-20260914070511-d678ea5ea03f // indirect
-	github.com/digitorus/timestamp v0.0.0-20250524132541-c45532741eea // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hhrutter/lzw v1.0.0 // indirect

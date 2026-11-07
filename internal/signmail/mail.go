@@ -28,11 +28,11 @@ type Message struct {
 	To         string
 	From       string
 	Subject    string
-	Text       string
+	Text       string // the plaintext view, kept as the fallback body
 	HTML       string
 
 	// Files are attachments. A delivery message carries the signed document
-	// and its receipt; a message with no Files is a plain text/html message.
+	// and its receipt; a message with no Files is a one-part message.
 	Files []File
 }
 
@@ -79,84 +79,45 @@ func RFC1123(t time.Time) string {
 // assert the exact string.
 func HeaderDate(t time.Time) string { return RFC1123(t) }
 
-// Build returns the full RFC 822 message: headers, then a multipart/alternative
-// body with the text part first and the HTML part second. Every part is
-// quoted-printable, so a body with non-ASCII names (Patrick, Müller) survives
-// a 7-bit transport.
+// Build returns the full RFC 822 message: the headers, a blank line, then the
+// body. The body is one text/html part written as itself, with
+// Content-Transfer-Encoding: 8bit.
+//
+// The body carries no transfer encoding on purpose. A quoted-printable body
+// must keep its lines under 76 characters and ends a long line with a soft
+// break, an "=" at the end of the line. A signing link is 95 characters of
+// unbroken text inside an href, so a soft break lands inside the value, and a
+// client that does not undo it shows the signer a link with an "=" in it — the
+// exact failure this mail exists to avoid, because the link is the only thing
+// in the message a signer has to get right. 8bit is in the MIME standard, is
+// accepted by every relay, and adds no characters to the body.
+//
+// A message with attachments is a multipart/mixed: the text/html part, then one
+// base64 part per file. Base64 is what attachments require — a PDF is not
+// printable ASCII — and the encoded lines stay under 76 characters so no relay
+// rejects them.
 func (m *Message) Build(date time.Time) []byte {
-	// An attachment changes the message's shape: the text/html pair becomes one
-	// part of an outer multipart/mixed whose remaining parts are the files. A
-	// client that reads the alternative pair must still find it, and a client
-	// that reads attachments must find them, and neither may have to guess.
-	if len(m.Files) > 0 {
-		return m.buildMixed(date)
-	}
-	if m.HTML == "" {
-		return m.buildSinglePart(date)
-	}
-	id := MessageID(m.EnvelopeID, m.From)
 	var b bytes.Buffer
 	b.WriteString("From: " + m.From + "\r\n")
 	b.WriteString("To: " + m.To + "\r\n")
-	b.WriteString("Subject: " + m.Subject + "\r\n")
-	b.WriteString("Date: " + HeaderDate(date) + "\r\n")
-	b.WriteString("Message-Id: " + id + "\r\n")
-	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: multipart/alternative; boundary=\"signsrv1\"\r\n")
-	b.WriteString("\r\n")
-	b.WriteString("--signsrv1\r\n")
-	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-	b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-	b.WriteString(EncodeQP(m.Text))
-	b.WriteString("\r\n--signsrv1\r\n")
-	b.WriteString("Content-Type: text/html; charset=utf-8\r\n")
-	b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-	b.WriteString(EncodeQP(m.HTML))
-	b.WriteString("\r\n--signsrv1--\r\n")
-	return b.Bytes()
-}
-
-// The two boundaries a message with attachments needs.
-const (
-	altBoundary   = "signsrv1"
-	mixedBoundary = "signsrv2"
-)
-
-// buildMixed writes a message with attachments: an outer multipart/mixed
-// holding the alternative text/html pair, then one base64 part per file.
-// Base64 is what attachments require (a PDF is not 7-bit safe) and the encoded
-// lines stay under 76 characters so no relay rejects them.
-func (m *Message) buildMixed(date time.Time) []byte {
-	var b bytes.Buffer
-	b.WriteString("From: " + m.From + "\r\n")
-	b.WriteString("To: " + m.To + "\r\n")
-	b.WriteString("Subject: " + m.Subject + "\r\n")
+	b.WriteString("Subject: " + EncodeSubject(m.Subject) + "\r\n")
 	b.WriteString("Date: " + HeaderDate(date) + "\r\n")
 	b.WriteString("Message-Id: " + MessageID(m.EnvelopeID, m.From) + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: multipart/mixed; boundary=\"" + mixedBoundary + "\"\r\n\r\n")
-
-	// Part 1: the message body, as an alternative pair when there is HTML.
-	b.WriteString("--" + mixedBoundary + "\r\n")
-	if m.HTML != "" {
-		b.WriteString("Content-Type: multipart/alternative; boundary=\"" + altBoundary + "\"\r\n\r\n")
-		b.WriteString("--" + altBoundary + "\r\n")
-		b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-		b.WriteString(EncodeQP(m.Text))
-		b.WriteString("\r\n--" + altBoundary + "\r\n")
-		b.WriteString("Content-Type: text/html; charset=utf-8\r\n")
-		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-		b.WriteString(EncodeQP(m.HTML))
-		b.WriteString("\r\n--" + altBoundary + "--\r\n")
-	} else {
-		b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-		b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-		b.WriteString(EncodeQP(m.Text))
+	if len(m.Files) == 0 {
+		b.WriteString("Content-Type: " + bodyContentType(m) + "\r\n")
+		b.WriteString("Content-Transfer-Encoding: 8bit\r\n")
 		b.WriteString("\r\n")
+		b.WriteString(bodyText(m))
+		b.WriteString("\r\n")
+		return b.Bytes()
 	}
-
-	// The remaining parts: one per attachment.
+	b.WriteString("Content-Type: multipart/mixed; boundary=\"" + mixedBoundary + "\"\r\n\r\n")
+	b.WriteString("--" + mixedBoundary + "\r\n")
+	b.WriteString("Content-Type: " + bodyContentType(m) + "\r\n")
+	b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+	b.WriteString(bodyText(m))
+	b.WriteString("\r\n")
 	for _, f := range m.Files {
 		name := sanitizeFilename(f.Name)
 		ct := f.Type
@@ -174,8 +135,32 @@ func (m *Message) buildMixed(date time.Time) []byte {
 	return b.Bytes()
 }
 
-// wrapBase64 encodes bytes as base64 in lines of at most 76 characters, which
-// is what MIME asks for and what relays expect to see.
+// bodyContentType is the Content-Type of the single body part: an HTML body is
+// sent as text/html, because that is the part a mail client renders as a link
+// the signer can tap. A message with no HTML body (a reminder, a cancellation,
+// the signed copy) is sent as the text, as text/plain.
+func bodyContentType(m *Message) string {
+	if m.HTML != "" {
+		return htmlContentType
+	}
+	return textContentType
+}
+
+// bodyText is the body itself, written as itself with no transfer encoding.
+func bodyText(m *Message) string {
+	if m.HTML != "" {
+		return m.HTML
+	}
+	return m.Text
+}
+
+const (
+	htmlContentType = "text/html; charset=utf-8"
+	textContentType = "text/plain; charset=utf-8"
+	mixedBoundary   = "signsrv2"
+)
+
+// wrapBase64 writes base64 in lines of 76 characters, as MIME asks.
 func wrapBase64(data []byte) string {
 	enc := base64.StdEncoding.EncodeToString(data)
 	var out strings.Builder
@@ -217,83 +202,32 @@ func sanitizeFilename(name string) string {
 	return out
 }
 
-func (m *Message) buildSinglePart(date time.Time) []byte {
-	var b bytes.Buffer
-	b.WriteString("From: " + m.From + "\r\n")
-	b.WriteString("To: " + m.To + "\r\n")
-	b.WriteString("Subject: " + m.Subject + "\r\n")
-	b.WriteString("Date: " + HeaderDate(date) + "\r\n")
-	b.WriteString("Message-Id: " + MessageID(m.EnvelopeID, m.From) + "\r\n")
-	b.WriteString("MIME-Version: 1.0\r\n")
-	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-	b.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-	b.WriteString(EncodeQP(m.Text))
-	b.WriteString("\r\n")
-	return b.Bytes()
+// EncodeSubject returns a Subject header field that a mail client reads back
+// whole. A subject that is printable ASCII with no embedded newline is already
+// a valid field and is written as itself. Anything else — a non-ASCII character
+// from a name like Patrick or Müller, a character a caller did not sanitize —
+// becomes the base64 form the standard defines, =?UTF-8?B?...?=, so no
+// character in a header can end the field. A header field is not a place user
+// data gets to run.
+func EncodeSubject(s string) string {
+	if isSafeHeader(s) {
+		return s
+	}
+	return "=?UTF-8?B?" + base64.StdEncoding.EncodeToString([]byte(s)) + "?="
 }
 
-// EncodeQP writes printable ASCII as itself, CR and LF as the line breaks,
-// and every other byte as =XX. Lines are kept under 76 characters.
-func EncodeQP(s string) string {
-	var out strings.Builder
-	line := 0
+// isSafeHeader reports whether a string can be a header value as it is:
+// printable ASCII, and no line break in any form.
+func isSafeHeader(s string) bool {
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == '\n':
-			out.WriteString("\r\n")
-			line = 0
-		case c == '\r':
-			continue
-		case c >= 32 && c <= 126:
-			// Printable ASCII is written as itself. A space that ends a line
-			// is encoded, because a mail client may strip it.
-			if c == ' ' && i+1 < len(s) && s[i+1] == '\n' {
-				out.WriteString("=20")
-				line += 3
-				continue
-			}
-			out.WriteByte(c)
-			line++
-		default:
-			out.WriteString(fmt.Sprintf("=%02X", c))
-			line += 3
-		}
-		// The soft break goes at a word boundary, so a URL, a SHA-256, and a
-		// quoted-printable escape are never split. QP recommends lines under
-		// 76 characters; breaking inside a word would corrupt the link, which
-		// is the value the message exists to carry.
-		if line > 75 && c == ' ' {
-			out.WriteString("=\r\n")
-			line = 0
+		if s[i] < 32 || s[i] > 126 {
+			return false
 		}
 	}
-	return out.String()
+	return true
 }
 
-// DecodeQP is the inverse, used by the parser and by tests that read a
-// quoted-printable body back.
-func DecodeQP(s string) string {
-	s = strings.ReplaceAll(s, "=\r\n", "")
-	var out strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == '=' && i+2 < len(s) {
-			var v int
-			if n, _ := fmt.Sscanf(s[i:i+3], "=%02X", &v); n == 1 {
-				out.WriteByte(byte(v))
-				i += 2
-				continue
-			}
-		}
-		out.WriteByte(s[i])
-	}
-	return out.String()
-}
-
-// FileSender writes each message as an .eml file in a directory. This is the
-// dev sender (SIGNSRV_DEV=1), and the test sender. The file is a complete RFC
-// 822 message, so any client can open it, which is what makes it usable as
-// proof in acceptance.
+// FileSender writes the message to a file, for dev mode and for tests.
 type FileSender struct {
 	Dir string
 }
@@ -400,31 +334,45 @@ func (s *SMTPSender) Send(ctx context.Context, m *Message) error {
 	return w.Close()
 }
 
-// Parse reads a complete message back. A test uses it to check that a sent
-// file is a valid message with the link inside it, rather than grepping a
-// string that could appear in any part of the file.
+// Parse reads a complete message back. A test uses it to check that a sent file
+// is a valid message with the link inside it, rather than grepping a string
+// that could appear in any part of the file.
 func Parse(raw []byte) (*Message, map[string]string, error) {
+	headers, _, ok := parseHeaders(raw)
+	if !ok {
+		return nil, nil, errors.New("signmail: message has no header/body separator")
+	}
 	text, html, files, ok := splitMIME(raw)
 	if !ok {
-		return nil, nil, errors.New("signmail: message has no text body")
-	}
-	headers, _, _ := parseHeaders(raw)
-	if headers["To"] == "" {
-		return nil, nil, errors.New("signmail: message has no To header")
+		return nil, nil, errors.New("signmail: message body is not text")
 	}
 	return &Message{
 		To:      headers["To"],
 		From:    headers["From"],
-		Subject: headers["Subject"],
-		Text:    strings.TrimSpace(text),
+		Subject: DecodeSubject(headers["Subject"]),
 		HTML:    strings.TrimSpace(html),
+		Text:    strings.TrimSpace(text),
 		Files:   files,
 	}, headers, nil
 }
 
+// DecodeSubject is the inverse of EncodeSubject: the base64 form is decoded,
+// anything else is returned as it is.
+func DecodeSubject(v string) string {
+	v = strings.TrimSpace(v)
+	if !strings.HasPrefix(v, "=?UTF-8?B?") || !strings.HasSuffix(v, "?=") {
+		return v
+	}
+	enc := v[len("=?UTF-8?B?") : len(v)-len("?=")]
+	if raw, err := base64.StdEncoding.DecodeString(enc); err == nil {
+		return string(raw)
+	}
+	return v
+}
+
 // splitHead separates a MIME part into its headers and its RAW body: no
-// transfer decoding. parseHeaders decodes quoted-printable, which is right for
-// a text body and wrong for a base64 one, so the walker needs the bytes as
+// transfer decoding. parseHeaders decodes a transfer encoding, which is right
+// for a text body and wrong for a base64 one, so the walker needs the bytes as
 // they were written.
 func splitHead(raw []byte) (map[string]string, []byte, bool) {
 	i := bytes.Index(raw, []byte("\r\n\r\n"))
@@ -452,13 +400,13 @@ func splitHead(raw []byte) (map[string]string, []byte, bool) {
 	return h, raw[i+4:], true
 }
 
-// splitMIME returns the text/plain and text/html bodies. A single-part
-// message has no boundary, so parseHeaders of the whole message finds the
-// text body and ok is true.
+// splitMIME returns the text/html body, the plain text when the message carries
+// one, and any attachments. A single-part message has no boundary, so
+// parseHeaders of the whole message finds the body and ok is true.
 func splitMIME(raw []byte) (text, html string, files []File, ok bool) {
 	// Walk the boundaries rather than splitting on one of them: an attached
-	// document nests the alternative pair inside a multipart/mixed, and a single
-	// boundary split would see the outer part and miss the bodies.
+	// document nests the body part inside a multipart/mixed, and a single
+	// boundary split would see the outer part and miss the body.
 	var walk func(part []byte)
 	walk = func(part []byte) {
 		h, body, found := splitHead(part)
@@ -475,15 +423,17 @@ func splitMIME(raw []byte) (text, html string, files []File, ok bool) {
 			for _, sub := range strings.Split(string(body), "--"+boundary) {
 				walk([]byte(sub))
 			}
-		case strings.HasPrefix(ct, "text/plain"):
-			text = DecodeQP(string(body))
-			ok = true
 		case strings.HasPrefix(ct, "text/html"):
-			html = DecodeQP(string(body))
+			html = string(body)
+			ok = true
+		case strings.HasPrefix(ct, "text/plain"):
+			text = string(body)
+			ok = true
 		default:
 			// An attachment: base64 bytes, named by the Content-Disposition the
-			// builder writes. The body is taken raw — quoted-printable decoding
-			// would eat the "=" padding and any "=XX" sequence inside the base64.
+			// builder writes. The body is taken raw — decoding a transfer
+			// encoding would eat the "=" padding and any "=XX" sequence inside
+			// the base64.
 			name := filenameOf(h["Content-Disposition"])
 			if name == "" || !strings.EqualFold(strings.TrimSpace(h["Content-Transfer-Encoding"]), "base64") {
 				return
@@ -500,89 +450,83 @@ func splitMIME(raw []byte) (text, html string, files []File, ok bool) {
 			if err != nil {
 				return
 			}
-			files = append(files, File{Name: name, Type: mediaTypeOf(ct), Data: data})
+			files = append(files, File{Name: name, Type: mediaTypeOf(h["Content-Type"]), Data: data})
 		}
 	}
 	walk(raw)
 	return text, html, files, ok
 }
 
-// boundaryOf reads the boundary parameter out of a Content-Type value.
+// boundaryOf is the boundary parameter of a multipart Content-Type.
 func boundaryOf(ct string) string {
-	i := strings.Index(strings.ToLower(ct), "boundary=")
-	if i < 0 {
-		return ""
+	for _, p := range strings.Split(ct, ";") {
+		k, v, found := strings.Cut(strings.TrimSpace(p), "=")
+		if !found || k != "boundary" {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(v), `"`)
 	}
-	v := strings.Trim(strings.TrimSpace(ct[i+len("boundary="):]), `";`)
-	if j := strings.IndexAny(v, "; "); j >= 0 {
-		v = v[:j]
-	}
-	return v
+	return ""
 }
 
-// filenameOf reads the filename parameter of a Content-Disposition header.
+// filenameOf is the filename parameter of a Content-Disposition.
 func filenameOf(cd string) string {
-	i := strings.Index(strings.ToLower(cd), "filename=")
-	if i < 0 {
-		return ""
+	for _, p := range strings.Split(cd, ";") {
+		k, v, found := strings.Cut(strings.TrimSpace(p), "=")
+		if !found || (k != "filename" && k != "name") {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(v), `"`)
 	}
-	return strings.Trim(strings.TrimSpace(cd[i+len("filename="):]), `";`)
+	return ""
 }
 
-// mediaTypeOf drops the parameters from a Content-Type value.
+// mediaTypeOf is the type of a Content-Type, without its parameters.
 func mediaTypeOf(ct string) string {
-	if i := strings.IndexAny(ct, ";"); i >= 0 {
-		return strings.TrimSpace(ct[:i])
-	}
-	return strings.TrimSpace(ct)
+	k, _, _ := strings.Cut(strings.TrimSpace(ct), ";")
+	return strings.TrimSpace(k)
 }
 
-// parseHeaders reads the header block of a message or a MIME part.
 func parseHeaders(raw []byte) (map[string]string, string, bool) {
-	i := bytes.Index(raw, []byte("\r\n\r\n"))
-	if i < 0 {
+	h, body, ok := splitHead(raw)
+	if !ok {
 		return nil, "", false
 	}
-	h := map[string]string{}
-	for _, line := range strings.Split(string(raw[:i]), "\r\n") {
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, " ") {
-			if len(h) > 0 {
-				last := lastIndex(h)
-				h[last] += strings.TrimSpace(line)
+	text := string(body)
+	if strings.EqualFold(strings.TrimSpace(h["Content-Transfer-Encoding"]), "base64") {
+		payload := strings.Map(func(r rune) rune {
+			if r == '\n' || r == '\r' {
+				return -1
 			}
-			continue
+			return r
+		}, text)
+		if raw, err := base64.StdEncoding.DecodeString(payload); err == nil {
+			text = string(raw)
 		}
-		k, v, found := strings.Cut(line, ":")
-		if !found {
-			continue
-		}
-		h[textproto.CanonicalMIMEHeaderKey(k)] = strings.TrimSpace(v)
 	}
-	return h, DecodeQP(string(raw[i+4:])), true
+	return h, text, true
 }
 
 func lastIndex(m map[string]string) string {
-	var s string
+	var last string
 	for k := range m {
-		s = k
+		last = k
 	}
-	return s
+	return last
 }
 
 // MaxBodyBytes is the cap on a rendered body, so a long document title cannot
-// make a message the size of a PDF.
+// make the service build a message of any size.
 const MaxBodyBytes = 16000
 
 var emailRe = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 
-// ValidAddress is the check applied before sending.
+// ValidAddress is the address check the queue and the API share.
 func ValidAddress(a string) bool { return emailRe.MatchString(a) }
 
-// BackoffFor is the delay after an attempt: 1 minute, 5, 15, 1 hour. The
-// fifth attempt is the last, so its backoff is never used.
+// BackoffFor is the delay before the next attempt for one message: 1, 5, 30,
+// 120 minutes. The table is short because a relay that is down for two hours is
+// an outage, not a queue to keep working through.
 func BackoffFor(attempt int) time.Duration {
 	switch attempt {
 	case 0:
@@ -590,12 +534,12 @@ func BackoffFor(attempt int) time.Duration {
 	case 1:
 		return 5 * time.Minute
 	case 2:
-		return 15 * time.Minute
+		return 30 * time.Minute
 	default:
-		return time.Hour
+		return 120 * time.Minute
 	}
 }
 
-// MaxAttempts is the number of sends per message. After the fifth failure the
-// row is given up, not retried.
+// MaxAttempts is the number of deliveries tried for one message before the row
+// is recorded as failed.
 const MaxAttempts = 5

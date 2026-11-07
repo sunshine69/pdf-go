@@ -126,24 +126,79 @@ func TestMessageIDShape(t *testing.T) {
 	}
 }
 
-// Signoff: quoted-printable, non-ASCII encoded, lines under 76 characters.
-func TestQuotedPrintable(t *testing.T) {
-	body := "Patrick Müller café\nline"
-	enc := EncodeQP(body)
-	if !strings.Contains(enc, "=C3") {
-		t.Fatalf("non-ASCII is not quoted-printable: %q", enc)
+// Signoff: the body is one part, 8bit, with the link unbroken. The rule this
+// replaces (quoted-printable, lines under 76 characters) is the one that put a
+// soft break inside a signing link, so the assertion is the opposite: a long
+// line is required to exist, and no "=" may appear inside the link.
+func TestBodyIsOnePart8bitWithUnbrokenLink(t *testing.T) {
+	r := newRenderer(t)
+	d := inviteData()
+	d.Link = "https://pdfsign.kaykraft.org/s/" + strings.Repeat("a", 64)
+	d.Title = "Patrick Müller café"
+	text, html, err := r.Render(d)
+	if err != nil {
+		t.Fatalf("render: %v", err)
 	}
-	if !strings.Contains(enc, "Patrick M=C3=BCller") {
-		t.Fatalf("expected M=C3=BCller, got %q", enc)
+	m := &Message{Kind: "invite", EnvelopeID: "e1", PartyID: "p1",
+		To: "patrick@example.test", From: "b@x.test", Subject: SubjectFor(d),
+		Text: text, HTML: html}
+	raw := string(m.Build(time.Now().UTC()))
+	if !strings.Contains(raw, "Content-Type: text/html; charset=utf-8\r\n") {
+		t.Fatalf("body is not declared text/html:\n%s", raw)
 	}
-	for _, line := range strings.Split(enc, "\r\n") {
-		if len(line) > 76 {
-			t.Fatalf("line of %d chars: %q", len(line), line)
+	if !strings.Contains(raw, "Content-Transfer-Encoding: 8bit\r\n") {
+		t.Fatalf("body is not 8bit:\n%s", raw)
+	}
+	if strings.Contains(raw, "multipart/alternative") {
+		t.Fatal("message is multipart/alternative; the HTML part can be ignored")
+	}
+	if !strings.Contains(raw, d.Link) {
+		t.Fatalf("link is not in the message in full:\n%s", raw)
+	}
+	bodyOnly := raw[strings.Index(raw, "\r\n\r\n")+4:]
+	if strings.Contains(bodyOnly, "=\r\n") {
+		t.Fatal("a quoted-printable soft break is in the body")
+	}
+	// The href attribute is one string: the anchor line has the link between
+	// the quotes with nothing in it.
+	href := `href="` + d.Link + `"`
+	if !strings.Contains(raw, href) {
+		t.Fatalf("href is not the link in full:\n%s", raw)
+	}
+	// A long line is expected, not wrapped. A wrapped body is the failure.
+	long := false
+	for _, line := range strings.Split(raw, "\r\n") {
+		if strings.Contains(line, d.Link) && len(line) > 76 {
+			long = true
 		}
 	}
-	// QP encodes LF as CRLF, so the decoded body is the canonical form.
-	if DecodeQP(enc) != strings.ReplaceAll(body, "\n", "\r\n") {
-		t.Fatalf("round trip failed: %q", DecodeQP(enc))
+	if !long {
+		t.Fatal("the link line was wrapped")
+	}
+}
+
+// Signoff: a subject with a non-ASCII character is sent in the encoded word
+// form, so no header carries a byte a relay can drop, and it reads back as it
+// was written.
+func TestSubjectHeaderEncoding(t *testing.T) {
+	if got := EncodeSubject("Signature requested: Lease 2026"); got != "Signature requested: Lease 2026" {
+		t.Fatalf("plain subject changed: %q", got)
+	}
+	enc := EncodeSubject("Signature requested: Patrick Müller café")
+	if !strings.HasPrefix(enc, "=?UTF-8?B?") || !strings.HasSuffix(enc, "?=") {
+		t.Fatalf("non-ASCII subject not encoded: %q", enc)
+	}
+	if DecodeSubject(enc) != "Signature requested: Patrick Müller café" {
+		t.Fatalf("round trip: %q", DecodeSubject(enc))
+	}
+	// A subject with a line break cannot be a header field at all.
+	if strings.Contains(EncodeSubject("a\r\nBcc: x@y.test"), "\r\n") {
+		t.Fatal("a subject can inject a header line")
+	}
+	m := &Message{Kind: "invite", EnvelopeID: "e1", To: "a@x.test", From: "b@x.test",
+		Subject: "Lease Müller", Text: "body"}
+	if !strings.Contains(string(m.Build(time.Now().UTC())), "Subject: =?UTF-8?B?") {
+		t.Fatal("message header does not encode the subject")
 	}
 }
 
@@ -168,11 +223,11 @@ func TestDevOutboxFileParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if headers["Content-Type"] != "multipart/alternative; boundary=\"signsrv1\"" {
+	if headers["Content-Type"] != "text/html; charset=utf-8" {
 		t.Fatalf("Content-Type %q", headers["Content-Type"])
 	}
-	if msg.Text == "" || !strings.Contains(msg.Text, d.Link) {
-		t.Fatalf("parsed text body has no link:\n%s", msg.Text)
+	if msg.HTML == "" || !strings.Contains(msg.HTML, d.Link) {
+		t.Fatalf("parsed html body has no link:\n%s", msg.HTML)
 	}
 	if !strings.Contains(msg.HTML, d.Link) {
 		t.Fatal("parsed html body has no link")

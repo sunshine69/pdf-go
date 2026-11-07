@@ -27,7 +27,9 @@ signsrv.example.org {
 		# it means a cached response carries them even when signsrv is down.
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"
-		X-Frame-Options "DENY"
+		# SAMEORIGIN: the signing page frames the document it shows, from this
+		# same origin. DENY blocks that frame.
+		X-Frame-Options "SAMEORIGIN"
 	}
 
 	# A request body over the upload limit is refused at the edge, so the
