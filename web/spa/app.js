@@ -9,6 +9,7 @@ const state = {
   token: tokenFromPath(),
   view: "claim",
   opened: false,     // the document view was opened at least once
+  resultKey: "",     // which result copy to show when the view is re-rendered
   claimed: false,
   envelope: null,
 };
@@ -75,14 +76,14 @@ async function handle(res) {
       const body = await safeJSON(res);
       state.envelope = await fetchEnvelope();
       render();
-      if (state.envelope && closedStatus(state.envelope.status)) return resultView("closed");
+      if (state.envelope && closedStatus(state.envelope.status)) return renderResult("closed");
       show(body && body.error ? body.error.message : "Reload, the document changed.");
       return null;
     }
     case 410:
       state.view = "result";
       render();
-      return resultView("expired");
+      return renderResult("expired");
     case 429: {
       const secs = parseInt(res.headers.get("Retry-After") || "30", 10);
       show("Too many attempts. Try again in " + secs + "s.");
@@ -129,7 +130,7 @@ function render() {
     case "claim": renderClaim(); break;
     case "document": renderDocument(); break;
     case "consent": renderConsent(); break;
-    case "result": renderResult(); break;
+    case "result": renderResult(state.resultKey); break;
   }
 }
 
@@ -210,23 +211,33 @@ function renderDocument() {
   app.appendChild(el("h1", env.title || "Document"));
   app.appendChild(countdown(env.expires_at));
 
-  const frame = el("iframe");
-  frame.title = "Document to review";
-  frame.src = "/api/v1/sign/" + state.token + "/document";
-  app.appendChild(frame);
+  // Chrome on Android does not render a PDF inside a frame: the box comes up
+  // blank with no explanation, and a refresh after it does not help. A device
+  // with a coarse pointer is asked to open the document in its own viewer or
+  // download it; a desktop gets the frame inline.
+  const phone = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+  const docURL = "/api/v1/sign/" + state.token + "/document";
+  if (!phone) {
+    const frame = el("iframe");
+    frame.title = "Document to review";
+    frame.src = docURL;
+    app.appendChild(frame);
+  }
 
+  const links = el("div", undefined, "row");
+  const open = el("a", "Open the document", "primary");
+  open.href = docURL;
+  open.target = "_blank";
+  open.rel = "noopener";
   const dl = el("a", "Download to review");
-  dl.href = "/api/v1/sign/" + state.token + "/document";
+  dl.href = docURL;
   dl.setAttribute("download", "");
-  app.appendChild(dl);
-  app.appendChild(el("p", "The document in the frame is the copy your consent will be about.", "muted"));
-  // Some phone browsers show an empty frame. The download is the same bytes,
-  // so the review can happen outside the page and the signing still happens
-  // here. The page is deliberately explicit about it rather than leaving the
-  // signer with a blank box and no instruction.
-  app.appendChild(el("div",
-    "If the frame above is blank on your device: press Download to review, open the PDF that is saved, then return to this page and continue. Downloading does not sign anything.",
-    "notice"));
+  links.appendChild(open);
+  links.appendChild(dl);
+  app.appendChild(links);
+  app.appendChild(el("div", phone
+    ? "Your device does not show the document inside this page. Open or download the PDF, read it, then come back to this page and continue. Neither button signs anything."
+    : "The document in the frame is the copy your consent will be about.", "notice"));
 
   renderParties(env.parties);
 
@@ -273,12 +284,35 @@ function renderConsent() {
   const env = state.envelope;
   if (!env) { fetchEnvelope().then(() => state.envelope && render()); return; }
 
+  const mine = env.my || {};
+  // A party that already answered, or a request that is closed, has no form to
+  // fill: there is no re-consent path. Showing the panel anyway produces a
+  // form whose Sign can never enable, which reads as a broken page. The record
+  // of the decision is shown instead.
+  if (closedStatus(env.status) || mine.status === "consented" || mine.status === "declined" ||
+      mine.status === "expired") {
+    renderResult(mine.status === "declined" ? "declined" :
+      (closedStatus(env.status) ? "closed" : "consented"));
+    return;
+  }
+
   clearMessage();
   app.appendChild(el("h1", "Your consent"));
 
-  const mine = env.my || {};
   app.appendChild(el("p", "You are signing as " + (mine.name || "the invited party")));
   app.appendChild(el("p", "You are reviewing document " + shortSHA(env.document_sha) + ".", "muted"));
+
+  // The review view is always reachable again: a phone that opened the document
+  // and reloaded must not be stranded here with no way back to the copy it is
+  // consenting about.
+  const back = el("a", "Back to the document");
+  back.href = "#";
+  back.addEventListener("click", (e) => {
+    e.preventDefault();
+    state.view = "document";
+    render();
+  });
+  app.appendChild(back);
 
   // A read-only display of the signature text, then the textarea that feeds it.
   const nameField = el("label", "Your typed signature (your name)")
@@ -306,14 +340,23 @@ function renderConsent() {
     readFile(f);
   });
 
+  // The box and its words are joined by for/id, not by nesting a box inside a
+  // label: on a phone a nested label can swallow the tap, so the box looks
+  // ticked while the consent flag never fires.
   const check = el("div", undefined, "checkline");
   const box = el("input");
   box.type = "checkbox";
+  box.id = "consent-box";
   box.checked = false;
+  box.setAttribute("aria-describedby", "consent-hint");
   const label = el("label", "I have read the document and agree to sign it electronically. My typed name above is my signature.");
+  label.htmlFor = "consent-box";
   check.appendChild(box);
   check.appendChild(label);
   app.appendChild(check);
+  const hint = el("div", "Sign stays disabled until the name is typed and this box is ticked.", "muted");
+  hint.id = "consent-hint";
+  app.appendChild(hint);
 
   const row = el("div", undefined, "row");
   const agree = el("button", "Sign", "primary");
@@ -330,7 +373,11 @@ function renderConsent() {
     agree.disabled = !(textarea.value.trim().length > 0 && box.checked && state.opened);
   };
   textarea.addEventListener("input", sync);
+  // Some mobile browsers fire input and not change on a box, so both are
+  // listened to and the state is read from the box rather than from the event.
   box.addEventListener("change", sync);
+  box.addEventListener("input", sync);
+  sync();
 
   agree.addEventListener("click", async () => {
     const body = {
@@ -376,12 +423,15 @@ function shortSHA(sha) {
 
 function renderResult(which) {
   state.view = "result";
+  if (which) state.resultKey = which;
+  which = which || state.resultKey;
   clear();
   const copy = {
     consented: "Your agreement is recorded. The document is signed and sent to everyone once all parties have agreed.",
     expired: "This link has expired. Ask for a new one.",
     closed: "This request is closed. Nothing is signed.",
     delivered: "The signed document is available.",
+    declined: "You declined this document. Nothing is signed. Ask the sender for a new request if you changed your mind.",
   };
   app.appendChild(el("h1", "Thank you"));
   app.appendChild(el("p", copy[which] || copy.closed));
@@ -411,7 +461,18 @@ function closedStatus(status) {
   // the record of its own consent.
   state.claimed = Boolean(state.envelope.my);
   if (!state.claimed) { state.view = "claim"; render(); return; }
+  const mine = state.envelope.my;
+  const answered = mine.status === "consented" || mine.status === "declined" || mine.status === "expired";
+  // A reload must land where the party last was, not past it. A party that has
+  // not answered gets the review view again, so refreshing can never jump into
+  // the consent panel and leave no way back. A party that answered, or a
+  // request that is closed, gets the record of that decision: there is no
+  // second consent to give.
+  if (closedStatus(state.envelope.status) || answered) {
+    renderResult(answered ? mine.status : "closed");
+    return;
+  }
   const reviewing = state.envelope.status === "sent" || state.envelope.status === "collecting";
-  state.view = reviewing && state.envelope.my.status === "invited" ? "document" : "consent";
+  state.view = reviewing ? "document" : "consent";
   render();
 })();

@@ -200,6 +200,28 @@ func TestSubjectHeaderEncoding(t *testing.T) {
 	if !strings.Contains(string(m.Build(time.Now().UTC())), "Subject: =?UTF-8?B?") {
 		t.Fatal("message header does not encode the subject")
 	}
+
+}
+
+// The invite has to tell the signer what to do when the signing page cannot
+// show the document on their device, because on some phone browsers the frame
+// is empty and the page still has to be signed. The instruction is in both the
+// text and the HTML body.
+func TestInviteCarriesTheDownloadFallbackLine(t *testing.T) {
+	r := newRenderer(t)
+	d := inviteData()
+	text, html, err := r.Render(d)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, body := range []struct{ what, s string }{{"text", text}, {"html", html}} {
+		if !strings.Contains(strings.ToLower(body.s), "download") {
+			t.Fatalf("%s body does not mention the Download fallback:\n%s", body.what, body.s)
+		}
+	}
+	if strings.Contains(text, "<") {
+		t.Fatalf("the fallback line put markup in the text body:\n%s", text)
+	}
 }
 
 // Signoff: a dev outbox message parses as a valid RFC 2822 message with the

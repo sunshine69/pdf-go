@@ -14,7 +14,16 @@ Routes served by the binary:
 
 ```
 GET /s/{token}                 -> web/spa (index.html), token stays in the URL
-GET /assets/spa/*              -> app.js, app.css   (Cache-Control: public, max-age=3600)
+GET /s/{token}                 -> web/spa (index.html), token stays in the URL
+GET /assets/spa/*              -> app.js, app.css   (Cache-Control: public, max-age=0,
+                                                      must-revalidate, ETag of the file body)
+```
+
+index.html is served `no-store` and its asset references are rewritten at serve
+time to carry a version: `/assets/spa/app.js?v=<sha256 of that file>`. A phone
+that cached an older build cannot reuse it, because the URL the page now asks
+for is not the URL it cached, so a deploy shows up on the next open without a
+hard refresh. The versioned URL maps to the same embedded file.
 ```
 
 State machine in `app.js` (four views, one file, ~300 lines max):
@@ -22,10 +31,15 @@ State machine in `app.js` (four views, one file, ~300 lines max):
 1. **claim** — shown when `GET /sign/{token}/envelope` returns 401. One email
    input, prefilled empty, "I am signing as the person this link was sent to".
    `POST claim` -> on success re-fetch envelope.
-2. **document** — `<iframe src="/api/v1/sign/{token}/document">` when the browser
-   can render PDFs, plus a "Download to review" link (the iframe is not the
-   consent: the checkbox below is). Party list with each party's order and
-   status. Countdown of `expires_at`.
+2. **document** — the review view, and the view every reload of an unanswered
+   request lands on. `<iframe src="/api/v1/sign/{token}/document">` on a device
+   that renders PDFs in a frame; a device with a coarse pointer (`matchMedia
+   ("pointer: coarse)")` does not, which is Chrome on Android) gets no frame at
+   all, because the frame would come up blank with no explanation. Both get
+   "Open the document" (the same URL, new tab) and "Download to review".
+   Neither is the consent: the checkbox on the consent panel is. A "I have
+   reviewed it: continue" button is the only way to the consent panel. Party
+   list with each party's order and status. Countdown of `expires_at`.
 3. **consent** — the consent panel (the party records agreement, no PDF is
    touched at this point):
    - name display (read-only, from the server: `You are signing as Ann Miller`)
