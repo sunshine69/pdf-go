@@ -1,0 +1,66 @@
+MANUAL RUN — "the new way", by hand: build, serve, log in, mint the key,
+prepare a ONE-party request, send it. Produced by scripts/manual-one-party.sh.
+Environment: go1.27.1, linux, no network beyond loopback. The service, the CLI
+and the TSA mock are the three binaries built from this tree.
+
+Every line below is the service's real answer, not a paraphrase. Work dir
+/tmp/manual; the server stayed up on 127.0.0.1:47085 after the script ended.
+
+  ok  build: signsrv, pdf-go, mock-tsa — three binaries from ./cmd
+  ok  config: one env file, mode 0600, listen 127.0.0.1:<free>, dev = true,
+      tsa_url http://127.0.0.1:5193/tsr. admin_password is NOT in the file: the
+      admin's password is set by the operator's own `admin add`, so the config
+      file does not carry a login credential
+  ok  checkconfig exits 0 with secrets masked; migrate prints the version and
+      runs integrity_check
+  ok  cmd/mock-tsa: a real RFC 3161 responder — parses the TSR, echoes the
+      nonce and policy, signs the imprint, embeds a self-signed CA certificate
+      carrying id-kp-timeStamping. The e2e harness has this as in-process code
+      and nothing else did, so an offline signing run outside the harness was
+      impossible. It is local-only by construction (fresh certificate, no log)
+  ok  GET /healthz -> {"status":"ok","version":"0.1.0"}
+  ok  admin add ana@manual.test (password from SIGNSRV_ADMIN_PASSWORD, not from
+      argv, so it never reaches the process list)
+  ok  POST /api/v1/auth/login {"email","password"} -> HTTP 200,
+      role admin, scopes [admin:read], expires_in 900. The access token is a
+      352-byte compact JWT. POST auth/token with {"user","password"} is 400:
+      the only JSON login is one username and one password
+  ok  signsrv client add manual-cli envelope:write envelope:read -> key printed
+      once (69 bytes), store keeps the digest
+  ok  pdf-go envelope create -server ... -token-env E2E_CLIENT_KEY -insecure
+      -title ... -expires 72h -spec fill.json -parties parties.json sample2.pdf
+      -> status ready, 6 fields applied, 0 missing, one link minted,
+      links.json written mode 0600 with the remove-it note on stderr
+  ok  pdf-go envelope send <id> -> status sent, the LIVE link for ana@manual.test
+      (create's token is the undelivered one; send is what mints the real link)
+  ok  POST auth/token {"key"} -> role client, scopes [envelope:write,
+      envelope:read], expires_in 900 — the key is the credential, the token is
+      what rides on a call
+  ok  GET /api/v1/envelopes/<id> as the client -> status sent, title
+      "Acme supply agreement", parties [{ana@manual.test: invited}],
+      document_sha a24c0738…, 3 revisions, 4 events
+  ok  the worker rendered the invitation: outbox/invite-<envelope>-<party>.eml,
+      To: ana@manual.test, carrying the /s/<token> signing link
+  ok  GET /api/v1/sign/<token>/envelope (the party's view) -> title, expires_at,
+      remaining_secs, all_consented false. Before the claim the view is the
+      title and the deadline only: no document, no party list
+  ok  POST /api/v1/sign/<token>/claim {"email"} -> HTTP 200, session cookie set,
+      the party moves invited -> claimed, so the signing page is armed. Open
+      http://127.0.0.1:47085/s/<token> and the consent screen is there
+  ok  18 structured log lines, no Bearer token, no client key, no password,
+      no link token in any of them
+
+PREPARED TO SIGN, not signed: the signing itself is the browser's consent, and
+this run stopped where the request was asked to stop — one party, sent, armed,
+link in hand.
+
+Two things this run surfaced, both recorded in docs/build-and-test.md §4.2 as
+gaps rather than papered over:
+  - the party view of a signed request has no party list, so a check that wants
+    "what is the state of this party" must read the admin view; the shape is
+    asymmetric by design (the party is shown only itself) and no test says so
+  - the create response's link token is not the live one; every test that signs
+    a link has to read the send's. No package test states this
+
+The 3 pre-existing negatives failures are untouched by this run: this script
+does not exercise them, and the last full harness run remains 18/18 green.

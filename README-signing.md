@@ -8,9 +8,16 @@ against the config in `tmp/`.
 ## Build
 
 ```sh
-go build -o tmp/signsrv ./cmd/signsrv
-go build -o tmp/pdf-go  ./cmd/pdf-go
+go build -o tmp/signsrv  ./cmd/signsrv
+go build -o tmp/pdf-go   ./cmd/pdf-go
+go build -o tmp/mock-tsa ./cmd/mock-tsa   # optional: a local TSA, for offline runs
 ```
+
+`cmd/mock-tsa` is a development RFC 3161 responder: point `tsa_url` at it and a
+signing run needs no network. It mints a fresh self-signed certificate on every
+start and answers anyone who asks, so it is for local runs only — a production
+`tsa_url` names a service whose certificate the verifier can trace to a root it
+trusts.
 
 `vendor/` is committed, so `GOFLAGS=-mod=vendor GOPROXY=off go build` works
 offline. The CLI subcommand set is documented by `pdf-go doc`, and
