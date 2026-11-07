@@ -62,6 +62,26 @@ type Config struct {
 	warnings        []string
 
 	problems []string
+
+	// path is the config file this configuration was read from, empty when the
+	// values came from the environment. A CLI command that runs on the same
+	// machine as the database resolves the path of the store through it.
+	path string
+}
+
+// ConfigPath is the file this configuration was loaded from, "" when the
+// settings came from the environment.
+func (c *Config) ConfigPath() string { return c.path }
+
+// DBFile is the SQLite path this configuration points at, "" when the store is
+// postgres. The local CLI commands (user add, user rotate) need it: the
+// credentials live in the database, and only a process on the database's own
+// machine is allowed to write them.
+func (c *Config) DBFile() string {
+	if strings.HasPrefix(c.DBPath, "postgres://") || strings.HasPrefix(c.DBPath, "postgresql://") {
+		return ""
+	}
+	return c.DBPath
 }
 
 // secret returns the raw value of a config secret. It is deliberately a
@@ -120,7 +140,7 @@ func LoadConfig(path string) (*Config, error) {
 		return def
 	}
 
-	c := &Config{env: env, file: file}
+	c := &Config{env: env, file: file, path: path}
 
 	boolVal := func(key string, def bool) bool {
 		raw := get(key, "")
@@ -266,6 +286,13 @@ func (c *Config) validate() {
 				cproblems(c, "jwt_secret_file is readable by others: mode must be 0600")
 			}
 		}
+	}
+
+	// The users table holds each account's shared secret in the clear, because
+	// the service has to recompute the signature. The database file is
+	// therefore a secret, and the mode says whether it is.
+	if f, err := os.Stat(c.DBFile()); err == nil && f.Mode().Perm()&0o077 != 0 {
+		cwarnings(c, "the database file is readable by others: mode must be 0600, it holds the account secrets")
 	}
 
 	// The timestamp authority signs the time in the signature. Over plain

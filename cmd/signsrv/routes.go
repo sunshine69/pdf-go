@@ -70,6 +70,32 @@ func (s *server) routes() {
 	s.mux.Handle("POST /api/v1/admin/clients/{id}/revoke", s.api(s.handleClientRevoke, signauth.ScopeAdminRead))
 	s.mux.Handle("POST /api/v1/admin/logout", s.api(s.handleAdminLogout, signauth.ScopeAdminRead))
 
+	// The service chores: the questions an operator asks of a server they are not
+	// standing next to. Every one of them is a `signsrv` verb, and every one of
+	// them is also a route, so the runbook step is the same on both sides of the
+	// network.
+	//
+	// The reads are GET under admin:read. The writes are POST under the same
+	// scope: the scope is the admin surface, and a token that may read the audit
+	// chain must be able to verify it. The POSTs that touch disk or send mail get
+	// a named bucket, so a loop cannot burn the CPU of the read endpoints.
+	s.mux.Handle("GET /api/v1/admin/dbstatus", s.api(s.handleDBStatus, signauth.ScopeAdminRead))
+	s.mux.Handle("GET /api/v1/admin/schema", s.api(s.handleSchemaStatus, signauth.ScopeAdminRead))
+	s.mux.Handle("GET /api/v1/admin/configcheck", s.api(s.handleConfigCheck, signauth.ScopeAdminRead))
+	s.mux.Handle("POST /api/v1/admin/sweep",
+		s.apiBucket(s.handleSweep, "sweep", signauth.SendLimit, signauth.ScopeAdminRead))
+	s.mux.Handle("POST /api/v1/admin/audit/verify",
+		s.api(s.handleAuditVerify, signauth.ScopeAdminRead))
+	s.mux.Handle("POST /api/v1/admin/audit/write",
+		s.apiBucket(s.handleAuditWrite, "audit-write", signauth.SendLimit, signauth.ScopeAdminRead))
+	s.mux.Handle("POST /api/v1/admin/mail-test",
+		s.apiBucket(s.handleMailTest, "mail-test", choreMailLimit, signauth.ScopeAdminRead))
+	s.mux.Handle("GET /api/v1/admin/users", s.api(s.handleUsersList, signauth.ScopeAdminRead))
+	s.mux.Handle("DELETE /api/v1/admin/users/{id}",
+		s.api(s.handleUserRevoke, signauth.ScopeAdminRead))
+	s.mux.Handle("POST /api/v1/admin/users/{id}/revoke",
+		s.api(s.handleUserRevoke, signauth.ScopeAdminRead))
+
 	s.mux.Handle("POST /api/v1/envelopes/{id}/remind",
 		s.envelopeBucket(s.handleEnvelopeRemind, "remind", signauth.RemindLimit,
 			signauth.RemindWindow, signauth.ScopeEnvelopeWrite))
@@ -119,6 +145,11 @@ func (s *server) routes() {
 
 	s.mux.HandleFunc("/", s.handleUnknown)
 }
+
+// choreMailLimit is the per-minute budget of the mail-test route. Six is enough
+// for an operator checking a relay, and small enough that a leaked admin token
+// cannot turn the service into a spam relay.
+const choreMailLimit = 6
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{

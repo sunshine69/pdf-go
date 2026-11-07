@@ -256,6 +256,10 @@ command):
 | `audit-write` | append a heartbeat event, which opens the day's file |
 | `sweep` | run the sweeps by hand: expire, prune revocations, requeue crashed leases |
 | `dbstatus` | schema version, integrity check, row counts |
+| `user add NAME [SCOPES…]` | creates an API **account**: the JWT secret is printed once, and `--password-stdin` (or `SIGNSRV_USER_PASSWORD`) optionally sets a web password. `admin:read` is refused here — no account can be an administrator |
+| `user list` | every account: username, `secret=set`, `pw=set|-`, scopes, created, revoked. The secret is never reprinted |
+| `user rotate ID` | a new secret, printed once. Every token signed with the old one stops verifying at the next request |
+| `user revoke ID` | closes the account; its tokens stop working at the next request, and the row stays for the audit trail |
 | `worker` / `batch` / `mail-test` | see `runbook.md` |
 
 `pdf-go`:
@@ -269,6 +273,7 @@ command):
 | `pages IN [--page 1,3-5] [-o pages.json]` | the page boxes |
 | `add-logo IN IMAGE [-o OUT]` | stamp artwork at a position, a page, or a signature field |
 | `envelope create/send/get/links/report` | drive the service |
+| `admin <verb>` | the operator's chores **over the API**: `dbstatus`, `schema`, `config-check`, `sweep`, `audit-write` (`-day`), `audit-verify`, `mail-test` (`-to`), `users`, `revoke-user` (`-id`). No shell on the server; `--server` + a credential and the answer is JSON |
 | `doc` | the machine-readable guide to the JSON formats |
 
 ## CLI flags
@@ -289,6 +294,9 @@ command):
 | `--widget` | field the form is locked to (empty means every field) |
 | `--links-out` | file the signing links are written to (JSON, mode 0600; default `envelope-<id>.links.json`) |
 | `--json` | print the service's JSON answer (default true) |
+| `--username` | account whose secret signs the request (`SIGNSRV_USERNAME`) |
+| `--jwt-secret` / `--jwt-secret-env` | the account's shared secret, prefer the environment (`SIGNSRV_JWT_SECRET`) |
+| `--ttl` | requested token validity when the CLI mints; the service caps it at 15m |
 | `--timeout` | request timeout, default 60s |
 
 `envelope send`, `get`, `links`, `report` take the envelope id and the same
@@ -300,6 +308,44 @@ on a refusal:
 ```
 
 ## Troubleshooting
+## Two credentials, one username
+
+An account in the `users` table can carry two credentials, and the API accepts
+two kinds of bearer token. Keeping them straight is the whole design:
+
+| credential | who holds it | what it does |
+|---|---|---|
+| `jwt_secret` (base64url, 32 bytes) | the operator's laptop, a CI runner, a systemd unit | lets the holder **sign** its own access token. The CLI does it with `--username` + `SIGNSRV_JWT_SECRET`; the secret itself never travels, and there is no token request |
+| client key (`key_…`) | an API integration | is **exchanged** at `POST /api/v1/auth/token` for a short access token; the key never rides on a call |
+| `password` (argon2id) | a human, at the web desk | signs in to the SPA. Today that desk is the admin portal; the account table is the table it will read |
+
+`SIGNSRV_TOKEN` holds whichever of the two shapes you have: a `key_…` value is
+exchanged, and a three-part `a.b.c` value — an access token minted by login, by
+refresh, or by the token endpoint — is sent as it is, which is what a chore
+script wants: mint once, spend one request per verb.
+
+The service answers a request with the **scopes on the row**, re-read every
+request, and with `role = 'user'` whatever the token claims. A caller-minted
+token is refused on every `admin:*` route with `insufficient_scope`, so a leaked
+dispatch secret is a document credential and nothing more. That is why
+`signsrv user add` refuses to write `admin:read` into a row: the scopes column
+could not make it true, and a column that lies is worse than one that is absent.
+
+Closing an account is immediate, not at token expiry:
+
+```sh
+signsrv user rotate 7        # a leaked secret: every token signed with it dies now
+pdf-go admin revoke-user -id 7 --server https://srv.example  # from the desk, no shell
+```
+
+Both leave the row in place, stamped `revoked_at`: the audit trail of what its
+secret signed stays verifiable, and `pdf-go admin dbstatus` counts it under
+`users_revoked` so you can tell "revoked" from "never existed".
+
+Every variable a credential lives in — `SIGNSRV_URL`, `SIGNSRV_TOKEN`,
+`SIGNSRV_USERNAME`, `SIGNSRV_JWT_SECRET`, `SIGNSRV_USER_PASSWORD` — is read from the
+environment, never from argv, so none of them appears in a process list.
+
 
 - `problem: file:line: unknown config key "listenx"` — typo in the config;
   accepted names are in `config.example.env`.

@@ -211,6 +211,7 @@ conflict, 410 expired, 404 unknown, 429 rate limited.
 | 10 | `10-batch-sign.md` | signing batch, verify, deliver, receipt |
 | 11 | `11-hardening.md` | limits, audit chain, TLS, deploy |
 | 12 | `12-e2e.md` | end-to-end test, CLI integration, runbook |
+| 13 | `13-users-one-endpoint.md` | users table, caller-minted tokens, chore endpoints |
 
 Order is linear. Steps 08 and 09 can run in parallel with 10 once 07 is signed.
 

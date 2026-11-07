@@ -56,6 +56,8 @@ func run(args []string) int {
 		return adminCmd(ctx, *configPath, rest)
 	case "client":
 		return clientCmd(ctx, *configPath, rest)
+	case "user":
+		return userCmd(ctx, *configPath, rest)
 	case "secrets":
 		return secretsCmd(*configPath, rest)
 	case "sign-selftest":

@@ -21,34 +21,48 @@ import (
 // The message is an invitation with a test link. It is not tied to an
 // envelope, so the command needs no store. The point is the delivery, not the
 // state.
+//
+// The work is in runMailTest, so `signsrv mail-test` on the server and
+// POST /api/v1/admin/mail-test from a desk send the same message through the
+// same sender: a runbook step works whichever side of the network you are on.
 func mailTestCmd(configPath string, args []string) int {
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: signsrv mail-test <address>")
 		return 2
 	}
-	addr := args[0]
-	if _, err := mail.ParseAddress(addr); err != nil {
-		fmt.Fprintf(os.Stderr, "signsrv: %q is not a mail address\n", addr)
-		return 2
-	}
-
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "signsrv:", err)
 		return 1
 	}
-
-	r, err := signmail.NewRenderer(web.Templates())
+	result, err := runMailTest(cfg, args[0])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "signsrv:", err)
 		return 1
 	}
+	for k, v := range result {
+		fmt.Printf("%-14s %v\n", k+":", v)
+	}
+	return 0
+}
 
+// runMailTest renders and sends one test message, and describes what it did.
+//
+// The address is parsed before any work: a typo should fail immediately, not
+// after the templates have been parsed and a connection opened. The answer
+// names the transport, because "the mail path works" is only meaningful when
+// you know which path was taken — the outbox in dev mode is not the relay.
+func runMailTest(cfg *Config, addr string) (map[string]any, error) {
+	if _, err := mail.ParseAddress(addr); err != nil {
+		return nil, fmt.Errorf("%q is not a mail address", addr)
+	}
+	r, err := signmail.NewRenderer(web.Templates())
+	if err != nil {
+		return nil, err
+	}
 	sender := mailSenderFor(cfg)
 	if sender == nil {
-		fmt.Fprintln(os.Stderr, "signsrv: no mail sender configured")
-		fmt.Fprintln(os.Stderr, "  set dev mode, or smtp_host (and smtp_port)")
-		return 1
+		return nil, fmt.Errorf("no mail sender configured: set dev mode, or smtp_host (and smtp_port)")
 	}
 
 	now := time.Now().UTC()
@@ -71,10 +85,8 @@ func mailTestCmd(configPath string, args []string) int {
 
 	text, html, err := r.Render(d)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "signsrv:", err)
-		return 1
+		return nil, err
 	}
-
 	m := &signmail.Message{
 		Kind:    "invite",
 		To:      addr,
@@ -87,16 +99,27 @@ func mailTestCmd(configPath string, args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := sender.Send(ctx, m); err != nil {
-		fmt.Fprintln(os.Stderr, "signsrv:", err)
-		return 1
+		return nil, fmt.Errorf("the sender refused the message: %w", err)
 	}
 
 	if cfg.Dev {
-		fmt.Printf("mail test written to %s\n", cfg.Outbox)
-		return 0
+		return map[string]any{
+			"sent":       true,
+			"to":         addr,
+			"transport":  "outbox",
+			"outbox_dir": cfg.Outbox,
+			"subject":    d.Subject,
+			"note":       "dev mode: the message is a .eml file in the outbox, not a delivery",
+		}, nil
 	}
-	fmt.Printf("mail test sent to %s via %s:%d\n", addr, cfg.SMTPHost, cfg.SMTPPort)
-	return 0
+	return map[string]any{
+		"sent":      true,
+		"to":        addr,
+		"transport": "smtp",
+		"host":      cfg.SMTPHost,
+		"port":      cfg.SMTPPort,
+		"subject":   d.Subject,
+	}, nil
 }
 
 // mailSenderFor picks the sender from the config: the file sender in dev mode,

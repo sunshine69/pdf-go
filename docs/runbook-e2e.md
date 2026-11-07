@@ -67,7 +67,9 @@ e2e/run.sh "audit chain"
 | cli report | `pdf-go envelope report` writes a verification report: every signer present, every signature timestamped. |
 | audit chain | `audit-write` writes the events, `audit-verify` accepts them, and a tampered copy is rejected — the verifier fails when it is supposed to. |
 | artefacts | Copies every revision into `out/`, and verifies the PDF **attached to the delivery email** offline: its SHA-256 is the one on the envelope, and `checkpdf` accepts it with the TSA root. |
-| rate limit | A burst of requests from one address is met with `429`. |
+| negatives | The refusals: a replayed consent, an expired link, a cancelled request, a consent given to a field the party does not own, a non-PDF upload, the per-envelope consent limit, the login limit, the link limit. Each asserts the **state left behind**, not only the status code — a 400 that leaves an envelope half-signed is a failure. |
+| rate limit | A burst of requests from one address is met with `429`, a client key is refused on a route its scopes do not cover, and a revoked key stops working at the next request. |
+| user accounts | An account from `signsrv user add` signs its own access token and the CLI needs no token round trip; the same credential is refused on the admin surface with `insufficient_scope` whatever its scopes column says; `user rotate` kills the old secret at the next request; `pdf-go admin revoke-user` closes the account at the next request and the refusal names `token_revoked`; every chore verb of `pdf-go admin` reaches its route and answers with the field asked about. |
 | log redaction | The log never contains a password, an authorization header, a link token, or a key. |
 | graceful stop | `SIGTERM` exits `0`, with the queues left consistent. |
 

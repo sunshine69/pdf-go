@@ -38,6 +38,7 @@ import (
 
 	"github.com/sunshine69/pdf-go/internal/report"
 	"github.com/sunshine69/pdf-go/internal/schema"
+	"github.com/sunshine69/pdf-go/internal/signauth"
 )
 
 // maxServerReply bounds what a response may cost us. A verification report or
@@ -64,6 +65,12 @@ func (e apiError) Error() string {
 	msg := e.Problem.Message
 	if msg == "" {
 		msg = e.Problem.Code
+	}
+	// The code leads. A message is prose the service may reword; the code is the
+	// stable name, and it is what an operator greps the journal for and a script
+	// branches on.
+	if e.Problem.Code != "" {
+		msg = "[" + e.Problem.Code + "] " + msg
 	}
 	if msg == "" {
 		return "the service refused the request"
@@ -113,6 +120,15 @@ type envelopeFlags struct {
 	timeout  time.Duration
 	linksOut string
 	access   string
+
+	// The self-minted credential: a username and the shared secret of its row.
+	// With both, the CLI signs its own access token and the service verifies
+	// the signature — no token round trip, and no token endpoint to reach when
+	// the CLI is on a different machine from the service.
+	username  string
+	secret    string
+	secretEnv string
+	ttl       time.Duration
 }
 
 func (f *envelopeFlags) register(fs *flag.FlagSet) {
@@ -123,6 +139,10 @@ func (f *envelopeFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&f.jsonOut, "json", true, "print the service's JSON answer")
 	fs.DurationVar(&f.timeout, "timeout", 60*time.Second, "request timeout")
 	fs.StringVar(&f.linksOut, "links-out", "", "file the signing links are written to")
+	fs.StringVar(&f.username, "username", envDefault("SIGNSRV_USERNAME", ""), "username whose secret signs the request")
+	fs.StringVar(&f.secret, "jwt-secret", "", "shared secret of that username (prefer --jwt-secret-env)")
+	fs.StringVar(&f.secretEnv, "jwt-secret-env", "SIGNSRV_JWT_SECRET", "environment variable holding the shared secret")
+	fs.DurationVar(&f.ttl, "ttl", 0, "requested token validity, capped by the service at 15m")
 }
 
 func envDefault(name, def string) string {
@@ -145,15 +165,65 @@ func (f *envelopeFlags) resolve() error {
 	if !strings.HasPrefix(f.server, "https://") && !f.insecure {
 		return fmt.Errorf("--server is plain HTTP: a client token would travel in the clear; use https:// or pass -insecure for a local run")
 	}
-	if f.token == "" {
-		f.token = os.Getenv(f.tokenEnv)
+	// Two credentials, and at least one is needed. The self-minted one (username
+	// + shared secret) is preferred when both are present: it needs no token
+	// round trip, so the CLI works against a service whose token endpoint is
+	// firewalled, and the secret never travels.
+	// Read the secret from the environment whenever the flag is empty. The
+	// username may have arrived from SIGNSRV_USERNAME, and a credential split
+	// across two variables is the shape an operator actually writes in a unit
+	// file: username in the environment, secret in a Credentials= line.
+	if f.secret == "" {
+		f.secret = os.Getenv(f.secretEnv)
 	}
-	if f.token == "" {
-		return fmt.Errorf("needs a client token: --token, or %s in the environment (create one with `signsrv client add <name>`)", f.tokenEnv)
+	if f.secret == "" || f.username == "" {
+		if f.token == "" {
+			f.token = os.Getenv(f.tokenEnv)
+		}
+		if f.token == "" {
+			return fmt.Errorf("needs a credential: --username with the secret in %s (create with `signsrv user add <name>`),"+
+				" or a client token in %s (create with `signsrv client add <name>`)", f.secretEnv, f.tokenEnv)
+		}
+	}
+	if f.token != "" && looksLikeAccessToken(f.token) {
+		// The value is an access token, not a client key, so it is the thing to
+		// send: no exchange, and one request per call. A chore script mints a
+		// token once and reuses it, and the token endpoint is rate limited, so
+		// exchanging on every verb would spend a bucket the script did not mean
+		// to spend. A client key has no dots; it is exchanged below.
+		f.access = f.token
 	}
 	if f.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
+	return nil
+}
+
+// looksLikeAccessToken reports whether the credential is already a signed
+// access token, which is the case for anything minted by the service's login,
+// refresh, or client-token endpoint. A client key is "key_" plus hex, so the
+// two shapes are not in doubt.
+func looksLikeAccessToken(s string) bool {
+	parts := strings.Split(s, ".")
+	return len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != ""
+}
+
+// mint signs an access token locally. The payload is fixed: the subject is the
+// username, the audience is the API, the role is "user", and the validity is
+// capped at 15 minutes because the service refuses anything longer. The scopes
+// are the ones the CLI needs for its own verbs — the service answers a request
+// with the scopes on the account's row, so what is put here is cosmetic.
+func (f *envelopeFlags) mint() error {
+	ttl := f.ttl
+	if ttl <= 0 || ttl > 15*time.Minute {
+		ttl = 15 * time.Minute
+	}
+	token, err := signauth.MintUserToken(f.secret, f.username,
+		[]string{"envelope:write", "envelope:read"}, ttl)
+	if err != nil {
+		return err
+	}
+	f.access = token
 	return nil
 }
 
@@ -198,6 +268,9 @@ func (f *envelopeFlags) exchange() error {
 func (f *envelopeFlags) ensureAccess() error {
 	if f.access != "" {
 		return nil
+	}
+	if f.secret != "" && f.username != "" {
+		return f.mint()
 	}
 	return f.exchange()
 }

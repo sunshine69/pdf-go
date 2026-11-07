@@ -19,8 +19,11 @@ docs/
   10-batch-sign.md       signing batch, verification gates, delivery, receipt
   11-hardening.md        rate limits, audit, sweeps, TLS, deployment
   12-e2e.md              end-to-end test and runbook
+  13-users-one-endpoint.md  users table, caller-minted tokens, chore endpoints
   build-and-test.md      how to build, and how to test each step by hand
   tsa-roadmap.md         TSA: the policy, the options, the tests to write
+  skills/prepare-and-dispatch-signing.md
+                       short, runnable recipe: extract -> fill -> verify -> parties.json -> create --send -> report
 ```
 
 Conventions used by every step doc:

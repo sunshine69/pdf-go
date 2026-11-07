@@ -11,14 +11,14 @@ import (
 // events row per sweep, so the audit trail shows that expiry happened
 // automatically and when.
 type SweepReport struct {
-	EnvelopesExpired int
-	PartiesExpired   int
-	JTIsDeleted      int
-	BatchesRequeued  int
-	MailRequeued     int
-	BatchesFailed    int // batches retried past MaxBatchAttempts, envelope -> failed
-	RefreshDeleted   int // refresh chains past their own deadline
-	Now              string
+	EnvelopesExpired int    `json:"envelopes_expired"`
+	PartiesExpired   int    `json:"parties_expired"`
+	JTIsDeleted      int    `json:"revoked_jtis_deleted"`
+	BatchesRequeued  int    `json:"batches_requeued"`
+	MailRequeued     int    `json:"mail_requeued"`
+	BatchesFailed    int    `json:"batches_failed"`         // retried past MaxBatchAttempts
+	RefreshDeleted   int    `json:"refresh_chains_deleted"` // chains past their own deadline
+	Now              string `json:"now"`
 }
 
 // MaxBatchAttempts is the number of times a signing batch is retried before

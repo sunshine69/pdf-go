@@ -75,7 +75,16 @@ var (
 var clientAccess string
 
 // clientTokenExchange performs the exchange and returns the access token.
+//
+// The answer is kept: the exchange is rate limited at five a minute per
+// address, the phases that need a token are more than five apart in the run's
+// order, and an access token is valid long enough to serve every one of them.
+// Exchanging once is what a client does; exchanging per phase spends the
+// budget and makes a later phase read a 429 that means nothing about it.
 func clientTokenExchange() string {
+	if clientAccess != "" {
+		return clientAccess
+	}
 	body, _ := json.Marshal(map[string]string{"key": clientKey})
 	res, err := http.Post(base+"/api/v1/auth/token", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -158,6 +167,7 @@ func main() {
 	phase("artefacts", copyArtefacts)
 	phase("negatives", negatives)
 	phase("rate limit", rateLimit)
+	phase("user accounts", userAccountsPhase)
 	phase("log redaction", logRedaction)
 	phase("graceful stop", gracefulStop)
 
@@ -178,7 +188,7 @@ func main() {
 func phases() []string {
 	return []string{"build", "mock tsa", "config", "start service", "admin login", "client key",
 		"cli create", "send + outbox", "browser signing", "cli watch", "cli report", "audit chain",
-		"artefacts", "rate limit", "negatives", "log redaction", "graceful stop"}
+		"artefacts", "negatives", "rate limit", "user accounts", "log redaction", "graceful stop"}
 }
 
 // phase runs one step. A failure is recorded and the run continues: the point
@@ -1159,9 +1169,21 @@ func rateLimit() error {
 	// The public signing read is the endpoint with no bearer token to hide
 	// behind, so it is the one worth proving.
 	var after int
+	// The flood gets its own loopback source address. The limiter keys a
+	// bucket per address, and every other phase speaks from 127.0.0.1:
+	// flooding that address would leave the client-key exchange that follows
+	// answering 429, and the run would attribute the refusal to the wrong
+	// call. 127.0.0.44 is reachable on the loopback route, and nothing else
+	// in the run uses it.
+	flood := &http.Client{Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			LocalAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0.44")},
+		}).DialContext,
+	}}
 	for i := 1; i <= 120; i++ {
 		req, _ := http.NewRequest("GET", base+"/api/v1/sign/deadbeefdeadbeefdeadbeefdeadbeef/envelope", nil)
-		res, err := http.DefaultClient.Do(req)
+		res, err := flood.Do(req)
 		if err != nil {
 			return err
 		}

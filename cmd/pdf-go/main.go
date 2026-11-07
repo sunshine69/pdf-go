@@ -60,6 +60,8 @@ func run(args []string) int {
 		return report.OK
 	case "envelope":
 		return envelopeCommand(rest)
+	case "admin":
+		return adminCommand(rest)
 	case "version", "-v", "--version":
 		fmt.Println("pdf-go", version)
 		return report.OK

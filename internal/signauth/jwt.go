@@ -79,7 +79,7 @@ func (c *Claims) Valid(t time.Time) error {
 	if c.Subject == "" || c.JTI == "" {
 		return ErrTokenInvalid
 	}
-	if c.Role != RoleAdmin && c.Role != RoleClient {
+	if c.Role != RoleAdmin && c.Role != RoleClient && c.Role != RoleUser {
 		return ErrTokenInvalid
 	}
 	if c.Expires <= 0 || now-c.Expires > skew {

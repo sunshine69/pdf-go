@@ -88,6 +88,7 @@ func newServer(cfg *Config, log *slog.Logger, store *signstore.Store) *server {
 			Revoked:    store,
 			Store:      store,
 			Epochs:     store,
+			Users:      store,
 			Limits:     signauth.NewLimiter(),
 			TrustProxy: cfg.TrustProxy,
 		}

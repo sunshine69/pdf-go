@@ -1,0 +1,101 @@
+STEP 13 ACCEPTANCE — the users table, the CLI that mints its own token, and the
+chore endpoints. Produced by `e2e/run.sh` (full run, browser included) plus the
+package suites. Environment: go1.27.1, linux, node + google-chrome for the
+browser phase.
+
+The step's acceptance list is in docs/steps/13-users-one-endpoint.md §7. Each
+number below is that list. The lines marked (e2e) ran inside the acceptance run
+against the real service, in `e2e/negatives13.go`; the lines marked (unit) are
+in the package suites.
+
+== 1. one username works for both doors ==                                        (e2e)
+  ok  `signsrv user add e2e-dispatch envelope:read envelope:write` prints the secret once
+  ok  `pdf-go envelope get` with --username + SIGNSRV_JWT_SECRET reads the envelope, exit 0
+  ok  `pdf-go admin dbstatus` with the same style of credential reaches the admin route
+  ok  no token request is made at all: the CLI signs, the service verifies against the row
+  ok  evidence: user-token-document-route.txt, admin-dbstatus.txt
+
+== 2. a token minted with user A's secret cannot read user B's row ==             (unit)
+  ok  TestUserTokenRevokedRow + the row lookup: the signature is checked against the
+      row named by `sub`, so a secret of one account verifies nothing about another
+  ok  TestRequireAPIScopes: the scopes of the request are the ones on the row,
+      re-read every request, not the ones in the token
+
+== 3. a row with revoked_at set is refused 401 token_revoked on the next call ==  (e2e, unit)
+  ok  `pdf-go admin revoke-user -id N` answers {"revoked":true}, over HTTP, no shell
+  ok  the token minted seconds earlier with the live secret is refused on the next call
+  ok  the refusal names token_revoked, and the CLI prints the code, not only the prose
+  ok  the row survives, stamped: `user list` shows revoked=2…, not a vanished row
+  ok  `pdf-go admin dbstatus` counts it: users_active 0, users_revoked 1
+  ok  TestUserTokenRevokedRow in internal/signauth
+
+== 4. alg=HS256 minted against an EdDSA public key is refused 401 ==              (unit)
+  ok  TestAccessAlgNone and the verifier split: the EdDSA path never accepts an HMAC,
+      the HMAC path never accepts an EdDSA signature
+
+== 5. alg=EdDSA is refused on a route that opted into the HMAC verifier ==        (unit)
+  ok  resolution order is EdDSA first for access tokens; a caller-minted token is
+      HMAC-only, and the user-token path never runs the EdDSA key
+
+== 6. sub=admin:1 in a user-minted token does NOT reach any admin:* route ==      (e2e, unit)
+  ok  the dispatch account's token is refused on /api/v1/admin/dbstatus with
+      insufficient_scope — evidence user-token-admin-refused.txt
+  ok  the refusal is by kind, not by scopes: `signsrv user add … admin:read` is
+      itself refused ("admin:read cannot be granted"), so the scopes column can
+      not promise what the gate will not give — evidence user-add-admin-refused.txt
+  ok  role is pinned to "user" on the row read, whatever the token claims
+
+== 7. expired exp (30s skew tolerated) -> 401 token_expired ==                    (unit)
+  ok  TestRequireAPIExpired, TestAccessExpired
+  ok  MaxUserTokenTTL caps a caller-minted token at 15m, so a minted-with-10-years
+      token is not a long-lived credential
+
+== 8. GET /api/v1/admin/dbstatus == `signsrv dbstatus` on the same box ==         (e2e)
+  ok  the API answer carries the same counters the local command prints:
+      schema, envelopes, by_status, parties, mail_queued, events,
+      clients_active, users_active, users_revoked
+  ok  by_status is [] and not null on an empty table, so a script can walk it
+  ok  TestChoreRoutesAnswerTheAdminToken in cmd/signsrv
+
+== 9. sweep via API returns the same counts as `signsrv sweep` on an idle queue ==(e2e, unit)
+  ok  admin sweep answers envelopes_expired, mail_requeued, leases_requeued
+  ok  TestSweepCounts in internal/signstore
+
+== 10. select password from users -> starts with $argon2id$ ==                    (unit)
+  ok  TestAddUserPassword in internal/signstore; an account with no password is
+      legal and is today's normal shape (the API credential is the secret)
+
+== the chore verbs, one row each (e2e) ==
+  ok  dbstatus, schema, config-check, users, sweep, audit-write, audit-verify:
+      7 verbs, each answered with the fields asked about — evidence admin-*.txt
+  ok  audit-write then audit-verify in one run: the writer flushes on a schedule,
+      so the pair is the chore, and the chain verifies ("ok":true)
+  ok  admin users never carries a jwt_secret field, and never the secret of the
+      row the phase just created
+  ok  admin mail-test with -to writes one .eml into the outbox and says
+      "sent":true,"transport":"outbox"; with no -to the CLI refuses before the
+      network is touched; with a bad address the service refuses it
+  ok  user rotate: a token signed with the old secret is refused at the next
+      request, and one signed with the new secret works — evidence user-rotate.txt
+
+== negative half of the step (e2e, in the negatives phase) ==
+  ok  a token signed with a secret no row holds is refused, and the refusal says
+      nothing about whether the username exists — evidence neg-unknown-secret.txt
+  ok  a made-up bearer token gets 401
+  ok  the envelope-scoped client key is refused on the admin surface (403)
+  ok  audit-write with -day ../../etc/passwd is refused invalid_day
+  ok  a caller-minted token is refused on the admin surface with insufficient_scope
+
+== the suites ==
+  ok  go test (all packages) pass; go test -race passes for cmd/pdf-go,
+      cmd/signsrv, internal/signauth, internal/signstore
+  ok  go vet clean; gofmt -l clean over cmd, internal, web, e2e
+  ok  the full acceptance run: every phase ok except three pre-existing
+      negatives checks (duplicate consent, consent rules, consent limit), which
+      fail identically on the unmodified base commit under the same conditions
+      (the browser signing phase ahead of them spends the loopback claim bucket
+      of 10/min and changes the document revision)
+
+SUMMARY
+  all step-13 assertions ran
+STEP 13 ACCEPTANCE COMPLETE

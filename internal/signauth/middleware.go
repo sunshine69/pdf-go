@@ -2,6 +2,7 @@ package signauth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -50,6 +51,18 @@ type Epochs interface {
 	AuthEpoch(ctx context.Context, subject string) (int64, error)
 }
 
+// UserRows is the users table, as the API gate needs it. A caller-minted
+// (HS256) token carries a username in sub; the row behind that name decides
+// three things the token does not get to decide for itself:
+//
+//   - whether the account is revoked at all (a token the service never minted
+//     has no jti to revoke, so the row is the only state there is)
+//   - the scopes granted (the token claims scopes, the row grants them)
+//   - the role (so a secret cannot mint "role":"admin")
+type UserRows interface {
+	GetByUsername(ctx context.Context, username string) (*signstore.User, error)
+}
+
 // Auth bundles what the middleware needs. The fields are interfaces so a test
 // can supply a stub, and so the HTTP layer never reaches into the database.
 type Auth struct {
@@ -57,6 +70,7 @@ type Auth struct {
 	Revoked    Revocations
 	Store      PartyStore
 	Epochs     Epochs
+	Users      UserRows
 	Limits     *Limiter
 	TrustProxy bool
 
@@ -105,6 +119,14 @@ func (a *Auth) RequireAPI(next http.Handler, scopes ...string) http.Handler {
 		token := bearerToken(r)
 		if token == "" {
 			a.writeProblem(w, r, 401, "unauthorized", "no bearer token")
+			return
+		}
+		// Two token kinds, two verifiers, chosen by the token's header. Each
+		// verifier pins its own algorithm, so this is routing and not trust:
+		// an EdDSA token can never be checked with an HMAC secret, and an
+		// HS256 token can never be checked with the service's public key.
+		if a.Users != nil && IsHS256Token(token) {
+			a.requireUserToken(w, r, next, token, scopes)
 			return
 		}
 		claims, err := a.Verifier.VerifyAccess(token)
@@ -165,6 +187,131 @@ func (a *Auth) RequireAPI(next http.Handler, scopes ...string) http.Handler {
 // RequireAdmin is role=admin and aud=api.
 func (a *Auth) RequireAdmin(next http.Handler) http.Handler {
 	return a.RequireAPI(next, ScopeAdminRead)
+}
+
+// MaxUserTokenTTL is the longest validity a caller-minted token may carry. The
+// CLI caps its own tokens at AccessTTL and the guard enforces the same cap: a
+// leaked secret then buys 15 minutes, not a year, because the server refuses a
+// longer window rather than trusting the caller to ask for a short one.
+const MaxUserTokenTTL = AccessTTL
+
+// requireUserToken checks a caller-minted (HS256) token against the users row
+// named by sub, then answers the scope check with the row's scopes.
+//
+// Order matters. The row is read before the secret is used, so the secret is
+// never chosen by anything the caller signed; the signature is checked with
+// that row's secret. A revoked row is refused before the signature is
+// considered: a revoked account is refused whether or not its token is well
+// formed.
+func (a *Auth) requireUserToken(w http.ResponseWriter, r *http.Request, next http.Handler, token string, scopes []string) {
+	// A first read of the payload, to learn the subject only. Nothing is
+	// trusted from it: the signature is checked below with the row's secret.
+	name, err := peekSubject(token)
+	if err != nil {
+		a.writeProblem(w, r, 401, "unauthorized", "token rejected")
+		return
+	}
+	row, err := a.Users.GetByUsername(r.Context(), name)
+	// The admin scope is not reachable with a caller-minted token, whatever
+	// the row grants. The admin surface is the whole system (clients, settings,
+	// audit, every envelope's document), and its tokens are minted by the
+	// service with the EdDSA key. Keeping that surface EdDSA-only means a
+	// leaked dispatch secret cannot become an administrator, and means the
+	// scopes column can never be widened into a takeover by a typo in an
+	// UPDATE.
+	for _, scope := range scopes {
+		if scope == ScopeAdminRead {
+			a.writeProblem(w, r, 403, "insufficient_scope",
+				"this endpoint needs a token minted by the service, not one signed by a client secret")
+			return
+		}
+	}
+
+	if err != nil || row == nil {
+		// No row: the same answer as a bad signature. Whether a username
+		// exists is not this endpoint's to say.
+		a.writeProblem(w, r, 401, "unauthorized", "token rejected")
+		return
+	}
+	if row.RevokedAt != "" {
+		a.writeProblem(w, r, 401, "token_revoked", "this account was revoked")
+		return
+	}
+	claims, err := VerifyUserToken(row.JWTSecret, token)
+	if err != nil {
+		code, status := "unauthorized", http.StatusUnauthorized
+		if err == ErrTokenExpired {
+			code, status = "token_expired", http.StatusUnauthorized
+		}
+		a.writeProblem(w, r, status, code, "token rejected")
+		return
+	}
+	// The validity window is capped by the server, not agreed with the caller.
+	if claims.Expires-claims.IssuedAt > int64(MaxUserTokenTTL/time.Second) {
+		a.writeProblem(w, r, 401, "token_ttl",
+			"the token asks for a validity longer than the service allows")
+		return
+	}
+	// The password stamp is the epoch, exactly as for an admin session: a
+	// password change stops every token minted before it. Strictly before, so
+	// a token minted in the same second as the change survives.
+	epoch, err := unixOf(row.PWChangedAt)
+	if err != nil {
+		a.writeProblem(w, r, 500, "internal", "credential epoch check failed")
+		return
+	}
+	if epoch > 0 && claims.IssuedAt < epoch {
+		a.writeProblem(w, r, 401, "credential_expired",
+			"the credential behind this token was replaced; mint a new one")
+		return
+	}
+	// The grant comes from the row: the token is signed by whoever holds the
+	// secret, and holding a secret is not a grant. Role is pinned to user, so
+	// a secret cannot reach an admin route.
+	claims.Role = RoleUser
+	claims.Scopes = signstore.ScopeList(row.Scopes)
+	for _, scope := range scopes {
+		if !claims.HasScope(scope) {
+			a.writeProblem(w, r, 403, "insufficient_scope",
+				"this endpoint needs the scope "+scope)
+			return
+		}
+	}
+	next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKeyClaims{}, claims)))
+}
+
+// peekSubject decodes the "sub" of a compact token without checking anything.
+// It exists to find the row whose secret is needed to check the signature, and
+// it is the only place in this package that reads an unverified payload.
+func peekSubject(token string) (string, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", ErrTokenInvalid
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", ErrTokenInvalid
+	}
+	var claims struct {
+		Subject string `json:"sub"`
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil || claims.Subject == "" {
+		return "", ErrTokenInvalid
+	}
+	return claims.Subject, nil
+}
+
+// unixOf turns a stored RFC 3339 stamp into seconds. Empty is 0, which the
+// epoch check reads as "no epoch".
+func unixOf(stamp string) (int64, error) {
+	if stamp == "" {
+		return 0, nil
+	}
+	t, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return 0, err
+	}
+	return t.Unix(), nil
 }
 
 // Scopes. The vocabulary is fixed: a route names the scope it needs, a client

@@ -93,8 +93,9 @@ openssl verifysig -in signing-artefacts/approval_sig.p7b -in signing-artefacts/c
     -certs signing-artefacts/tsa-root.pem
 ```
 
-Current state: **14 of 17 phases pass.** The 3 that fail are listed in the TODO
-ledger; they are failures of the test code, not of the service.
+Current state: **18 of 18 phases pass**, `failures: 0`, about 35 seconds with
+the browser included. The history of the four checks that used to fail is in
+§4.1: all of them were defects in the test code, none in the service.
 
 ## 3. Step-by-step: how to verify each step
 
@@ -319,42 +320,82 @@ rate limits per address and per envelope, body caps, magic-byte refusals.
 ```sh
 e2e/run.sh
 ```
-The 17 phases: build, mock tsa, config, start service, admin login, client key,
+The 18 phases: build, mock tsa, config, start service, admin login, client key,
 cli create, send + outbox, browser signing, cli watch, cli report, audit chain,
-artefacts, negatives, rate limit, log redaction, graceful stop.
+artefacts, negatives, rate limit, user accounts, log redaction, graceful stop.
 
-Proven today (14 phases green): the CLI creates the envelope through the API,
-the service sends, **real Chrome** drives a party through claim → document →
-declination → consent, the worker signs the batch, the CLI polls to delivered,
-the CLI writes the verification report, the audit chain verifies, the signed
-artefacts are kept, tokens/keys/passwords are absent from 252 log lines,
-SIGTERM drains in 111 ms, refusals assert a state (expired link, cancel,
-non-PDF upload, login limit, link limit).
+Proven today (all 18 phases green, `failures: 0`, 34 s): the CLI creates the
+envelope through the API, the service sends, **real Chrome** drives a party
+through claim → document → declination → consent, the worker signs the batch,
+the CLI polls to delivered, the CLI writes the verification report, the audit
+chain verifies, the signed artefacts are kept, tokens/keys/passwords are absent
+from 403 log lines, SIGTERM drains clean, and every negative path asserts a
+state (a replayed consent, an expired link, a cancel, 15 consent payload rules,
+a non-PDF upload, the consent limit, the login limit, the link limit,
+caller-minted tokens).
 
 > **Verification status:** [x] artefacts kept for inspection ·
 > [x] CLI integration uses the shared fill spec, no duplicated logic ·
 > [x] no network beyond loopback ·
-> [ ] **Happy path runs green from a clean checkout** — the browser phase is
-> green, the run as a whole is red: **TODO** (see ledger).
-> [ ] **All negative paths assert a state** — 5 of 8 negative checks pass;
-> 3 fail in test code: **TODO**.
+> [x] **Happy path runs green from a clean checkout** — 18 of 18 phases,
+> `e2e/run.sh` exits 0 ·
+> [x] **All negative paths assert a state** — 9 of 9 negative checks pass,
+> each on a status code and a field, and each leaves an evidence file ·
+> [x] the run leaves the audit chain valid after the negative set.
+
+### Step 13 — accounts, CLI-minted tokens, chore endpoints
+
+```sh
+go test ./internal/signauth ./internal/signstore ./cmd/signsrv ./cmd/pdf-go
+e2e/run.sh "user accounts"
+```
+
+Proven: an account's secret lets the CLI sign its own access token and the
+service verifies it against the row (no token round trip, the secret never
+travels); the scopes of such a request are the row's, and every `admin:*` route
+refuses a caller-minted token with `insufficient_scope` **whatever** the row's
+scopes column says — which is why `user add` refuses to write `admin:read` at
+all; `user rotate` stops the old secret at the next request; `admin revoke-user`
+closes the account at the next request and the refusal names `token_revoked`,
+with the row left stamped so `admin dbstatus` can tell revoked from absent; all
+nine chore verbs of `pdf-go admin` reach the route they name and answer with the
+field asked about, and `admin users` never carries a secret.
+
+> **Verification status:** [x] §7 items 1, 3, 6, 8, 9, 10 run in the acceptance
+> run · [x] items 2, 4, 5, 7 run in the unit suites · [x] no credential read
+> from argv · [x] `admin:read` ungrantable to an account · [x] the run's
+> log-redaction phase covers `SIGNSRV_JWT_SECRET` and the minted token.
 
 ## 4. TODO ledger — the checks that do not exist yet
 
 Every item below is a **gap I am not pretending is closed**. None is a service
 defect found by a test; all are missing checks.
 
-### 4.1 Three negative checks fail in test code
+### 4.1 Closed: the four negative-path checks that used to fail
 
-| # | Item | What is wrong | What fixes it |
+All four were test-code defects, and no service change came out of any of them:
+the service refused as designed in every case, the test was reading the wrong
+thing. What each one was, and what the fix asserts now:
+
+| # | Item | What was wrong | What the fix asserts |
 |---|---|---|---|
-| 1 | `negatives / duplicate consent` | the consent bodies in `e2e/negatives.go` omit `document_sha`, so the *first* consent is refused as `document_changed` (409) and the second-consent test never runs | read the sha from the envelope view and include it in the valid consent |
-| 2 | `negatives / consent rules` | all phases claim from `127.0.0.1`; claim is 10/min **per address**, so the 11th claim across phases gets 429 | give each negative check its own loopback source address (`net.Dialer{LocalAddr: 127.0.0.40+i}`) |
-| 3 | `negatives / consent limit` | same cause as 2 | same fix |
-| 4 | `rate limit` phase | the phase floods one endpoint, then the client-key token exchange lands inside the same window and gets 429, so the 429 is attributed to the wrong call | sleep past the window before the exchange, and count the 429s per endpoint |
+| 1 | `negatives / duplicate consent` | a request built by `negCreate` was left **ready**, never **sent**, so a party could not act on it at all; the consent bodies also omitted `document_sha`, which the service compares with the stored revision | `negCreate` sends the request and takes the link tokens from the **send** response (create's tokens are the undelivered ones); the consent names the digest read from the envelope view. The replay is then asserted on two doors: a consented party may not claim again (409), and the same body without a session is refused (401) |
+| 2, 3 | `negatives / consent rules`, `consent limit` | every check claimed from `127.0.0.1`; claim is 10/min **per address**, so the eleventh claim of the run got a 429 that said nothing about the rule under test | each check dials from its own loopback address (`negUseAddr`), and the 15 consent rules run against two requests, because the consent bucket is 10/min **per envelope** |
+| 4 | `rate limit` phase | the flood spent `127.0.0.1`'s budget, so the client-key exchange that followed was answered 429 and the phase blamed the exchange | the flood dials from `127.0.0.44`, and the token exchange is performed **once** for the run — five exchanges a minute per address is the documented cap, and a client exchanges once |
 
-No service change is implied by any of these. The service refused as designed in
-all four cases.
+Two consequences of the fixes are worth naming, because they are the reason the
+checks are now worth running:
+
+- **The consent rules must be split across envelopes.** The consent bucket is
+  keyed on the envelope, deliberately, so that a party cannot escape it by
+  changing address. A set of fifteen cases against one request is therefore
+  throttled at ten, and the tail never runs. Asking "did the rule refuse?" after
+  a 429 is not a pass, so the check now says so — and the set is grouped so that
+  every rule is reached.
+- **The status a request is watched for has to allow the terminal state.**
+  Signing and delivery happen in one batch run, so a request can be past
+  `signed` on the first poll. `negWaitStatus` now accepts the statuses that
+  prove the same fact, instead of losing a race against the worker.
 
 ### 4.2 Missing checks in the unit tree
 
@@ -366,6 +407,8 @@ all four cases.
 | 03 | no test for `admin passwd` on a live store | `TestPasswordChangeEndsTokens` covers the epoch in `signauth`; the operator command is not covered |
 | 04, 05 | `internal/pdf`, `internal/report`, `internal/schema`, `internal/logos` have **zero package tests** | they are covered through the CLI and the fill/signing tests; a direct test for `pdf.Parse`, `report.Render`, `schema` validation is absent |
 | 07 | no test that consent **cannot** be replayed from a second browser profile | session cookie scoping is tested; a cross-profile replay is not |
+| 07 | no unit test that **send** is what mints the live link tokens | the create response carries tokens that were never delivered; every test that signs a link has to read the send's. The acceptance run depends on this and no package test states it |
+| 07 | no unit test that the consent **image's label is not trusted** | the bytes are sniffed: a PNG body under a `jpeg:` label is accepted, a GIF under the same label is refused. The acceptance run asserts the refusal; the accept side is unproven |
 | 08 | no browser-level CSP assertion | tests read JS source; nobody has opened devtools |
 | 10 | no test for a **key rotation** mid-batch | the key ring is read once at start |
 | 11 | log rotation not verified | `deploy/signsrv.service` ships a logrotate file; nothing runs it |

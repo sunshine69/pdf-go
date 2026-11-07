@@ -15,7 +15,7 @@ import (
 var schemaSQL string
 
 // CurrentVersion is the schema version this build expects.
-const CurrentVersion = 4
+const CurrentVersion = 5
 
 type migration struct {
 	version int
@@ -48,6 +48,28 @@ var migrations = []migration{
 		_, err := tx.ExecContext(ctx, schemaV4)
 		return err
 	}},
+	{version: 5, apply: func(ctx context.Context, tx *sql.Tx) error {
+		// The account table, added in step 13: one row carries the web-login
+		// password and the shared secret a caller signs its own tokens with.
+		_, err := tx.ExecContext(ctx, schemaV5)
+		return err
+	}},
+}
+
+// PendingMigrations names the migrations a database at `version` has not seen.
+// The schema endpoint answers "should I run migrate?" with this, so the answer
+// is the list of things that will happen, not just a number.
+func PendingMigrations(version int) []int {
+	// Initialised, not nil: the schema endpoint serialises this, and a nil slice
+	// is "null" in JSON where an empty list is "[]". "Nothing is pending" is a
+	// fact a caller should be able to read off the list's length.
+	out := []int{}
+	for _, m := range migrations {
+		if m.version > version {
+			out = append(out, m.version)
+		}
+	}
+	return out
 }
 
 // Migrate applies every migration newer than the stored version and returns
