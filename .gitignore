@@ -1,4 +1,6 @@
 vendor/**
+var/log/**
+tmp/**
 .aig*
 .playwright-mcp/**
 test_*
