@@ -220,6 +220,13 @@ function renderDocument() {
   dl.setAttribute("download", "");
   app.appendChild(dl);
   app.appendChild(el("p", "The document in the frame is the copy your consent will be about.", "muted"));
+  // Some phone browsers show an empty frame. The download is the same bytes,
+  // so the review can happen outside the page and the signing still happens
+  // here. The page is deliberately explicit about it rather than leaving the
+  // signer with a blank box and no instruction.
+  app.appendChild(el("div",
+    "If the frame above is blank on your device: press Download to review, open the PDF that is saved, then return to this page and continue. Downloading does not sign anything.",
+    "notice"));
 
   renderParties(env.parties);
 
