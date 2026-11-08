@@ -70,6 +70,12 @@ type CreateRequest struct {
 	Message   string
 	Actor     string // the client or admin who created it, recorded in the event
 	LinkBase  string // public_url, used to build each link in the response
+
+	// NotifyEmail is the drafter's address: who to tell when a party declines
+	// or an invitation can never be delivered. Empty is the default and the
+	// whole point — a create that leaves it out behaves exactly as every create
+	// before it did, and nobody is told anything.
+	NotifyEmail string
 }
 
 // Created is the result of Create. The plaintext link tokens appear here and
@@ -181,6 +187,20 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 	}
 	if len(r.Title) > 200 {
 		return nil, validation("title", "too long", "200 characters maximum")
+	}
+	// The drafter's address is optional, so it is parsed rather than merely
+	// required — and when it is present it must parse as well as a party's
+	// does. The reason is a specific one: an address that cannot receive mail
+	// is not refused at create, the first invite to it fails, the notice
+	// retries four times over three days, and then it is given up on. Three
+	// days of silence to learn of a missing "m" is worse than a 400 now.
+	if r.NotifyEmail != "" {
+		addr, err := mail.ParseAddress(r.NotifyEmail)
+		if err != nil {
+			return nil, validation("notify_email", fmt.Sprintf("%q is not a valid address", r.NotifyEmail),
+				"one address, e.g. you@example.com, or leave it out")
+		}
+		r.NotifyEmail = addr.Address
 	}
 	if r.ExpiresIn <= 0 {
 		r.ExpiresIn = 168 * time.Hour
@@ -334,6 +354,7 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 		Serial:      out.Serial,
 		ExpiresAt:   expiresAt,
 		CreatedAt:   formatTime(now),
+		NotifyEmail: r.NotifyEmail,
 	}
 
 	// One transaction for every row. If any insert fails the whole create is

@@ -22,6 +22,13 @@ type envelopeView struct {
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 	ExpiresAt string `json:"expires_at"`
+
+	// NotifyEmail is the drafter's address, empty when nobody asked to be
+	// told. It is in the view because the answer to "why was nobody emailed
+	// about this decline" is a fact about the envelope, and reading the
+	// database to find it out is the wrong shape of answer. The view is behind
+	// envelope:read, which is an operator scope, not a party's.
+	NotifyEmail string `json:"notify_email,omitempty"`
 }
 
 // handleListEnvelopes answers GET /api/v1/envelopes?status=&q=. The scope is

@@ -1,0 +1,20 @@
+{{.Subject}}
+
+An invitation to sign "{{plain .Title}}" could not be delivered to
+{{plain .Email}}.
+
+The service tried four times over three days and every attempt failed. The
+last error was:
+
+  {{plain .Reason}}
+
+The request is still open and the party's link still works, so nothing you
+asked for has been cancelled — but nobody has received the link, so nobody can
+sign it.
+
+If the address is wrong, cancel this request and create a new one with the
+correct address. If the address is right, the mailbox rejected us: a full
+inbox, a filter, or a domain that does not accept mail from this service.
+
+-- {{plain .From}}
+{{.Legal}}

@@ -1,0 +1,18 @@
+{{.Subject}}
+
+{{plain .Signer}} declined to sign "{{plain .Title}}".
+
+The request is closed. No signature was made on this document, and no link in
+it works any more.
+
+{{if .Reason}}Their reason:
+
+  {{plain .Reason}}
+
+{{else}}No reason was given.
+
+{{end}}To send it again, create a new request: a declined envelope cannot be
+reopened.
+
+-- {{plain .From}}
+{{.Legal}}

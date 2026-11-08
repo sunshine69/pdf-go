@@ -68,6 +68,13 @@ type ConsentResult struct {
 
 // DeclineResult is the answer to a decline. The request is over, and the
 // answer says so without describing the internals.
+//
+// Whether the drafter was told is deliberately not here. The drafter's address
+// is not the party's to learn — a party who declined a contract now holds a
+// piece of the other side's contact details they did not ask for and have no
+// use for — and a field that says "we tried to tell them and failed" invites a
+// party to re-decline to fix a problem that is not theirs. The outcome of the
+// notification goes to the event log, which the operator reads.
 type DeclineResult struct {
 	OK      bool   `json:"ok"`
 	Status  string `json:"status"`
@@ -405,6 +412,28 @@ func (d *Deps) Decline(ctx context.Context, token, reason string, in DeclineMeta
 	if err != nil {
 		return nil, err
 	}
+	// Tell the drafter. The decline is committed, so a failure here cannot
+	// undo it and must not be returned as one: the party's screen would say
+	// "your decline failed" when it did not, and a party who believes that
+	// signs again or walks away. So the failure is reported where an operator
+	// reads it — an event naming the decline whose notice did not go out —
+	// rather than to a party who can do nothing about it.
+	//
+	// It happens here, after the transaction, for the same reason cancel
+	// queues after its transition: the queue row must not describe a decline
+	// that a rollback then erased.
+	//
+	// The party's own words are carried across verbatim. A decline without a
+	// reason reads to the drafter exactly like a party who never opened the
+	// link, and the whole reason this notice exists is that they were
+	// indistinguishable before.
+	if _, err := NotifyDrafter(ctx, store, env.ID, p.ID, KindDeclined, reason); err != nil {
+		if eerr := store.AddEvent(ctx, env.ID, "system", "declined_notify_failed",
+			jsonPayload(map[string]any{"party_id": p.ID, "error": err.Error()})); eerr != nil {
+			return nil, eerr
+		}
+	}
+
 	return result, nil
 }
 

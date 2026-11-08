@@ -110,6 +110,11 @@ type Envelope struct {
 	SentAt      string
 	DeliveredAt string
 	CancelledAt string
+
+	// NotifyEmail is the drafter's address: who to tell when a party declines or
+	// when an invitation can never be delivered. Empty means nobody asked to be
+	// told, and every envelope created before schema 6 is empty.
+	NotifyEmail string
 }
 
 // Party is a row of the parties table.
@@ -203,6 +208,14 @@ type MailItem struct {
 	LeaseUntil string
 	SentAt     string
 	LastError  string
+
+	// Recipient is the address this row goes to, when that is not the party
+	// named by PartyID: the drafter's notices. Empty means the party row.
+	Recipient string
+	// Detail is the text the message explains — the SMTP rejection an
+	// invitation got. It is separate from LastError because LastError belongs
+	// to this row's own delivery attempts.
+	Detail string
 }
 
 // BatchItem is the pending signing batch of an envelope.

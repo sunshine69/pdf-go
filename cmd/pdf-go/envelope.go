@@ -328,6 +328,7 @@ func envelopeCreate(args []string) int {
 	subject := fs.String("subject", "", "invitation subject line")
 	message := fs.String("message", "", "invitation message")
 	expires := fs.String("expires", "", "link lifetime, 72h or 3d")
+	notify := fs.String("notify", "", "address to tell if a party declines or an invitation cannot be delivered")
 	send := fs.Bool("send", false, "send the invitations after creating")
 	widget := fs.String("widget", "", "widget to lock the form to (empty means every field)")
 	if err := fs.Parse(args); err != nil {
@@ -364,6 +365,9 @@ func envelopeCreate(args []string) int {
 	}
 	if *message != "" {
 		doc["message"] = *message
+	}
+	if *notify != "" {
+		doc["notify_email"] = *notify
 	}
 	specJSON, err := json.Marshal(doc)
 	if err != nil {

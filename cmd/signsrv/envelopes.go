@@ -91,6 +91,11 @@ type createBody struct {
 	Subject   string          `json:"subject"`
 	Message   string          `json:"message"`
 	Parties   []signflow.Party
+	// NotifyEmail is the drafter's address. It is on the form and in the spec
+	// JSON, because the two paths that create an envelope (a raw POST and the
+	// CLI, which packs its flags into spec) would otherwise disagree about
+	// where it lives.
+	NotifyEmail string `json:"notify_email"`
 }
 
 // handleCreateEnvelopes answers POST /api/v1/envelopes. The body is
@@ -149,6 +154,9 @@ func (s *server) handleCreateEnvelopes(w http.ResponseWriter, r *http.Request) {
 		Actor:     actor,
 		LinkBase:  s.cfg.PublicURL,
 		ExpiresIn: linkTTL(s.cfg, body.ExpiresIn),
+		// Create parses and normalises it; an address that does not parse is a
+		// 400 naming the field, before a byte of the PDF is written.
+		NotifyEmail: body.NotifyEmail,
 	}
 	req.Fill = body.Fill
 
@@ -190,10 +198,11 @@ func (s *server) decodeCreate(w http.ResponseWriter, r *http.Request) (createBod
 	// One JSON document, decoded once: the fill is the CLI fill JSON, the
 	// widget and the mail text sit next to it.
 	var doc struct {
-		Fill    schema.FillSpec `json:"fill"`
-		Widget  signflow.Widget `json:"widget"`
-		Subject string          `json:"subject"`
-		Message string          `json:"message"`
+		Fill        schema.FillSpec `json:"fill"`
+		Widget      signflow.Widget `json:"widget"`
+		Subject     string          `json:"subject"`
+		Message     string          `json:"message"`
+		NotifyEmail string          `json:"notify_email"`
 	}
 	if err := json.Unmarshal([]byte(spec), &doc); err != nil {
 		writeField(w, "spec", "not JSON: "+err.Error(),
@@ -209,6 +218,14 @@ func (s *server) decodeCreate(w http.ResponseWriter, r *http.Request) (createBod
 	out.Widget = doc.Widget
 	out.Subject = doc.Subject
 	out.Message = doc.Message
+	// The form wins over the spec document: a caller who sets both is using the
+	// form field as the switch and the document as the payload, and a value in
+	// the field is the more visible of the two.
+	if e := r.FormValue("notify_email"); e != "" {
+		out.NotifyEmail = e
+	} else {
+		out.NotifyEmail = doc.NotifyEmail
+	}
 
 	parties := r.FormValue("parties")
 	if parties == "" {
@@ -253,12 +270,13 @@ func (s *server) answerCreateFailure(w http.ResponseWriter, r *http.Request, act
 // needs the hash to check what it got.
 func envelopeViewOf(e *signstore.Envelope) envelopeView {
 	return envelopeView{
-		ID:        e.ID,
-		Title:     e.Title,
-		Status:    string(e.Status),
-		CreatedAt: e.CreatedAt,
-		UpdatedAt: e.UpdatedAt,
-		ExpiresAt: e.ExpiresAt,
+		ID:          e.ID,
+		Title:       e.Title,
+		Status:      string(e.Status),
+		CreatedAt:   e.CreatedAt,
+		UpdatedAt:   e.UpdatedAt,
+		ExpiresAt:   e.ExpiresAt,
+		NotifyEmail: e.NotifyEmail,
 	}
 }
 

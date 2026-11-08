@@ -260,9 +260,26 @@ func (w *worker) failMail(ctx context.Context, item *signstore.MailItem, reason 
 			w.log.Error("mail give up", "error", err, "id", item.ID)
 			return
 		}
+		// The event says the message died. The drafter's notice says what that
+		// means for them: an invite that never arrived is an envelope nobody
+		// can sign, and without this the only way to find out is to watch the
+		// queue depth or read an event nobody reads. The rejection text is put
+		// on the row first, so the notice can quote it instead of "it failed".
+		//
+		// NotifyUndeliverable is the rule both drain loops share — the send
+		// path and this one apply it identically, so it does not matter which
+		// loop killed the row. Only an invite earns a notice, and a notice that
+		// fails gets no notice of its own: two rows describing each other's
+		// failure is a loop, not a report. A notice error is logged rather than
+		// returned; the row is already given up and the event has to be written.
+		item.LastError = reason
+		notified, err := signflow.NotifyUndeliverable(ctx, w.deps.Store, item)
+		if err != nil {
+			w.log.Error("drafter notify", "error", err, "envelope", item.EnvelopeID)
+		}
 		if err := w.deps.Store.AddEvent(ctx, item.EnvelopeID, "worker", "mail_failed",
 			signflow.PayloadJSON(map[string]any{"kind": item.Kind, "party": item.PartyID,
-				"error": reason})); err != nil {
+				"error": reason, "notified": notified})); err != nil {
 			w.log.Error("mail failed event", "error", err)
 		}
 		return

@@ -16,18 +16,27 @@ import (
 
 const (
 	envelopeCols = "id, title, status, template_sha, filled_sha, current_sha, serial," +
-		" created_by, created_at, updated_at, expires_at, sent_at, delivered_at, cancelled_at"
+		" created_by, created_at, updated_at, expires_at, sent_at, delivered_at, cancelled_at, notify_email"
 	partyCols = "id, envelope_id, order_idx, email, name, status, token_hash," +
 		" token_expires_at, claim_at, consent_at, delivered_at, session_hash, reason"
 	revisionCols = "id, envelope_id, sha256, prev_id, kind, sig_field, party_id," +
 		" cert_serial, cert_fingerprint, produced_by, size, created_at"
 )
 
+// insertEnvelope writes the envelope inside the create transaction. The
+// drafter's address is the last column; an empty one is NULL for the same
+// reason the store's own writer makes it NULL — "nobody asked to be told" must
+// be one stored fact, because the decline path reads it back and decides
+// whether to queue a mail from exactly that emptiness.
 func insertEnvelope(ctx context.Context, tx *sql.Tx, e *signstore.Envelope) error {
+	var notify any
+	if e.NotifyEmail != "" {
+		notify = e.NotifyEmail
+	}
 	_, err := tx.ExecContext(ctx,
-		"insert into envelopes("+envelopeCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"insert into envelopes("+envelopeCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		e.ID, e.Title, string(e.Status), e.TemplateSHA, e.FilledSHA, e.CurrentSHA, e.Serial,
-		e.CreatedBy, e.CreatedAt, e.CreatedAt, e.ExpiresAt, e.SentAt, e.DeliveredAt, e.CancelledAt)
+		e.CreatedBy, e.CreatedAt, e.CreatedAt, e.ExpiresAt, e.SentAt, e.DeliveredAt, e.CancelledAt, notify)
 	return err
 }
 

@@ -47,6 +47,13 @@ type Data struct {
 	ReceiptName  string
 	DownloadURL  string
 	RetainedDays int
+
+	// Recipient is the address the message is going to. Every party-facing
+	// message can print it as the reader's own address; the drafter's notices
+	// are the first messages whose reader is not the party named in the body,
+	// so those templates name the recipient and say why they are writing to
+	// them. It is printed as plain, since it reaches the body from user input.
+	Recipient string
 }
 
 // DefaultLegal is the footer line every message carries.
@@ -61,7 +68,11 @@ type Renderer struct {
 
 // NewRenderer parses the templates read from the embedded filesystem.
 func NewRenderer(fsys fs.FS) (*Renderer, error) {
-	kinds := []string{"invite.txt.tmpl", "reminder.tmpl", "signed.tmpl", "cancelled.tmpl"}
+	// The two drafter kinds are here for the same reason as the others: a
+	// template that does not parse is a startup error, not a failure at the
+	// moment a party declines and nobody is watching the queue.
+	kinds := []string{"invite.txt.tmpl", "reminder.tmpl", "signed.tmpl", "cancelled.tmpl",
+		"declined.tmpl", "undeliverable.tmpl"}
 	r := &Renderer{text: map[string]*texttmpl.Template{}}
 	for _, name := range kinds {
 		body, err := fs.ReadFile(fsys, name)
@@ -157,11 +168,14 @@ func (r *Renderer) Render(d Data) (string, string, error) {
 // through plain at render time, so the check applies to the whole body,
 // including a title a user typed with tags in it.
 func checkText(d Data, text string) error {
-	// The link must be in full in the messages that hand one out. A cancelled
-	// notice has no working link to carry — its whole point is that the link a
-	// party held is dead — so the rule does not apply to it, and the template
-	// deliberately prints no link rather than a dead one.
-	if d.Link != "" && d.Kind != "cancelled" && !strings.Contains(text, d.Link) {
+	// The link must be in full in the messages that hand one out. Three kinds
+	// are exempt, each because it has no link to carry: a cancelled notice's
+	// whole point is that the link a party held is dead, and the drafter's two
+	// notices go to someone who was never a party to the link at all — a
+	// declined request closed every link in it, and an undeliverable one never
+	// reached anyone who could use it. Each template prints no link
+	// deliberately, so the rule could not be satisfied here even if it applied.
+	if d.Link != "" && !noLinkKinds[d.Kind] && !strings.Contains(text, d.Link) {
 		return fmt.Errorf("signmail: %s text body does not contain the link in full", d.Kind)
 	}
 	if htmlTagRe.MatchString(text) {
@@ -174,6 +188,14 @@ func checkText(d Data, text string) error {
 		return fmt.Errorf("signmail: %s text body contains a non-ASCII icon", d.Kind)
 	}
 	return nil
+}
+
+// noLinkKinds are the messages that never carry a link: cancelled because the
+// link it describes is dead, and the drafter's two notices because the reader
+// was never given one. Adding a kind here means its template must print no URL,
+// and drafter_test asserts that for the drafter's kinds.
+var noLinkKinds = map[string]bool{
+	"cancelled": true, "declined": true, "undeliverable": true,
 }
 
 var (
@@ -194,6 +216,13 @@ func SubjectFor(d Data) string {
 		return "Signing cancelled: " + d.Title
 	case "signed":
 		return "Signed copy: " + d.Title
+	case "declined":
+		// The subject leads with the party, not the document: the drafter has
+		// many documents out at once, and the fact they need is which one came
+		// back.
+		return "Signature declined by " + d.Signer + ": " + d.Title
+	case "undeliverable":
+		return "Invitation could not be delivered: " + d.Title
 	}
 	return d.Title
 }

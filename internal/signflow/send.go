@@ -26,6 +26,11 @@ import (
 // fake.
 type Queue interface {
 	EnqueueMail(ctx context.Context, envelopeID, partyID, kind, sha256 string) error
+	// EnqueueMailTo queues a message addressed to an explicit recipient rather
+	// than to the party row. The drafter's notices are the only such messages,
+	// and they arrive through NotifyDrafter; the interface carries it so a fake
+	// can be handed the whole queue.
+	EnqueueMailTo(ctx context.Context, envelopeID, partyID, recipient, kind, sha256, detail string) error
 }
 
 // EnqueueInvites writes one invite row per party. Called with the create
@@ -39,13 +44,24 @@ func EnqueueInvites(ctx context.Context, q Queue, envelopeID string, parties []s
 	return nil
 }
 
-// The kinds the service sends.
+// The kinds the service sends. The first four go to a party; the last two go
+// to the drafter, and they are the only messages in this service whose
+// recipient is not a party row — see NotifyDrafter.
 const (
-	KindInvite    = "invite"
-	KindReminder  = "reminder"
-	KindCancelled = "cancelled"
-	KindSigned    = "signed"
+	KindInvite        = "invite"
+	KindReminder      = "reminder"
+	KindCancelled     = "cancelled"
+	KindSigned        = "signed"
+	KindDeclined      = "declined"
+	KindUndeliverable = "undeliverable"
 )
+
+// toDrafter is true of a kind addressed to envelopes.notify_email rather than
+// to a party. The worker checks it before rendering, so a row of this kind
+// whose envelope has no address is closed rather than retried forever.
+func toDrafter(kind string) bool {
+	return kind == KindDeclined || kind == KindUndeliverable
+}
 
 // ErrNoRenderer is the answer of a send with no renderer configured: the
 // service runs with mail disabled, and the queue is not drained.
@@ -75,21 +91,20 @@ func Build(ctx context.Context, r *signmail.Renderer, res Resolver, item *signst
 	if err != nil {
 		return nil, fmt.Errorf("signflow: %s: party %s: %w", item.Kind, item.PartyID, err)
 	}
-	token := rawToken
-	if token == "" {
-		token = RawToken(item.PartyID)
-	}
-	if token == "" {
-		return nil, fmt.Errorf("signflow: %s: party %s: the link token is not available",
-			item.Kind, item.PartyID)
-	}
+	// A drafter's notice carries no link. The party's link is exactly the thing
+	// that has stopped working — a declined request closes every link in the
+	// envelope, and an undeliverable one never reached anyone who could use it
+	// — so printing one would hand out a URL that only answers 410. The token
+	// is not looked up, so a row of these kinds renders after a restart, when
+	// rawTokens is empty, instead of failing for three days and being given up
+	// on. The reason and the party's name come from the party row: that row is
+	// who the message is *about*, even though it is not who it is addressed to.
 	d := signmail.Data{
 		Kind:      item.Kind,
 		MailFrom:  mailFrom,
 		From:      mailFrom,
 		Title:     env.Title,
 		Signer:    p.Name,
-		Link:      LinkFor(linkBase, token),
 		ExpiresAt: p.TokenExpires,
 		Reason:    p.Reason,
 		SHA256:    item.SHA256,
@@ -98,8 +113,35 @@ func Build(ctx context.Context, r *signmail.Renderer, res Resolver, item *signst
 		N:         parties,
 		Email:     p.Email,
 	}
+	if !toDrafter(item.Kind) {
+		token := rawToken
+		if token == "" {
+			token = RawToken(item.PartyID)
+		}
+		if token == "" {
+			return nil, fmt.Errorf("signflow: %s: party %s: the link token is not available",
+				item.Kind, item.PartyID)
+		}
+		d.Link = LinkFor(linkBase, token)
+	}
 	if item.Kind == KindReminder {
 		d.DaysLeft = remaining(now, p.TokenExpires)
+	}
+	// The address the row is going to. A party message goes to the party; a
+	// drafter's notice goes to the address the row carried, and the party's
+	// address goes in the body as the one that failed. ResolveRecipient is the
+	// one place that decides, so a row cannot quietly change who reads it.
+	to, err := ResolveRecipient(item, p)
+	if err != nil {
+		return nil, err
+	}
+	d.Recipient = to
+	if toDrafter(item.Kind) {
+		// The notice is addressed to the drafter, so the party's mailbox — the
+		// one the template names as the address that failed — is the party's,
+		// not the reader's.
+		d.Email = p.Email
+		d.Reason = firstNonEmpty(item.Detail, p.Reason)
 	}
 	text, html, err := r.Render(d)
 	if err != nil {
@@ -109,12 +151,90 @@ func Build(ctx context.Context, r *signmail.Renderer, res Resolver, item *signst
 		Kind:       item.Kind,
 		EnvelopeID: item.EnvelopeID,
 		PartyID:    item.PartyID,
-		To:         p.Email,
+		To:         to,
 		From:       mailFrom,
 		Subject:    signmail.SubjectFor(d),
 		Text:       text,
 		HTML:       html,
 	}, nil
+}
+
+// ResolveRecipient decides the address one queue row goes to. A row carries
+// its own recipient when the message is not addressed to a party; otherwise the
+// party row is the address, which is what every signer-facing message does.
+//
+// A drafter's kind with no recipient is refused rather than sent. Without this
+// check such a row would fall through to the party's address, which is the
+// wrong person to tell about a decline and the wrong mailbox for a bounce.
+// NotifyDrafter only queues when the envelope has an address, so this fires on
+// a row written by a future caller, not on today's paths — but "the notice
+// silently went to the signer instead" is exactly the failure that would take
+// weeks to notice, so it gets an error instead of a silent misdelivery.
+func ResolveRecipient(item *signstore.MailItem, p *signstore.Party) (string, error) {
+	if toDrafter(item.Kind) {
+		if item.Recipient == "" {
+			return "", fmt.Errorf("signflow: %s: envelope %s: no drafter address to notify",
+				item.Kind, item.EnvelopeID)
+		}
+		return item.Recipient, nil
+	}
+	if p.Email == "" {
+		return "", fmt.Errorf("signflow: %s: party %s has no address", item.Kind, item.PartyID)
+	}
+	return p.Email, nil
+}
+
+// NotifyUndeliverable tells the drafter that an invitation gave up. Both drain
+// loops — the send path's and the worker's — call it, because the two of them
+// are one rule that has to hold everywhere a row dies.
+//
+// Only an invite earns a notice. A reminder is not the reason a party has not
+// signed, a cancellation notice nobody received changes nothing about the
+// document, and a drafter's own notice gets no notice of its own: two rows
+// describing each other's failure is a loop, not a report.
+//
+// The returned address is empty when nobody was told, which is the state of
+// every envelope without an address and is not an error.
+func NotifyUndeliverable(ctx context.Context, store *signstore.Store, item *signstore.MailItem) (string, error) {
+	if item.Kind != KindInvite {
+		return "", nil
+	}
+	return NotifyDrafter(ctx, store, item.EnvelopeID, item.PartyID, KindUndeliverable,
+		firstNonEmpty(item.Detail, item.LastError))
+}
+
+// firstNonEmpty returns the first argument that is not empty.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// NotifyDrafter queues one notice to the address the envelope carries. It is a
+// no-op when nobody asked to be told, which is the state of every envelope
+// created before schema 6 and of any create that left the field out: no row is
+// written, no error is returned, and the decline or the failure stays visible
+// only in the events table, exactly as it was before this existed.
+//
+// It returns the address it told, empty when it told nobody, so the caller can
+// put that fact in the event it writes next — the event and the queue row are
+// two views of one action, and a reader of the event should not have to guess
+// which of them happened.
+func NotifyDrafter(ctx context.Context, store *signstore.Store, envelopeID, partyID, kind, detail string) (string, error) {
+	env, err := store.GetEnvelope(ctx, envelopeID)
+	if err != nil {
+		return "", fmt.Errorf("signflow: %s: envelope %s: %w", kind, envelopeID, err)
+	}
+	if env.NotifyEmail == "" {
+		return "", nil
+	}
+	if err := store.EnqueueMailTo(ctx, envelopeID, partyID, env.NotifyEmail, kind, "", detail); err != nil {
+		return "", fmt.Errorf("signflow: queue %s for envelope %s: %w", kind, envelopeID, err)
+	}
+	return env.NotifyEmail, nil
 }
 
 // rawTokens holds the plaintext link of a party, in memory only, for the
@@ -149,8 +269,15 @@ func remaining(now time.Time, expiresAt string) int {
 // Enqueue sends one kind for one party. Used by cancel, completion, and the
 // reminder job.
 func Enqueue(ctx context.Context, q Queue, envelopeID, partyID, kind, sha256 string) error {
-	if kind != KindInvite && kind != KindReminder && kind != KindCancelled && kind != KindSigned {
+	switch kind {
+	case KindInvite, KindReminder, KindCancelled, KindSigned, KindDeclined, KindUndeliverable:
+	default:
 		return fmt.Errorf("signflow: unknown mail kind %q", strings.ToLower(kind))
+	}
+	// A drafter's kind has no party to address it to, so it must not come
+	// through the party-addressed writer: it would render to the signer.
+	if toDrafter(kind) {
+		return fmt.Errorf("signflow: mail kind %q is addressed to the drafter, use EnqueueMailTo", kind)
 	}
 	return q.EnqueueMail(ctx, envelopeID, partyID, kind, sha256)
 }
@@ -322,7 +449,17 @@ func (d *Deps) failMail(ctx context.Context, item *signstore.MailItem, now time.
 		if err := d.Store.GiveUpMail(ctx, item.ID, reason); err != nil {
 			return err
 		}
-		payload := fmt.Sprintf(`{"kind":%q,"party":%q,"error":%q}`, item.Kind, item.PartyID, reason)
+		// GiveUpMail has already overwritten last_error with this failure, so
+		// the row in hand carries the rejection text the notice quotes.
+		item.LastError = reason
+		notified, nerr := NotifyUndeliverable(ctx, d.Store, item)
+		if nerr != nil {
+			// The message is dead and the event must still be written; a
+			// failed notice is recorded next to it rather than replacing it.
+			reason = reason + " (drafter notice failed: " + nerr.Error() + ")"
+		}
+		payload := fmt.Sprintf(`{"kind":%q,"party":%q,"error":%q,"notified":%q}`,
+			item.Kind, item.PartyID, reason, notified)
 		return d.Store.AddEvent(ctx, item.EnvelopeID, "worker", "mail_failed", payload)
 	}
 	next := now.Add(signmail.BackoffFor(item.Attempts))

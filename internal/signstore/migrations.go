@@ -15,7 +15,7 @@ import (
 var schemaSQL string
 
 // CurrentVersion is the schema version this build expects.
-const CurrentVersion = 5
+const CurrentVersion = 6
 
 type migration struct {
 	version int
@@ -52,6 +52,12 @@ var migrations = []migration{
 		// The account table, added in step 13: one row carries the web-login
 		// password and the shared secret a caller signs its own tokens with.
 		_, err := tx.ExecContext(ctx, schemaV5)
+		return err
+	}},
+	{version: 6, apply: func(ctx context.Context, tx *sql.Tx) error {
+		// The drafter's address, added in step 14: a decline and a permanently
+		// failed invitation are otherwise invisible to the person who asked.
+		_, err := tx.ExecContext(ctx, schemaV6)
 		return err
 	}},
 }

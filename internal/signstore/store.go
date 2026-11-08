@@ -93,7 +93,7 @@ func (s *Store) Tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 // ---------- envelopes ----------
 
 const envelopeCols = "id, title, status, template_sha, filled_sha, current_sha, serial," +
-	" created_by, created_at, updated_at, expires_at, sent_at, delivered_at, cancelled_at"
+	" created_by, created_at, updated_at, expires_at, sent_at, delivered_at, cancelled_at, notify_email"
 
 // CreateEnvelope inserts a new envelope. Status is validated; the allowed
 // transitions are checked by signflow, not here.
@@ -109,10 +109,10 @@ func (s *Store) CreateEnvelope(ctx context.Context, e *Envelope) error {
 	}
 	e.UpdatedAt = timeNow()
 	_, err := s.db.ExecContext(ctx,
-		"insert into envelopes("+envelopeCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"insert into envelopes("+envelopeCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		e.ID, e.Title, string(e.Status), e.TemplateSHA, e.FilledSHA, e.CurrentSHA, e.Serial,
 		createdBy(e.CreatedBy), e.CreatedAt, e.UpdatedAt, e.ExpiresAt,
-		e.SentAt, e.DeliveredAt, e.CancelledAt)
+		e.SentAt, e.DeliveredAt, e.CancelledAt, notifyEmail(e.NotifyEmail))
 	return err
 }
 
@@ -120,6 +120,17 @@ func (s *Store) CreateEnvelope(ctx context.Context, e *Envelope) error {
 // this" is stored as SQL NULL and not as the integer 0.
 func createdBy(v int64) any {
 	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+// notifyEmail stores an empty address as NULL, so "nobody asked to be told" is
+// one stored fact and not two (” and NULL). It is not validation: a value that
+// is not an address still gets stored, and the mail for it fails visibly and
+// retries visibly rather than being silently dropped here.
+func notifyEmail(v string) any {
+	if v == "" {
 		return nil
 	}
 	return v
@@ -231,7 +242,7 @@ func scanEnvelope(r rowScanner) (*Envelope, error) {
 	var status string
 	err := scanRow(r, &e.ID, &e.Title, &status, &e.TemplateSHA, &e.FilledSHA, &e.CurrentSHA,
 		&e.Serial, &e.CreatedBy, &e.CreatedAt, &e.UpdatedAt, &e.ExpiresAt,
-		&e.SentAt, &e.DeliveredAt, &e.CancelledAt)
+		&e.SentAt, &e.DeliveredAt, &e.CancelledAt, &e.NotifyEmail)
 	e.Status = EnvelopeStatus(status)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -878,16 +889,33 @@ func (s *Store) QueueBacklog(ctx context.Context) (*QueueBacklog, error) {
 	return out, nil
 }
 
+// EnqueueMail adds a party-addressed message: Build reads the party row and
+// sends to its address, which is right for every message a signer receives.
 func (s *Store) EnqueueMail(ctx context.Context, envelopeID, partyID, kind, sha256 string) error {
+	return s.EnqueueMailTo(ctx, envelopeID, partyID, "", kind, sha256, "")
+}
+
+// EnqueueMailTo adds a message addressed to an explicit recipient. A notice to
+// the drafter has no party row to address it to — the person who asked for the
+// signature is not one of the parties — so the row carries its own recipient
+// and keeps party_id as what it always meant: the party the message is about.
+// An empty recipient means the old rule, address it to the party.
+//
+// detail is the text the message explains: the SMTP rejection of an
+// invitation that never arrived. The row's own last_error is not enough,
+// because that column belongs to the notice and gets overwritten the first
+// time the notice itself fails to send.
+func (s *Store) EnqueueMailTo(ctx context.Context, envelopeID, partyID, recipient, kind, sha256, detail string) error {
 	_, err := s.db.ExecContext(ctx,
-		"insert into mail_queue(envelope_id, party_id, kind, sha256, next_at) values(?,?,?,?,?)",
-		envelopeID, partyID, kind, sha256, timeNow())
+		"insert into mail_queue(envelope_id, party_id, kind, sha256, next_at, recipient, detail) values(?,?,?,?,?,?,?)",
+		envelopeID, partyID, kind, sha256, timeNow(), notifyEmail(recipient), notifyEmail(truncate(detail, 400)))
 	return err
 }
 
 // ClaimMail takes the lease on one unsent message.
 const mailCols = "id, envelope_id, party_id, kind, coalesce(sha256, ''), attempts," +
-	" next_at, coalesce(lease_until, ''), coalesce(sent_at, ''), coalesce(last_error, '')"
+	" next_at, coalesce(lease_until, ''), coalesce(sent_at, ''), coalesce(last_error, ''),\n\t" +
+	" coalesce(recipient, ''), coalesce(detail, '')"
 
 // ClaimMail takes the lease on one unsent message, incrementing its attempt
 // count. ErrNotFound when nothing is due. The worker finishes with
@@ -916,7 +944,7 @@ func (s *Store) ClaimMail(ctx context.Context, lease time.Duration) (*MailItem, 
 		return tx.QueryRowContext(ctx,
 			"select "+mailCols+" from mail_queue where id = ?", id).
 			Scan(&m.ID, &m.EnvelopeID, &m.PartyID, &m.Kind, &m.SHA256, &m.Attempts,
-				&m.NextAt, &m.LeaseUntil, &m.SentAt, &m.LastError)
+				&m.NextAt, &m.LeaseUntil, &m.SentAt, &m.LastError, &m.Recipient, &m.Detail)
 	})
 	if err != nil {
 		return nil, err
@@ -952,7 +980,7 @@ func (s *Store) ClaimMailFor(ctx context.Context, envelopeID string, lease time.
 		return tx.QueryRowContext(ctx,
 			"select "+mailCols+" from mail_queue where id = ?", id).
 			Scan(&m.ID, &m.EnvelopeID, &m.PartyID, &m.Kind, &m.SHA256, &m.Attempts,
-				&m.NextAt, &m.LeaseUntil, &m.SentAt, &m.LastError)
+				&m.NextAt, &m.LeaseUntil, &m.SentAt, &m.LastError, &m.Recipient, &m.Detail)
 	})
 	if err != nil {
 		return nil, err
@@ -1000,7 +1028,8 @@ func (s *Store) GiveUpMail(ctx context.Context, id int64, reason string) error {
 func (s *Store) ListMail(ctx context.Context, envelopeID string) ([]MailItem, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`select id, envelope_id, party_id, kind, coalesce(sha256, ''), attempts,
-		        next_at, coalesce(lease_until, ''), coalesce(sent_at, ''), coalesce(last_error, '')
+		        next_at, coalesce(lease_until, ''), coalesce(sent_at, ''), coalesce(last_error, ''),
+		        coalesce(recipient, ''), coalesce(detail, '')
 		 from mail_queue where (? = '' or envelope_id = ?) order by sent_at is not null, id`,
 		envelopeID, envelopeID)
 	if err != nil {
@@ -1011,7 +1040,7 @@ func (s *Store) ListMail(ctx context.Context, envelopeID string) ([]MailItem, er
 	for rows.Next() {
 		var m MailItem
 		if err := scanRow(rows, &m.ID, &m.EnvelopeID, &m.PartyID, &m.Kind, &m.SHA256, &m.Attempts,
-			&m.NextAt, &m.LeaseUntil, &m.SentAt, &m.LastError); err != nil {
+			&m.NextAt, &m.LeaseUntil, &m.SentAt, &m.LastError, &m.Recipient, &m.Detail); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

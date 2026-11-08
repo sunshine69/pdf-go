@@ -154,9 +154,9 @@ if [ "${1:-}" = "report" ]; then
 fi
 
 # ------------------------------------------------------------------- build ----
-say "build (production: -trimpath, vendored)"
-go build -mod=vendor -trimpath -o "$BIN/signsrv" ./cmd/signsrv || fail "signsrv did not build"
-go build -mod=vendor -trimpath -o "$BIN/pdf-go"  ./cmd/pdf-go  || fail "pdf-go did not build"
+say "build (production: -trimpath, from the module cache)"
+go build -trimpath -o "$BIN/signsrv" ./cmd/signsrv || fail "signsrv did not build"
+go build -trimpath -o "$BIN/pdf-go"  ./cmd/pdf-go  || fail "pdf-go did not build"
 note "$("$BIN/signsrv" version)  $("$BIN/pdf-go" version)"
 
 # -------------------------------------------------------------------- stop ----
