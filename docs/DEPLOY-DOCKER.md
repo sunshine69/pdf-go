@@ -164,7 +164,7 @@ Subcommands worth knowing inside a container (`docker exec signsrv signsrv …`)
 
 ```
 serve | checkconfig | migrate | dbstatus | sweep
-admin add|list|passwd        client add|list|revoke      user create|list
+admin add|list|passwd        client add|list|revoke      user add|list|rotate|revoke
 secrets init                 audit-write [DAY]           audit-verify
 sign | sign-selftest | checkpdf | mail-test | version
 ```
@@ -196,6 +196,22 @@ docker exec signsrv signsrv sign-selftest /testdata/sample1.pdf /tmp/out.pdf
 
 An undated signature is the failure mode this catches and `/healthz` never will:
 the TSA call fails quietly and the document still signs.
+
+One trap. In dev mode `keystore_pass` defaults to a value **generated at each
+start**, so a `docker exec` that loads the config again picks a passphrase
+different from the one the running server used to seal the keystore, and the
+selftest reports `keystore passphrase is wrong` against a perfectly healthy
+instance. Pass the same value the server has:
+
+```sh
+docker exec -e SIGNSRV_KEYSTORE_PASS="$SIGNSRV_KEYSTORE_PASS" \
+  signsrv signsrv sign-selftest /testdata/sample1.pdf /tmp/out.pdf
+```
+
+Outside dev mode there is no default — `keystore_pass` is required, so every
+process agrees on it and the trap disappears. If you see that error on a
+production container, the passphrase really is wrong, and the fix is the
+passphrase, not the keystore.
 
 ### Logs
 
@@ -286,10 +302,21 @@ docker run --rm --network host -v cand-data:/var/lib/signsrv \
   --env-file /etc/signsrv/env signsrv:v0.0.2 checkconfig
 ```
 
-Then run the release gate — `scripts/verify-release.sh` drives a throwaway
-instance end to end (upload, fill, create, send, claim, consent, sign, deliver)
-and reads the log for leaked credentials; `scripts/prod-sign-run.sh` is the same
-walk against the real instance, and is idempotent.
+Then run the release gate. `scripts/release-gate-dev.sh` builds the candidate
+code, starts a throwaway instance on a free port, seeds the operator and machine
+client the gate needs, runs `scripts/verify-release.sh` against it, and tears the
+instance down. The gate itself is the checklist — upload, fill, create, send,
+claim, consent, sign, deliver, the path-traversal and scope probes, and a grep of
+the log for leaked credentials — and it drives whatever instance you point it at:
+
+```sh
+sh scripts/release-gate-dev.sh                       # self-contained, dev mode
+sh scripts/verify-release.sh ./tmp/bin https://host.example \
+     "$KEY" /etc/signsrv/config.env                  # against a real instance
+```
+
+`scripts/prod-sign-run.sh` is the same walk against the real instance, and is
+idempotent. Use it before pointing an alias at a new image.
 
 ---
 
