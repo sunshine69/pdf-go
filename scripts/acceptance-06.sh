@@ -34,32 +34,32 @@ API=http://127.0.0.1:8090/api/v1
 exec > "$D/results.txt" 2>&1
 
 echo "== build offline from vendor =="
-GOFLAGS=-mod=vendor GOPROXY=off go build -o "$D/signsrv" ./cmd/signsrv
-GOFLAGS=-mod=vendor GOPROXY=off go build -o "$D/pdf-go" ./cmd/pdf-go
+go build -o "$D/signsrv" ./cmd/signsrv
+go build -o "$D/pdf-go" ./cmd/pdf-go
 echo "  ok"
 
 echo "== vet and gofmt =="
-go vet -mod=vendor ./cmd/signsrv ./internal/signflow ./internal/signmail ./web
+go vet ./cmd/signsrv ./internal/signflow ./internal/signmail ./web
 test -z "$(gofmt -l ./cmd ./internal)" && echo "  clean"
 
 echo "== unit tests: tokens, send, render, mail parse =="
-go test -mod=vendor -count=1 ./internal/signflow ./internal/signmail 2>&1 \
+go test -count=1 ./internal/signflow ./internal/signmail 2>&1 \
   | grep -vE '^"TODO Signature field|^{"time"' | grep -E 'ok|FAIL'
 
 echo "== token is 256-bit, stored only as a hash =="
-go test -mod=vendor -count=1 -run TestTokensAreUniqueAnd52Chars ./internal/signflow 2>&1 \
+go test -count=1 -run TestTokensAreUniqueAnd52Chars ./internal/signflow 2>&1 \
   | grep -vE '^"TODO Signature field|^{"time"' | tail -1
-go test -mod=vendor -count=1 -run TestTokenLookupRoundTrip ./internal/signflow 2>&1 \
+go test -count=1 -run TestTokenLookupRoundTrip ./internal/signflow 2>&1 \
   | grep -vE '^"TODO Signature field|^{"time"' | tail -1
-go test -mod=vendor -count=1 -run TestLinkExpiryIsCappedByEnvelope ./internal/signflow 2>&1 \
+go test -count=1 -run TestLinkExpiryIsCappedByEnvelope ./internal/signflow 2>&1 \
   | grep -vE '^"TODO Signature field|^{"time"' | tail -1
 
 echo "== the invite is queued by the send, not the create =="
-go test -mod=vendor -count=1 -run TestCreateQueuesNoMailAndSendQueuesOnePerParty ./internal/signflow 2>&1 \
+go test -count=1 -run TestCreateQueuesNoMailAndSendQueuesOnePerParty ./internal/signflow 2>&1 \
   | grep -vE '^"TODO Signature field|^{"time"' | tail -1
 
 echo "== a dead relay leaves the envelope sent and raises mail_failed =="
-go test -mod=vendor -count=1 -run TestMailFailureLeavesEnvelopeStateAndNotifiesAdmin ./internal/signflow 2>&1 \
+go test -count=1 -run TestMailFailureLeavesEnvelopeStateAndNotifiesAdmin ./internal/signflow 2>&1 \
   | grep -vE '^"TODO Signature field|^{"time"' | tail -1
 
 echo "== mail-test in dev mode writes one .eml file, with no unsubscribe header =="
@@ -237,7 +237,7 @@ jq -r '.error.code' "$D/crlf.json" | grep -q 'parties\[\]\.name' && \
 test "$(count parties)" = "3" && echo "  no party rows added by the refused create"
 
 echo "== expired token lookup maps to 410 =="
-go test -mod=vendor -count=1 -run TestExpiredTokenLookupIsExpired ./internal/signflow 2>&1 \
+go test -count=1 -run TestExpiredTokenLookupIsExpired ./internal/signflow 2>&1 \
   | grep -vE '^"TODO Signature field|^{"time"' | tail -1
 
 echo "== send requires envelope:write; a read-only client gets 403 =="

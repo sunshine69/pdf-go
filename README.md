@@ -8,7 +8,7 @@ This module also builds `signsrv`, a document signing service that uses
 `internal/pdf` as a library. See [README-signing.md](README-signing.md) and
 the design documents in [docs/](docs/).
 
-It uses the pure-Go PDF library `github.com/benoitkugler/pdf` (vendored), so
+It uses the pure-Go PDF library `github.com/benoitkugler/pdf`, so
 there is no cgo, no external binary and no shared library to install.
 
 ```

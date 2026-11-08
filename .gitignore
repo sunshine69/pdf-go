@@ -53,3 +53,8 @@ models/.*
 *.list
 
 .aider*
+
+# Signing links are one-time credentials. The CLI writes them beside the caller
+# with mode 0600; ignoring the pattern keeps a careless `git add .` from putting
+# a live token into history.
+*.links.json

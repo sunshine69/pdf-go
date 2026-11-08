@@ -38,7 +38,7 @@ if [ "${E2E_SKIP_BROWSER:-0}" != "1" ]; then
 fi
 
 echo "work dir: $E2E_WORK"
-go build -tags e2e -mod=vendor -o "$E2E_WORK/e2e" ./e2e
+go build -tags e2e -o "$E2E_WORK/e2e" ./e2e
 # The build tag means `go test ./...` never compiles this file. Running it as a
 # binary is the point: it is a program that drives real processes, not a test
 # that needs the test harness.

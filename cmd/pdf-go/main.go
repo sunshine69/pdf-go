@@ -25,7 +25,7 @@ import (
 	"github.com/sunshine69/pdf-go/internal/signfill"
 )
 
-const version = "0.1.0"
+const version = "0.0.1"
 
 func main() {
 	// The PDF library reports unencodable glyphs with log.Printf. That is

@@ -7,9 +7,11 @@
 # a request body cap that matches signsrv's own 22 MB upload limit, and
 # /admin limited to the admin CIDR.
 #
-# signsrv.example.org is a placeholder. Replace it, and replace the CIDR.
+# The host name is read from the environment so one file serves several
+# deployments: set SIGNTLS_DOMAIN (compose passes it through; systemd reads it
+# from EnvironmentFile). Replace the CIDR by hand.
 
-signsrv.example.org {
+{$SIGNTLS_DOMAIN:signsrv.example.org} {
 	# automatic_https is on by default: Caddy obtains and renews the
 	# certificate, and redirects HTTP to HTTPS. The redirect is what makes
 	# a signing link typed as http:// work: the link is built from

@@ -36,16 +36,16 @@ API=http://127.0.0.1:8090/api/v1
 exec > "$D/results.txt" 2>&1
 
 echo "== build offline from vendor =="
-GOFLAGS=-mod=vendor GOPROXY=off go build -o "$D/signsrv" ./cmd/signsrv
-GOFLAGS=-mod=vendor GOPROXY=off go build -o "$D/pdf-go" ./cmd/pdf-go
+go build -o "$D/signsrv" ./cmd/signsrv
+go build -o "$D/pdf-go" ./cmd/pdf-go
 echo "  ok"
 
 echo "== vet and gofmt =="
-go vet -mod=vendor ./cmd/signsrv ./internal/signflow ./internal/signstore ./web/admin ./web
+go vet ./cmd/signsrv ./internal/signflow ./internal/signstore ./web/admin ./web
 test -z "$(gofmt -l ./cmd ./internal ./web)" && echo "  clean"
 
 echo "== unit and handler tests =="
-go test -mod=vendor -count=1 ./internal/signflow ./internal/signstore ./cmd/signsrv 2>&1 \
+go test -count=1 ./internal/signflow ./internal/signstore ./cmd/signsrv 2>&1 \
   | grep -vE '^"TODO Signature field|^{"time"' | grep -E 'ok|FAIL'
 
 echo "== migrate, admin, client =="

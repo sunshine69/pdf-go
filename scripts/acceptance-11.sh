@@ -21,10 +21,10 @@ check() { # label, condition-result
 }
 
 say "== build offline from vendor =="
-go build -mod=vendor -o ./signsrv ./cmd/signsrv && say "  ok" || say "  (build failed)"
+go build -o ./signsrv ./cmd/signsrv && say "  ok" || say "  (build failed)"
 
 say "== the audit chain suite =="
-go test -mod=vendor -count=1 ./internal/signstore > "$D/gotest.txt" 2>&1 \
+go test -count=1 ./internal/signstore > "$D/gotest.txt" 2>&1 \
   && say "  signstore passes" || { say "  (signstore failed)"; cat "$D/gotest.txt" >> "$RESULTS"; }
 
 # A config pointing at this run's own database and audit directory.

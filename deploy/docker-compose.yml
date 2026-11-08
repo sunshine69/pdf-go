@@ -1,0 +1,63 @@
+# docker-compose.yml — signsrv behind Caddy, the shape docs/DEPLOY-DOCKER.md uses.
+#
+# Copy this, put the two secrets in .env, and adjust the TLS domain. It is not
+# meant to be committed with real secrets: keep .env mode 0600 and out of git.
+#
+#   docker compose up -d
+#   docker compose run --rm signsrv checkconfig
+#   docker compose logs -f signsrv
+#
+# Both containers use the host network. That is not a shortcut: the service
+# refuses to serve on anything but a loopback listener (`checkconfig` rejects
+# it, because the signing token must never travel over a plain path someone on
+# the route can read), and a container's 127.0.0.1 belongs to that container
+# alone. Sharing the host's network namespace is the arrangement that lets
+# Caddy reach 127.0.0.1:8080 while the listener stays loopback and unreachable
+# from outside the box.
+#
+# SIGNSRV_PUBLIC_URL must match the address the browser is sent to. The signing
+# links are built from it, so a mismatch produces links that look real and go
+# nowhere, and no check can catch it.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      SIGNTLS_DOMAIN: pdfsign.example.org
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - signsrv
+
+  signsrv:
+    image: signsrv:v0.0.1
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      SIGNSRV_LISTEN: 127.0.0.1:8080
+      SIGNSRV_PUBLIC_URL: https://pdfsign.example.org
+      # Caddy sets X-Forwarded-For. Without this the rate limits bind to the
+      # socket peer, which is Caddy, so every party on the internet would share
+      # one bucket.
+      SIGNSRV_TRUST_PROXY: "1"
+      SIGNSRV_DEV: "0"
+      SIGNSRV_MAIL_FROM: signer@example.org
+      SIGNSRV_SMTP_HOST: smtp.example.org
+      SIGNSRV_SMTP_PORT: "587"
+      SIGNSRV_TSA_URL: https://freetsa.org/tsr
+    env_file:
+      - path: .env
+        required: true   # SIGNSRV_KEYSTORE_PASS, SIGNSRV_ADMIN_PASSWORD,
+                         # and SIGNSRV_SMTP_USER / SIGNSRV_SMTP_PASS when the
+                         # relay needs authentication
+    volumes:
+      - signsrv-data:/var/lib/signsrv
+
+volumes:
+  signsrv-data:
+  caddy-data:
+  caddy-config:

@@ -20,7 +20,10 @@ docs/
   11-hardening.md        rate limits, audit, sweeps, TLS, deployment
   12-e2e.md              end-to-end test and runbook
   13-users-one-endpoint.md  users table, caller-minted tokens, chore endpoints
+  14-drafter-notify.md   the drafter's notices: decline, undeliverable, notify_email
   build-and-test.md      how to build, and how to test each step by hand
+  DEPLOY-DOCKER.md       the Docker image: build, first run, the process, settings,
+                         state and backups, upgrade and rollback
   security-endpoint-audit.md
                        the endpoint audit: every probe and the answer, the three
                        findings and their fixes, the residual risks accepted

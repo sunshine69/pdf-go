@@ -17,18 +17,19 @@ Related: [docs/README.md](README.md), [runbook.md](../runbook.md),
 ## 0. The build
 
 ```sh
-go build -mod=vendor ./cmd/signsrv       # the service: API, apps, worker
-go build -mod=vendor ./cmd/pdf-go        # the CLI: PDF probe/fill/verify + envelope client
+go build /cmd/signsrv       # the service: API, apps, worker
+go build /cmd/pdf-go        # the CLI: PDF probe/fill/verify + envelope client
 ```
 
 Both binaries are built by `e2e/run.sh` itself, so the acceptance run always
-tests the tree it is in. `vendor/` is committed: `go build` needs no network.
-`go.mod` is the source of truth for the dependency list; `vendor/modules.txt`
-must match it.
+tests the tree it is in. There is no `vendor/` tree: `go build` takes the
+dependency list from `go.mod` and verifies each module against `go.sum`, so the
+first build on a clean machine reaches the network and later ones use the
+module cache.
 
 ```sh
-go vet -mod=vendor ./...                  # silent
-go vet -mod=vendor -tags e2e ./e2e        # silent, includes the acceptance run
+go vet ./...                  # silent
+go vet -tags e2e ./e2e        # silent, includes the acceptance run
 gofmt -l cmd internal web                 # silent
 ```
 
@@ -40,7 +41,7 @@ plain HTML/CSS/vanilla JS, embedded with `go:embed`.
 ## 1. The unit suite — one command
 
 ```sh
-go test -mod=vendor -count=1 ./cmd/pdf-go ./cmd/signsrv \
+go test -count=1 ./cmd/pdf-go ./cmd/signsrv \
     ./internal/pdf ./internal/report ./internal/schema \
     ./internal/signauth ./internal/signfill ./internal/signflow \
     ./internal/signmail ./internal/signpdf ./internal/signstore \
@@ -64,8 +65,8 @@ Current state: **all 11 tested packages pass.** Test counts, by package:
 and the signing tests. That is a coverage gap; see *TODO ledger* at the end.
 
 ```sh
-go test -mod=vendor -race ./cmd/signsrv ./internal/signflow   # race detector
-go test -mod=vendor -cover ./...                              # coverage report
+go test -race ./cmd/signsrv ./internal/signflow   # race detector
+go test -cover ./...                              # coverage report
 ```
 
 ## 2. The acceptance run — one command
@@ -105,7 +106,7 @@ demonstrates it, and the status. `TODO` means "no mechanical check today".
 ### Step 02 — database
 
 ```sh
-go test -mod=vendor -count=1 ./internal/signstore
+go test -count=1 ./internal/signstore
 ```
 Manual:
 ```sh
@@ -130,8 +131,8 @@ round trip, NULL scan mapping. Driver probe pins the driver contract.
 ### Step 03 — auth
 
 ```sh
-go test -mod=vendor -count=1 ./internal/signauth
-go test -mod=vendor -count=1 -run 'TestLogin|TestPassword|TestRefresh|TestLogout|TestClient|TestRequire|TestRateLimit|TestPathToken|TestSession' ./internal/signauth
+go test -count=1 ./internal/signauth
+go test -count=1 -run 'TestLogin|TestPassword|TestRefresh|TestLogout|TestClient|TestRequire|TestRateLimit|TestPathToken|TestSession' ./internal/signauth
 ```
 Manual:
 ```sh
@@ -162,7 +163,7 @@ expired link; rate limit 429, per-envelope limit, proxy trust, path token.
 ### Step 04 — pdfsign adapter
 
 ```sh
-go test -mod=vendor -count=1 ./internal/signpdf ./internal/signfill
+go test -count=1 ./internal/signpdf ./internal/signfill
 signsrv -config CFG sign-selftest testdata/sample2.pdf /tmp/out.pdf -tsa http://127.0.0.1:8999
 signsrv -config CFG checkpdf /tmp/out.pdf
 ```
@@ -178,8 +179,8 @@ crop box; key file is owner-only (0600).
 ### Step 05 — envelopes
 
 ```sh
-go test -mod=vendor -count=1 -run 'TestCreate|TestGetEnvelope|TestEnvelopeScopes|TestList|TestDownload' ./cmd/signsrv
-go test -mod=vendor -count=1 -run 'TestCreate|TestCertifiedDocument|TestTransition|TestDocumentDownload' ./internal/signflow
+go test -count=1 -run 'TestCreate|TestGetEnvelope|TestEnvelopeScopes|TestList|TestDownload' ./cmd/signsrv
+go test -count=1 -run 'TestCreate|TestCertifiedDocument|TestTransition|TestDocumentDownload' ./internal/signflow
 ```
 Manual:
 ```sh
@@ -201,8 +202,8 @@ illegal state advances are refused.
 ### Step 06 — tokens and email
 
 ```sh
-go test -mod=vendor -count=1 ./internal/signmail
-go test -mod=vendor -count=1 -run 'TestToken|TestSend|TestExpired|TestLinkExpiry|TestMailFailure|TestHostileName|TestNameWith' ./internal/signflow
+go test -count=1 ./internal/signmail
+go test -count=1 -run 'TestToken|TestSend|TestExpired|TestLinkExpiry|TestMailFailure|TestHostileName|TestNameWith' ./internal/signflow
 ```
 Manual:
 ```sh
@@ -223,8 +224,8 @@ the dev outbox file parses.
 ### Step 07 — consent
 
 ```sh
-go test -mod=vendor -count=1 ./internal/signflow
-go test -mod=vendor -count=1 -run 'TestConsent|TestDecline|TestClaim|TestLastConsent|TestSignerDocument' ./cmd/signsrv
+go test -count=1 ./internal/signflow
+go test -count=1 -run 'TestConsent|TestDecline|TestClaim|TestLastConsent|TestSignerDocument' ./cmd/signsrv
 ```
 Proven: consent is data only, no PDF touched in the request; consent carries
 the certified document's sha, and a stale digest is refused; twice is refused;
@@ -243,8 +244,8 @@ signing); the state table and illegal advances.
 ### Step 08 — signer SPA
 
 ```sh
-go test -mod=vendor -count=1 ./web/spa
-go test -mod=vendor -count=1 -run 'TestCSP|TestStaticRoutes|TestSignerShell' ./cmd/signsrv
+go test -count=1 ./web/spa
+go test -count=1 -run 'TestCSP|TestStaticRoutes|TestSignerShell' ./cmd/signsrv
 ```
 Proven: the embedded files exist; no external URLs in HTML, JS or CSS; the
 token is read from the path, never written to `localStorage`/`sessionStorage`;
@@ -260,8 +261,8 @@ the token.
 ### Step 09 — admin UI
 
 ```sh
-go test -mod=vendor -count=1 ./web/admin
-go test -mod=vendor -count=1 -run 'TestAdmin' ./cmd/signsrv
+go test -count=1 ./web/admin
+go test -count=1 -run 'TestAdmin' ./cmd/signsrv
 ```
 Proven: 11 static-asset tests (files exist, no external URLs, `textContent`
 not `innerHTML`, same-origin fetch, visibility check on polling, the key is
@@ -276,8 +277,8 @@ events and logout).
 ### Step 10 — batch signing
 
 ```sh
-go test -mod=vendor -count=1 ./internal/signflow
-go test -mod=vendor -count=1 -run 'TestBatch|TestDelivery' ./internal/signflow
+go test -count=1 ./internal/signflow
+go test -count=1 -run 'TestBatch|TestDelivery' ./internal/signflow
 ```
 Proven: all parties signed in order, signatures nest; the consent enqueues the
 batch row; a TSA failure retries, keeps the envelope open for retry, then fails
@@ -295,8 +296,8 @@ leaves the envelope open.
 ### Step 11 — hardening
 
 ```sh
-go test -mod=vendor -count=1 -run 'TestSecrets|TestRedaction|TestAccessLog|TestCheckConfig' ./cmd/signsrv
-go test -mod=vendor -count=1 -run 'TestAudit' ./internal/signstore
+go test -count=1 -run 'TestSecrets|TestRedaction|TestAccessLog|TestCheckConfig' ./cmd/signsrv
+go test -count=1 -run 'TestAudit' ./internal/signstore
 signsrv -config CFG checkconfig      # exits non-zero, secrets printed as digests
 signsrv -config CFG audit-verify     # hash chain, prev_hash, monotonic ids
 ```
@@ -469,19 +470,19 @@ after a new check is written.
 
 ```sh
 # 1. clean tree
-go vet -mod=vendor ./...
-go vet -mod=vendor -tags e2e ./e2e
+go vet ./...
+go vet -tags e2e ./e2e
 gofmt -l cmd internal web
 
 # 2. every package
-go test -mod=vendor -count=1 ./cmd/pdf-go ./cmd/signsrv \
+go test -count=1 ./cmd/pdf-go ./cmd/signsrv \
     ./internal/pdf ./internal/report ./internal/schema \
     ./internal/signauth ./internal/signfill ./internal/signflow \
     ./internal/signmail ./internal/signpdf ./internal/signstore \
     ./web/spa ./web/admin
 
 # 3. race detector on the code that runs in the server
-go test -mod=vendor -count=1 -race ./cmd/signsrv ./internal/signflow
+go test -count=1 -race ./cmd/signsrv ./internal/signflow
 
 # 4. the acceptance run, all phases
 e2e/run.sh

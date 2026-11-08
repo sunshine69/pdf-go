@@ -125,16 +125,16 @@ make_envelope() { # title  parties.json  tag
 }
 
 echo "== build offline from vendor =="
-go build -mod=vendor -o ./signsrv ./cmd/signsrv && echo "  ok" || echo "  (check failed)"
-go build -mod=vendor -o ./pdf-go ./cmd/pdf-go && echo "  pdf-go built" || echo "  (check failed)"
+go build -o ./signsrv ./cmd/signsrv && echo "  ok" || echo "  (check failed)"
+go build -o ./pdf-go ./cmd/pdf-go && echo "  pdf-go built" || echo "  (check failed)"
 
 echo "== vet and gofmt =="
-go vet -mod=vendor ./internal/signflow ./internal/signstore ./internal/signpdf ./internal/signmail ./cmd/signsrv \
+go vet ./internal/signflow ./internal/signstore ./internal/signpdf ./internal/signmail ./cmd/signsrv \
   >/dev/null 2>&1 && echo "  clean" || echo "  (check failed)"
 test -z "$(gofmt -l ./cmd ./internal)" && echo "  gofmt clean" || echo "  (check failed)"
 
 echo "== the batch and delivery suites =="
-go test -mod=vendor -count=1 ./internal/signflow ./internal/signstore ./internal/signpdf ./cmd/signsrv
+go test -count=1 ./internal/signflow ./internal/signstore ./internal/signpdf ./cmd/signsrv
 
 echo "== signing happens only in RunBatch =="
 test "$(grep -rln '\.SignParty(' ./cmd ./internal --include='*.go' | grep -v _test | tr '\n' ' ')" = \

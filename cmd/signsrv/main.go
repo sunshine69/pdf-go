@@ -21,7 +21,7 @@ import (
 	"syscall"
 )
 
-const version = "0.1.0"
+const version = "0.0.1"
 
 func main() {
 	os.Exit(run(os.Args[1:]))

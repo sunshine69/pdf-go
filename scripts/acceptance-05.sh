@@ -30,16 +30,16 @@ EOF
 API=http://127.0.0.1:8090/api/v1
 
 echo "== build offline from vendor =="
-GOFLAGS=-mod=vendor GOPROXY=off go build -o "$D/signsrv" ./cmd/signsrv
-GOFLAGS=-mod=vendor GOPROXY=off go build -o "$D/pdf-go" ./cmd/pdf-go
+go build -o "$D/signsrv" ./cmd/signsrv
+go build -o "$D/pdf-go" ./cmd/pdf-go
 echo "  ok"
 
 echo "== vet and gofmt =="
-go vet -mod=vendor ./cmd/signsrv ./internal/signflow ./internal/signfill ./internal/signstore
+go vet ./cmd/signsrv ./internal/signflow ./internal/signfill ./internal/signstore
 test -z "$(gofmt -l ./cmd ./internal)" && echo "  clean"
 
 echo "== unit tests: fill, certify, state machine, list, download, no partial rows =="
-go test -mod=vendor -count=1 ./internal/signflow ./internal/signfill 2>&1 \
+go test -count=1 ./internal/signflow ./internal/signfill 2>&1 \
   | grep -vE '^"TODO Signature field|^{"time"' | grep -E 'ok|FAIL'
 
 echo "== state machine is table-driven, transactional, audited =="
@@ -173,7 +173,7 @@ test "$(count parties)" = "$BEFORE_PARTY" && echo "  no party rows added"
 test "$(count revisions)" = "$BEFORE_REV" && echo "  no revision rows added"
 
 echo "== illegal transition is refused (table-driven, audited path) =="
-go test -mod=vendor -count=1 -run TestTransitionRefusesIllegalAdvance ./internal/signflow 2>&1 \
+go test -count=1 -run TestTransitionRefusesIllegalAdvance ./internal/signflow 2>&1 \
   | grep -vE '^"TODO Signature field|^{"time"' | tail -1
 
 echo "== list: filters, paging, page cap =="

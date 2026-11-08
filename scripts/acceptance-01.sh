@@ -29,13 +29,13 @@ printf 'listen=127.0.0.1:8091\npublic_url=http://x\ndev=false\n' > "$D/broken.co
 printf 'listen 127.0.0.1:8092\nno equals sign here\n' > "$D/malformed.conf"
 
 echo "== build offline from vendor =="
-GOFLAGS=-mod=vendor GOPROXY=off go build -o "$D/signsrv" ./cmd/signsrv
-GOFLAGS=-mod=vendor GOPROXY=off go build ./cmd/pdf-go ./internal/signstore ./internal/signauth \
+go build -o "$D/signsrv" ./cmd/signsrv
+go build ./cmd/pdf-go ./internal/signstore ./internal/signauth \
   ./internal/signpdf ./internal/signfill ./internal/signmail ./internal/signflow ./web
 echo "  ok"
 
 echo "== vet and gofmt =="
-go vet -mod=vendor ./cmd/signsrv ./internal/signstore ./internal/signauth ./internal/signpdf \
+go vet ./cmd/signsrv ./internal/signstore ./internal/signauth ./internal/signpdf \
   ./internal/signfill ./internal/signmail ./internal/signflow ./web
 test -z "$(gofmt -l ./cmd ./internal ./web)" && echo "  clean"
 
@@ -70,5 +70,5 @@ echo "  port closed:    $(curl -s -o /dev/null -w '%{http_code}' -m 3 $B/healthz
 grep -o '"msg":"[^"]*"' "$D/signsrv.jsonl" | tail -2 | sed 's/^/  /'
 
 echo "== tests =="
-go test -mod=vendor ./cmd/signsrv ./cmd/pdf-go 2>&1 | grep -v '^{"time"'
+go test ./cmd/signsrv ./cmd/pdf-go 2>&1 | grep -v '^{"time"'
 echo "== all step 01 checks passed =="
