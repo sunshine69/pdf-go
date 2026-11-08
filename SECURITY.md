@@ -47,7 +47,14 @@ when a machine is compromised.
 The link token is not a secret in the sense the list above means. It is bearer
 capability: a person who has the URL can sign. So the rules are that it is not
 logged, not stored in plaintext (only its hash is stored), not sent through a
-third-party relay, and it expires. It appears in the URL of the signing page,
+third-party relay, and it expires. **Not logged** is a rule with two halves, and
+the second one is the field name: a log point that carries a token's hash names
+the field `token_sha256`, never `token`, because a name is what a reader —
+human or shipper — indexes, and `token=<64 hex>` reads like a credential.
+A path is logged through `redactPath` and nothing else, including the
+"route not found" record, because a verb the mux does not route lands there and
+an unrouted signing path is a raw link. The rule and its history are in
+[docs/security-endpoint-audit.md](docs/security-endpoint-audit.md). It appears in the URL of the signing page,
 so it appears in the party's browser history, in any proxy log between the party
 and the service, and in the party's mail client. The one-year HSTS policy in
 `deploy/Caddyfile` is part of the answer, and `Referrer-Policy: no-referrer`

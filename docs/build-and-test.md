@@ -379,7 +379,7 @@ thing. What each one was, and what the fix asserts now:
 
 | # | Item | What was wrong | What the fix asserts |
 |---|---|---|---|
-| 1 | `negatives / duplicate consent` | a request built by `negCreate` was left **ready**, never **sent**, so a party could not act on it at all; the consent bodies also omitted `document_sha`, which the service compares with the stored revision | `negCreate` sends the request and takes the link tokens from the **send** response (create's tokens are the undelivered ones); the consent names the digest read from the envelope view. The replay is then asserted on two doors: a consented party may not claim again (409), and the same body without a session is refused (401) |
+| 1 | `negatives / duplicate consent` | a request built by `negCreate` was left **ready**, never **sent**, so a party could not act on it at all; the consent bodies also omitted `document_sha`, which the service compares with the stored revision | `negCreate` sends the request before any party touches it, and the consent names the digest read from the envelope view. The gate is the status, not the token: create mints the link and send reuses it in one process, and a party cannot act until the request is sent. The replay is then asserted on two doors: a consented party may not claim again (409), and the same body without a session is refused (401) |
 | 2, 3 | `negatives / consent rules`, `consent limit` | every check claimed from `127.0.0.1`; claim is 10/min **per address**, so the eleventh claim of the run got a 429 that said nothing about the rule under test | each check dials from its own loopback address (`negUseAddr`), and the 15 consent rules run against two requests, because the consent bucket is 10/min **per envelope** |
 | 4 | `rate limit` phase | the flood spent `127.0.0.1`'s budget, so the client-key exchange that followed was answered 429 and the phase blamed the exchange | the flood dials from `127.0.0.44`, and the token exchange is performed **once** for the run — five exchanges a minute per address is the documented cap, and a client exchanges once |
 
@@ -396,8 +396,43 @@ checks are now worth running:
   Signing and delivery happen in one batch run, so a request can be past
   `signed` on the first poll. `negWaitStatus` now accepts the statuses that
   prove the same fact, instead of losing a race against the worker.
+### 4.2 The endpoint audit (items 37 to 39)
 
-### 4.2 Missing checks in the unit tree
+The party-facing endpoints were audited by probing the running service and
+reading the code that answers. The probes and the rules they verified are in
+[security-endpoint-audit.md](security-endpoint-audit.md).
+
+| # | Item | What was wrong | What the fix asserts |
+|---|---|---|---|
+| 37 | **The catch-all logged a raw request path.** A verb the mux does not route on a signing path — `DELETE`, `PUT`, `PATCH`, `HEAD`, `OPTIONS` on `/api/v1/sign/{token}/consent` — falls to `handleUnknown`, which logged `r.URL.Path` in the clear. One probe wrote a **live 48-character signing token into the log four times**, and the log is read by the shipper, by `journalctl`, by the 12-week logrotate history and by the support bundle: log read access was signing access, for the whole life of the link. | `handleUnknown` logs `redactPath(r.URL.Path)`, the same function the access log uses, so the record keeps its audit value (`/api/v1/sign/[token]/consent`) and loses the credential. `TestUnroutedSigningVerbDoesNotLogTheToken` sends all five verbs with a known token and fails if the token appears anywhere in the log, and fails if the redacted refusal is **absent** — a fix that silences the record is as bad as the leak. `TestRedactPathShapes` pins every credential-bearing path family, and that an envelope id is **not** redacted, because the log is how an operator finds a request. |
+| 38 | Nine log points named the signing token's hash `token`. The values were hashes, so nothing leaked; the **name** is the defect. `token=<64 hex>` reads like a credential to whoever indexes the log, and a field named `token` invites the next author to put the value in it. | Every one is `token_sha256`. `TestRedactedNeverLeaksSecrets` fails if any sign handler logs a plaintext token; `TestAccessLogNeverCarriesASecret` extends the rule to the session cookie and the bearer token across the whole signing family, and requires the cookie **name** to survive so the audit trail keeps the claim. |
+| 39 | The audit's first draft reported "the body cap is 3 KiB, as `docs/api.md` documents". Both halves were wrong: there is no `docs/api.md` in this tree, and the cap is **204 800 bytes** (the image has its own 1 MiB limit). What the probes actually showed is the **ordering**: a party endpoint answers `401 claim_required` without reading the body at all, and only once a session exists is size refused — with `413`, not the `400` the first probe reported. | The audit's limits table carries the real numbers, and the ordering is written down as a rule. `scripts/verify-release.sh` asserts both halves: 2 MiB before a session → `401`, 2 MiB with a session → `413`. |
+| 40 | Two things the endpoint audit found in the code, not in the traffic. `cmd/signsrv/server.go` carried `setCSRFCookie`: a helper named for CSRF, with a comment saying step 03 owns it — but nothing called it, and the service has no CSRF token (the signer cookie is `SameSite=Strict`, so a cross-site form never carries it). A reader looking for the CSRF defence would have found a function that does nothing. And `handleAdminEvents` carried two doc comments at once, one of which claimed the envelope parameter was required when the handler filters optionally and answers an empty log for an id that matches nothing. | The dead helper is gone (its `SameSite`/`HttpOnly`/`Secure` rules already live in `signauth.NewSessionCookie` and `signerCookie`, which every real cookie in the service goes through). The stale half of the duplicate comment is gone, and `scripts/verify-release.sh` now asserts the surviving half: an unknown envelope answers an empty log, `limit=-5` answers 400. |
+
+### 4.3 The production regression script (items 42 to 43)
+
+`scripts/prod-sign-run.sh` is the whole path in one command: build, stop, config,
+start, key, document, dispatch, prompt, watch, verify, report, audit chain, log-leak
+scan. It is idempotent — every setting it writes is read back from `tmp/prod.conf`
+first, so re-running preserves the CA passphrase that the keystore on disk is
+encrypted with, and prints `preserved the existing secrets` rather than inventing one.
+Two named sub-commands do no harm: `report <id>` re-verifies a finished run with no
+side effect, `cancel <id>` closes a link left open by a walk-away test.
+
+| # | Item | What was wrong | What the fix asserts |
+| 42 | Writing the one-command production run surfaced two things the docs never said. **(1)** `audit-verify` on a healthy database reports `INVALID — events up to id 117 exist, the log ends at 0`: the day file is written only by `audit-write` (admin POST or CLI), never by the worker, so verify-without-write always looks like tampering. The pair is `audit-write` then `audit-verify`; the script now runs both, and PASS is "chain valid AND the events this run wrote are in the file". **(2)** Each `pdf-go` *process* exchanges the client key for its own bearer token, and `POST /api/v1/auth/token` sits under the login guard. So a shell loop that calls `pdf-go` per poll is a per-iteration key exchange that trips rate limiting and reads as a server fault (429). The correct shape is one long-lived `envelope get --watch`, or a `curl` loop on the raw endpoint, and the CLI calls in a run are counted, not assumed free. |
+| 43 | A restart script that stops "the old server" by `pkill -f 'signsrv serve'` does not stop it. The real command line is `signsrv -config tmp/prod.conf serve`, so a pattern demanding the two words adjacent matches nothing; the old process keeps the port, the new one fails to bind and logs `ERROR serve "listen tcp 127.0.0.1:8090: bind: address already in use"`, and the health poll then reads **200 — from the server the script did not start**. Every later line prints green: the reported pid belongs to a dead child, `tail` reads the log file the dead child never wrote to, and the exit trap kills nothing. Two fixes, both in `scripts/prod-sign-run.sh`: the pattern is `[s]ignsrv( .*)? serve( .*)?` (anchored on argv[0] basename, tolerant of flags and trailing args, bracket so the script cannot match its own command line), and after the stop the script asks the port directly — `curl /healthz` — and if anything still answers it names the holder from `ss -ltnp` and exits 1 rather than reporting a healthy start it did not perform. |
+
+The audit found no defect in the three rules that matter most on this surface,
+and pins them as read-at-source facts: the **401 before the body is read** (a
+page holding a link learns nothing until it claims, and the claim is what is
+rate limited and logged); the **image type sniffed from the magic bytes** with
+the data-URL label ignored, so a label cannot name a file whose name lies about
+its bytes; and **no `innerHTML` anywhere** in either SPA — every server string
+goes out through `textContent`, and the HTML email runs through `html/template`,
+so an attacker-influenced title cannot become markup in the party's page or mail.
+
+### 4.4 Missing checks in the unit tree
 
 | Step | Missing check | Why it matters |
 |---|---|---|
@@ -416,7 +451,7 @@ checks are now worth running:
 | 12 | no negative check for **concurrency** (two parties consenting at the same moment) | the last-consent enqueue is tested for one consent, not for two racing consents |
 | 12 | no negative check for **delivery of a document whose gate-2 sha was recomputed after the queue** | gate 2 is tested on a tampered input; the reissue-then-batch path is tested, the race is not |
 
-### 4.3 Signoff boxes still unticked
+### 4.5 Signoff boxes still unticked
 
 ```
 docs/steps/02-database.md   4 boxes

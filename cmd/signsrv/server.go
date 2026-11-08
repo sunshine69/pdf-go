@@ -223,23 +223,6 @@ func (h *header) WriteHeader(code int) {
 // requestKey is the context key of the request id.
 type requestKey struct{}
 
-// setCSRFCookie sets a SameSite=Strict, HttpOnly cookie. Step 03 owns the
-// session cookie; the helper lives here so every cookie in the service is
-// set the same way.
-func (s *server) setCSRFCookie(w http.ResponseWriter, name, value string, ttl time.Duration) {
-	c := &http.Cookie{
-		Name:     name,
-		Value:    value,
-		Path:     "/",
-		Expires:  time.Now().Add(ttl),
-		MaxAge:   int(ttl.Seconds()),
-		HttpOnly: true,
-		Secure:   !s.cfg.Dev,
-		SameSite: http.SameSiteStrictMode,
-	}
-	http.SetCookie(w, c)
-}
-
 func withRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestKey{}, id)
 }

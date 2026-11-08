@@ -582,12 +582,14 @@ func negCreate(title, expiresIn string, parties int) (string, []negLink, error) 
 	if out.Envelope.Status != "ready" {
 		return out.Envelope.ID, nil, fmt.Errorf("negative create %q: status %q, want ready", title, out.Envelope.Status)
 	}
-	// Create leaves the request **ready**: a party cannot act on a request
-	// that has not been sent, and the link tokens of the create response are
-	// the ones that were never delivered. Send is what mints and returns the
-	// live tokens. So the send happens here, and the links handed back are the
-	// send's, not the create's. The send rides the same client key the create
-	// did: sending is an envelope write, not an admin action.
+	// Create leaves the request **ready**, and that is the gate: a party may
+	// not act on a request that has not been sent. Create mints the link
+	// tokens, and Send reuses them while the process still holds the plaintext
+	// (rawTokens), so in one process the create's token and the send's are the
+	// same string. The links handed back are the send's, because a request that
+	// is being acted on in these checks has been sent, and a process that
+	// restarted would have re-issued them. The send rides the same client key
+	// the create did: sending is an envelope write, not an admin action.
 	//
 	// A request created with a deadline is the exception. The expired-link
 	// check makes a link that is dead the instant it exists; that request is

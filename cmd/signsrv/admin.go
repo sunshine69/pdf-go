@@ -35,10 +35,6 @@ func actor(r *http.Request) string {
 
 // ---------------- events ----------------
 
-// handleAdminEvents is the audit log of one envelope, newest first, paged at
-// 100 rows. The envelope parameter is required: the log is always read in the
-// context of a request, and a global log across envelopes has no meaning for
-// an operator investigating one.
 // handleAdminEvents is the audit log: newest first, one page at a time,
 // filtered by envelope when the operator wants one envelope's story and
 // unfiltered when they want everything. An envelope id that matches nothing

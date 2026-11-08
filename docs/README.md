@@ -21,6 +21,9 @@ docs/
   12-e2e.md              end-to-end test and runbook
   13-users-one-endpoint.md  users table, caller-minted tokens, chore endpoints
   build-and-test.md      how to build, and how to test each step by hand
+  security-endpoint-audit.md
+                       the endpoint audit: every probe and the answer, the three
+                       findings and their fixes, the residual risks accepted
   tsa-roadmap.md         TSA: the policy, the options, the tests to write
   skills/prepare-and-dispatch-signing.md
                        short, runnable recipe: extract -> fill -> verify -> parties.json -> create --send -> report

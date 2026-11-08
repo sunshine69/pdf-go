@@ -172,8 +172,14 @@ func (s *server) handleAdminShell(w http.ResponseWriter, r *http.Request) {
 	srvStatic(w, r, "/admin/")
 }
 
+// handleUnknown answers a request no route claimed. It is the one log line in
+// the service that prints a path an attacker controls in full, and the signing
+// routes carry a link token in the path: a probe of DELETE /api/v1/sign/<real
+// token>/consent lands here, because the verb is not routed. So the path is
+// redacted, exactly as the access log redacts it. A token written here is a
+// signing credential handed to everyone who can read the log.
 func (s *server) handleUnknown(w http.ResponseWriter, r *http.Request) {
-	s.logJSON(slog.LevelWarn, "route not found", "path", r.URL.Path,
+	s.logJSON(slog.LevelWarn, "route not found", "path", redactPath(r.URL.Path),
 		"request", requestID(r.Context()))
 	writeJSON(w, http.StatusNotFound, apiError{
 		Error: apiProblem{Code: "not_found", Message: "no such endpoint"},
