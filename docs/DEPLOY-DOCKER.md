@@ -87,8 +87,9 @@ run after any change.
 
 Some findings are **warnings**, printed and then run anyway, because the
 decision belongs to the operator and not to the binary. A listener outside
-loopback is one of those: see §2. A warning is printed by `serve` too, so the
-tradeoff is stated on every start rather than only when someone asks.
+loopback is one of those: see *Why `--network host`*, below. A warning is
+printed by `serve` too, so the tradeoff is stated on every start rather than
+only when someone asks.
 
 ### Accounts, after the first start
 
@@ -118,13 +119,38 @@ listener sits is a property of the infrastructure around it, and a mesh with
 mutual TLS, a sidecar proxy, or a private VLAN each make a public bind correct.
 The service will not decide that for you, and will not stop you.
 
-What it does is say so. A bind outside loopback prints, at every start:
+To publish the port on a host-network container, change one variable:
+
+```sh
+  -e SIGNSRV_LISTEN=0.0.0.0:8080 \
+```
+
+`--publish`/`-p` is ignored under `network_mode: host`, and there is nothing for
+it to do: the container already has the host's interfaces, so the listen address
+*is* the host's. The same is true of the published listener on a bridge — there
+the container network is the boundary, and the `ports:` mapping is what carries
+the traffic to the proxy. `deploy/docker-compose.yml` carries a commented block
+for that shape (a host whose ports are already taken), including why to publish
+it on `127.0.0.1:8080` rather than `0.0.0.0:8080`.
+
+What it does is say so, on both paths. `checkconfig` prints it as text:
 
 ```
 warning: listen binds outside loopback (0.0.0.0:8080): the service serves plain
 HTTP, so TLS, a proxy, or network policy must terminate encryption in front of
 it, or party tokens and the admin password cross the network in the clear
 ```
+
+and `serve` writes the same sentence to the log as a WARN record, at every
+start — so the warning is on the record for the run that is actually serving,
+not only for a check someone has to remember to re-run after a deploy:
+
+```json
+{"level":"WARN","msg":"configuration warning","service":"signsrv",
+ "warning":"listen binds outside loopback (0.0.0.0:8080): the service serves plain HTTP, ..."}
+```
+
+`docker compose logs signsrv | grep 'binds outside loopback'` is the check.
 
 The warning is about the one thing the application cannot fix: it speaks plain
 HTTP, and the signing link carries a token. Bind `0.0.0.0` and put nothing in
@@ -147,10 +173,10 @@ which is deliberate — the behaviour must not depend on which you chose.
 
 | key | default | note |
 |---|---|---|
-| `listen` | `127.0.0.1:8080` | must be loopback outside dev mode |
+| `listen` | `127.0.0.1:8080` | any address is accepted. Outside loopback the service logs a warning that it speaks plain HTTP and encryption must be terminated in front of it — see §2 |
 | `public_url` | — | **required.** Base of every signing link. A mismatch gives links that look real and go nowhere, and no check catches it |
-| `trust_proxy` | `false` | set `1` when a proxy in front sets `X-Forwarded-For`. Without it the rate limits bind to the proxy's address and every visitor shares one bucket |
-| `dev` | `false` | mail goes to `outbox_dir` as `.eml` files instead of the relay. Only allowed on a loopback listener |
+| `trust_proxy` | `false` | set `1` when a proxy in front sets `X-Forwarded-For`. Without it the rate limits bind to the proxy's address and every visitor shares one bucket. Set `0` when clients reach the listener directly, whatever it is bound to: trusting the header lets a client choose the address the limits are keyed to |
+| `dev` | `false` | mail goes to `outbox_dir` as `.eml` files instead of the relay, and the keystore passphrase and admin password are generated at start and printed to the log |
 | `db` | `var/signsrv.db` | SQLite, WAL |
 | `storage_dir` | `var/storage` | uploaded and signed PDFs |
 | `keystore_dir` | `var/keystore` | the CA. Created on first start, mode 0750 |
@@ -351,9 +377,13 @@ docker run --rm --network host -v "$PWD/var":/var/lib/signsrv \
   signsrv:v0.0.1 serve
 ```
 
-`dev=1` is what makes this safe: mail is written to `outbox_dir` as `.eml`
-files instead of reaching a relay, and a dev-mode listener on loopback is the
-only listener `checkconfig` accepts in that mode. Open
-`http://127.0.0.1:8080/healthz`, and read the invitation out of `var/outbox`.
-Never start a container with `dev=1` on a machine that answers for a real
-host name; the same flag also relaxes the admin bootstrap.
+`dev=1` is what makes this bearable: mail is written to `outbox_dir` as `.eml`
+files instead of reaching a relay. It is not what makes it *safe*, and it no
+longer restricts the listener — dev mode binds whatever address you name, which
+is the combination to avoid, because in dev `serve` generates the keystore
+passphrase and the admin password at start and prints them to the log. A
+listener that reaches the network plus a readable log is enough to sign. Keep
+`SIGNSRV_LISTEN` at `127.0.0.1:8080` here; the published shapes belong to §2.
+Open `http://127.0.0.1:8080/healthz`, and read the invitation out of
+`var/outbox`. Never start a container with `dev=1` on a machine that answers for
+a real host name: the credentials it prints are the credentials that work.

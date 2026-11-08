@@ -1,9 +1,13 @@
 # signsrv in a container. The binary is a single artifact: the web apps and the
 # templates are embedded at build time, so there is nothing to copy at runtime.
 #
-# The image is not a deployment. TLS is terminated in front of the service, so
-# the container listens on a loopback address inside the network namespace and a
-# proxy in front of it holds the certificate. See docs/DEPLOY-DOCKER.md.
+# The image is not a deployment. The service speaks plain HTTP and a proxy in
+# front of it holds the certificate. The default listener is loopback, but that
+# is a default and not a restriction: the service binds whatever address you
+# name, and a bind outside loopback only prints a warning saying TLS, a proxy,
+# or network policy has to terminate encryption in front of it. Where the
+# listener sits is the operator's infrastructure decision. See
+# docs/DEPLOY-DOCKER.md.
 #
 #   docker build -t signsrv:v0.0.1 -f deploy/Dockerfile .
 #   docker run --rm -v signsrv-data:/var/lib/signsrv \
@@ -58,10 +62,16 @@ EXPOSE 8080
 
 VOLUME /var/lib/signsrv
 
-# SIGNSRV_LISTEN is loopback by default, which is the shape the deployment
-# expects: a proxy in front, TLS terminated there. SIGNSRV_TRUST_PROXY=1 is
-# required when the proxy sets X-Forwarded-For; without it the rate limits bind
-# to the socket peer, which is the proxy.
+# SIGNSRV_LISTEN is loopback by default: the common shape is a proxy in front
+# with TLS terminated there. It is a default, not a ceiling — set it to
+# 0.0.0.0:8080 to publish the port, or to a specific interface address, and the
+# service binds it. It then prints, at every start, a warning that it serves
+# plain HTTP and that encryption has to be terminated in front of it; it does
+# not refuse the bind, because the surrounding network is not visible to the
+# container and the decision is the operator's.
+#
+# SIGNSRV_TRUST_PROXY=1 is required when a proxy sets X-Forwarded-For; without
+# it the rate limits bind to the socket peer, which is the proxy.
 #
 # SIGNSRV_PUBLIC_URL is not defaulted here on purpose: it is the address the
 # signing links are built from, so a guessed default would produce links that

@@ -10,6 +10,19 @@ import (
 	"time"
 )
 
+// logConfigWarnings states every finding the service is willing to run with.
+// A warning that only appears when someone asks for it is a warning that never
+// gets read, so serve says it on every start and checkconfig repeats it in its
+// report.
+func logConfigWarnings(log *slog.Logger, cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	for _, w := range cfg.Warnings() {
+		log.Warn("configuration warning", "warning", w)
+	}
+}
+
 // serve is the `signsrv serve` entry point. It runs until ctx is cancelled
 // (SIGINT/SIGTERM are wired in main), then drains.
 func serve(ctx context.Context, configPath string) int {
@@ -24,6 +37,7 @@ func serve(ctx context.Context, configPath string) int {
 		}
 		return 1
 	}
+	logConfigWarnings(log, cfg)
 	// The server needs the database open: the auth layer resolves every
 	// credential against it, and the worker drains the queues from it.
 	_, store, err := openStore(ctx, configPath)
