@@ -227,10 +227,20 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func (c *Config) validate() {
+	// The service speaks plain HTTP. Where the listener sits is the operator's
+	// infrastructure decision, not this service's, so nothing here stops a bind
+	// that reaches beyond the machine: a mesh with mutual TLS, a sidecar proxy,
+	// or a private VLAN all make a public bind correct. The tradeoff is stated
+	// once, in a run the service is willing to have.
+	//
+	// It is read before the dev branch so that a dev instance on a public bind
+	// hears it too: in dev the keystore passphrase and the admin password are
+	// generated at start and printed to the log, so a listener that reaches the
+	// network is the one place where reading that log is enough to sign.
+	if !bindsLoopbackOnly(c.Listen) {
+		cwarnings(c, "listen binds outside loopback ("+c.Listen+"): the service serves plain HTTP, so TLS, a proxy, or network policy must terminate encryption in front of it, or party tokens and the admin password cross the network in the clear")
+	}
 	if c.Dev {
-		if !isLoopback(c.Listen) {
-			cproblems(c, "dev mode is only allowed on a loopback listener")
-		}
 		return
 	}
 	if !strings.HasPrefix(c.PublicURL, "https://") {
@@ -257,15 +267,6 @@ func (c *Config) validate() {
 	if c.MaxPDFMB <= 0 || c.MaxPDFMB > 200 {
 		cproblems(c, "max_pdf_mb must be between 1 and 200")
 	}
-	// The listener is plain HTTP. TLS is terminated in front of it, so a
-	// loopback listener is the intended shape, and a public listener is a
-	// problem: the signing link reaches the party over HTTPS at the proxy,
-	// and the party's token must not travel over a plain path that anyone
-	// on the route can read.
-	if !isLoopback(c.Listen) {
-		cproblems(c, "listen must be a loopback address (TLS is terminated in front of the service)")
-	}
-
 	// The keystore holds the CA private key. If the directory the operator
 	// named is not there, the service starts and fails at the first
 	// signature. The default path is a relative one, used in dev, so it is
@@ -416,15 +417,20 @@ func atoi(s string, def int) (int, error) {
 	return n, nil
 }
 
-// isLoopback reports whether a listen address binds only to the local
-// machine. Dev mode requires it.
-func isLoopback(addr string) bool {
+// bindsLoopbackOnly answers one question: does this address reach only this
+// machine? An empty host is NOT loopback - `:8080` means "every interface" to
+// net.Listen, and the old helper called that loopback, so a config of
+// listen=:8080 was waved through while binding every interface on the host.
+//
+// Nothing here stops a bind the function rejects. It only decides whether the
+// plain-HTTP warning is worth printing.
+func bindsLoopbackOnly(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr // no port given
 	}
 	host = strings.Trim(host, "[]")
-	return host == "" || host == "127.0.0.1" || host == "localhost" || host == "::1" ||
+	return host == "127.0.0.1" || host == "localhost" || host == "::1" ||
 		strings.HasPrefix(host, "127.")
 }
 

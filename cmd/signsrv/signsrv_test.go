@@ -192,9 +192,18 @@ func TestConfigValidates(t *testing.T) {
 		}
 	})
 
-	t.Run("dev mode requires loopback", func(t *testing.T) {
-		if _, err := LoadConfig(write(base + "dev=true\nlisten=0.0.0.0:8080\n")); err == nil {
-			t.Fatal("dev mode must be refused on a public listener")
+	// Dev mode does not restrict the listener either. It matters more in dev
+	// than elsewhere: serve generates the keystore passphrase and the admin
+	// password at start and prints them to the log, so a listener that reaches
+	// the network plus a readable log is enough to sign. The listener itself is
+	// still the operator's call, so this is a warning rather than a refusal.
+	t.Run("dev mode on a public listener warns", func(t *testing.T) {
+		cfg, err := LoadConfig(write(base + "dev=true\nlisten=0.0.0.0:8080\n"))
+		if err != nil {
+			t.Fatalf("a public listener is allowed: %v", err)
+		}
+		if !strings.Contains(strings.Join(cfg.Warnings(), "\n"), "binds outside loopback") {
+			t.Fatalf("want a plain-HTTP warning, got %v", cfg.Warnings())
 		}
 	})
 
@@ -246,16 +255,20 @@ func TestRedactedNeverLeaksSecrets(t *testing.T) {
 
 func TestLoopback(t *testing.T) {
 	for addr, want := range map[string]bool{
-		"127.0.0.1:8080": true,
-		"localhost:8080": true,
-		"[::1]:8080":     true,
-		":8080":          true,
+		"127.0.0.1:8080":  true,
+		"localhost:8080":  true,
+		"[::1]:8080":      true,
+		"127.0.0.53:8080": true,
+		// :8080 is every interface, not the local one. The helper this
+		// replaced called it loopback, so listen=:8080 was accepted while
+		// binding the whole host.
+		":8080":          false,
 		"0.0.0.0:8080":   false,
 		"192.168.1.5:80": false,
 		"[::]:8080":      false,
 	} {
-		if got := isLoopback(addr); got != want {
-			t.Errorf("isLoopback(%q) = %v, want %v", addr, got, want)
+		if got := bindsLoopbackOnly(addr); got != want {
+			t.Errorf("bindsLoopbackOnly(%q) = %v, want %v", addr, got, want)
 		}
 	}
 }

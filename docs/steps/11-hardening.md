@@ -95,17 +95,21 @@ Kill -TERM mid-request: in-flight signing requests finish, then exit.
   `grep -rn "UPDATE events\|DELETE FROM events" internal cmd` is empty (the
   scan is a test: `internal/signstore/store_test.go`), and
   `signsrv audit-verify` walks the date files and checks the hash chain.
-- [x] TLS/HSTS reference config committed; plain-HTTP only allowed on loopback —
-  `deploy/Caddyfile` (automatic_https, HSTS max-age=31536000 includeSubDomains,
-  nosniff, frame-deny, no-store on /api), `deploy/signsrv.service`,
-  `deploy/Dockerfile`. `checkconfig` refuses a non-loopback listener outside
-  dev mode, and warns when `tsa_url` is not HTTPS.
+- [x] TLS/HSTS reference config committed; plain-HTTP only on loopback **by
+  default** — `deploy/Caddyfile` (automatic_https, HSTS max-age=31536000
+  includeSubDomains, nosniff, frame-deny, no-store on /api),
+  `deploy/signsrv.service`, `deploy/Dockerfile`. A listener outside loopback is
+  a **warning**, not a refusal: the service speaks plain HTTP, so TLS, a proxy,
+  or network policy must terminate encryption in front of it, but where the
+  listener sits is the operator's infrastructure decision and the binary does
+  not overrule it. `checkconfig` warns the same way when `tsa_url` is not HTTPS.
 - [x] Body size limits and magic-byte checks on every upload path —
   `cmd/signsrv/upload_test.go`: 25 MB multipart (413, no rows created),
   64 KB JSON (400), `.pdf` magic bytes on the template, PNG/JPEG/GIF/TIFF
   magic bytes on logo artwork, the 512 KB and 4096-pixel ceilings.
 - [x] `checkconfig` fails loudly on every insecure combination —
-  `cmd/signsrv/checkconfig_test.go`: non-loopback listener, public_url not
-  https, loose JWT key mode, missing keystore, missing secrets, a plain-HTTP
-  TSA (warning, service still starts), and the report contains digests only.
+  `cmd/signsrv/checkconfig_test.go`: public_url not https, loose JWT key mode,
+  missing keystore, missing secrets, and digests-only in the report are
+  refusals; a non-loopback listener and a plain-HTTP TSA are warnings that the
+  service still starts.
 - Reviewer: ____________  Date: ________

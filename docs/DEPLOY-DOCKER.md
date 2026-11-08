@@ -79,10 +79,16 @@ docker run --rm -v signsrv-data:/var/lib/signsrv \
 ```
 
 `checkconfig` prints every effective value, with secrets shown as set/unset, and
-exits non-zero on a combination it considers unsafe. It is the gate that refuses
-a non-loopback listener, a `public_url` that is not `https` when `dev=0`, and a
-missing `smtp_host` outside dev mode. Read it before the first `serve`; it is
-also the first thing to run after any change.
+exits non-zero on a configuration the service refuses to run: a `public_url`
+that is not `https` when `dev=0`, a missing `smtp_host` outside dev mode, a
+missing keystore passphrase, a keystore directory that does not exist, a JWT key
+world-readable. Read it before the first `serve`; it is also the first thing to
+run after any change.
+
+Some findings are **warnings**, printed and then run anyway, because the
+decision belongs to the operator and not to the binary. A listener outside
+loopback is one of those: see §2. A warning is printed by `serve` too, so the
+tradeoff is stated on every start rather than only when someone asks.
 
 ### Accounts, after the first start
 
@@ -98,18 +104,35 @@ deletes the refresh chain — the action to take when a token is stolen.
 
 ### Why `--network host`
 
-The service refuses to serve on anything but a loopback listener: the signing
-link carries a token, and a token must not travel over a plain path someone on
-the route can read. `checkconfig` rejects a `0.0.0.0` bind outside dev mode.
 A container's `127.0.0.1` belongs to that container alone, so a bridge network
-would leave the proxy unable to reach it. Two supported answers:
+leaves the proxy unable to reach it. Two supported answers:
 
 1. **host networking** (above, and what `deploy/docker-compose.yml` does) — the
    listener stays loopback, the proxy reaches it, nothing is exposed outward.
-2. **a user-defined bridge** — then the listener has to be `0.0.0.0:8080`, which
-   means the container network itself is the boundary: do not publish the port,
-   and keep the proxy in the same network. This works but trades the guardrail
-   for a firewall rule you have to maintain.
+2. **a user-defined bridge** — then the listener has to be `0.0.0.0:8080`, so
+   the container network becomes the boundary: do not publish the port, and keep
+   the proxy in the same network.
+
+Both are supported. The service binds whatever address you name — where the
+listener sits is a property of the infrastructure around it, and a mesh with
+mutual TLS, a sidecar proxy, or a private VLAN each make a public bind correct.
+The service will not decide that for you, and will not stop you.
+
+What it does is say so. A bind outside loopback prints, at every start:
+
+```
+warning: listen binds outside loopback (0.0.0.0:8080): the service serves plain
+HTTP, so TLS, a proxy, or network policy must terminate encryption in front of
+it, or party tokens and the admin password cross the network in the clear
+```
+
+The warning is about the one thing the application cannot fix: it speaks plain
+HTTP, and the signing link carries a token. Bind `0.0.0.0` and put nothing in
+front, and a login POST and every signing link cross the network readable by
+anyone on the segment. That is a real deployment behind a proxy and a real
+mistake behind none, which is why it is a warning rather than a refusal — the
+service runs it and names the cost. `listen=:8080` binds every interface too;
+an empty host has never meant loopback, and the warning now catches it.
 
 TLS is terminated in front of the service in both cases. See `deploy/Caddyfile`.
 

@@ -56,20 +56,47 @@ func TestCheckConfigAcceptsLoopbackConfig(t *testing.T) {
 	}
 }
 
-// The listener is plain HTTP. A public listener means the signing link, and
-// the link token, reach the party over a path the service serves unencrypted.
-func TestCheckConfigRefusesNonLoopbackListener(t *testing.T) {
-	p := checkConfigServer(t, strings.Replace(goodBase, "listen=127.0.0.1:8080", "listen=0.0.0.0:8080", 1), 0o600)
-	cfg, err := LoadConfig(p)
-	if err == nil {
-		t.Fatal("want an error for a public listener")
+// Where the listener sits is the operator's infrastructure decision, so a
+// public bind is not a problem: the service runs it. It is a warning, because
+// the service speaks plain HTTP and the tradeoff deserves saying out loud.
+// The check is that the run is allowed and the warning is present — a silent
+// yes would be worse than a no, and a hard stop would be the application
+// claiming a decision it does not own.
+func TestCheckConfigWarnsOnNonLoopbackListener(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:8080", "[::]:8080", "192.168.1.5:8080", ":8080"} {
+		p := checkConfigServer(t, strings.Replace(goodBase, "listen=127.0.0.1:8080", "listen="+addr, 1), 0o600)
+		cfg, err := LoadConfig(p)
+		if err != nil {
+			t.Fatalf("%s: want the config to load, got %v\n%s", addr, err, strings.Join(cfg.Problems(), "\n"))
+		}
+		if got := checkConfig(p); got != 0 {
+			t.Fatalf("%s: checkconfig exit = %d, want 0 (a public bind is the operator's call)", addr, got)
+		}
+		warnings := strings.Join(cfg.Warnings(), "\n")
+		if !strings.Contains(warnings, "plain HTTP") {
+			t.Fatalf("%s: no warning about plain HTTP:\n%s", addr, warnings)
+		}
+		if strings.Contains(strings.Join(cfg.Problems(), "\n"), "loopback") {
+			t.Fatalf("%s: still reported as a problem:\n%s", addr, cfg.Problems())
+		}
 	}
-	problems := strings.Join(cfg.Problems(), "\n")
-	if !strings.Contains(problems, "loopback") {
-		t.Fatalf("the problem does not name loopback:\n%s", problems)
-	}
-	if got := checkConfig(p); got != 1 {
-		t.Fatalf("checkconfig exit = %d, want 1", got)
+}
+
+// A loopback bind carries no warning: the common shape must stay quiet, or the
+// warning stops being read.
+func TestCheckConfigQuietOnLoopbackListener(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080", "127.0.0.53:8080"} {
+		p := checkConfigServer(t, strings.Replace(goodBase, "listen=127.0.0.1:8080", "listen="+addr, 1), 0o600)
+		cfg, err := LoadConfig(p)
+		if err != nil {
+			t.Fatalf("%s: %v", addr, err)
+		}
+		if got := checkConfig(p); got != 0 {
+			t.Fatalf("%s: checkconfig exit = %d, want 0", addr, got)
+		}
+		if len(cfg.Warnings()) != 0 {
+			t.Fatalf("%s: want no warnings, got %v", addr, cfg.Warnings())
+		}
 	}
 }
 

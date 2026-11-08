@@ -303,8 +303,9 @@ signsrv -config CFG audit-verify     # hash chain, prev_hash, monotonic ids
 ```
 Proven: tokens, passwords, keys, secrets and signing addresses never reach the
 log; the redaction helper is honest; the access log shape; `checkconfig`
-accepts a loopback dev config, refuses a non-loopback listener, a loose JWT key
-mode, a missing keystore, warns on a plain TSA, and its report contains no
+accepts a loopback dev config, refuses a loose JWT key
+mode, a missing keystore, warns on a non-loopback listener and on a plain TSA,
+and its report contains no
 secrets; audit write then verify, write is idempotent, verify catches
 tampering and missing events, write refuses a tampered tail, a tampered tail
 behind an empty day, a backwards day, empty dir is fine, files are owner-only;
@@ -448,7 +449,7 @@ so an attacker-influenced title cannot become markup in the party's page or mail
 | 08 | no browser-level CSP assertion | tests read JS source; nobody has opened devtools |
 | 10 | no test for a **key rotation** mid-batch | the key ring is read once at start |
 | 11 | log rotation not verified | `deploy/signsrv.service` ships a logrotate file; nothing runs it |
-| 11 | TLS not verified on a real deployment | the reference Caddyfile is committed; the acceptance run is loopback plain HTTP in dev mode, which `checkconfig` permits and `checkconfig`'s own test proves a non-loopback listener is refused |
+| 11 | TLS not verified on a real deployment | the reference Caddyfile is committed; the acceptance run is loopback plain HTTP in dev mode, which `checkconfig` permits. It no longer refuses a public bind — a listener outside loopback is a warning, so nothing in the suite proves a real deployment terminates TLS |
 | 12 | no negative check for **concurrency** (two parties consenting at the same moment) | the last-consent enqueue is tested for one consent, not for two racing consents |
 | 12 | no negative check for **delivery of a document whose gate-2 sha was recomputed after the queue** | gate 2 is tested on a tampered input; the reissue-then-batch path is tested, the race is not |
 
