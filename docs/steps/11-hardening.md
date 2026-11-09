@@ -58,8 +58,9 @@ that cannot be recovered.
 **Config check.** `signsrv checkconfig` prints the effective config with
 secrets masked and exits non-zero listing every problem: `PUBLIC_URL` must be
 `https` unless `DEV=1`; `LINK_TTL` <= 720h; keystore present and readable,
-mode 0600; SMTP set when not DEV; `TRUST_PROXY` set with a loopback listener;
-warns when running as root.
+mode 0600; SMTP set when not DEV. It warns, and runs, on a listener outside
+loopback (plain HTTP, so TLS has to be terminated in front of it) and when
+running as root.
 
 **Secrets table** (what an operator must protect, in order of blast radius):
 keystore passphrase + `var/keystore/`, `var/jwt.ed25519.key`, SMTP password,

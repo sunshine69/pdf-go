@@ -62,8 +62,10 @@ LoadCredential=admin-password /etc/signsrv/admin.pass
 Environment=SIGNSRV_KEYSTORE_PASS=%kkeystore-pass
 Environment=SIGNSRV_ADMIN_PASSWORD=%kadmin-password
 
-# The socket is loopback. TLS is terminated by the proxy.
-# A plain-HTTP listener on 0.0.0.0 is a configuration `checkconfig` refuses.
+# The listener comes from /etc/signsrv/signsrv.env; this unit does not set one.
+# Keep it loopback here: the service speaks plain HTTP, and TLS is terminated by
+# the proxy. A bind outside loopback is accepted, not refused — `serve` logs a
+# warning saying encryption must be terminated in front of it, and runs.
 
 # A request that is signing takes up to 90 seconds (the TSA call). A
 # shutdown that kills it mid-write leaves an envelope in the middle of a

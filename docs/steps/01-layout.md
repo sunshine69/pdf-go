@@ -38,8 +38,12 @@ SIGNSRV_DEV=0                                     # 1 = http, verbose, no SMTP
 ```
 
 - `SIGNSRV_DEV=1` is the only way to run without SMTP/keystore passphrase: it
-  writes emails to `var/outbox/` as `.eml` files. Used by tests. Never accept
-  `SIGNSRV_DEV=1` if the listener is not loopback; refuse to start with a hint.
+  writes emails to `var/outbox/` as `.eml` files. Used by tests. Dev mode
+  generates the keystore passphrase and the admin password at start and prints
+  them to the log, so `SIGNSRV_DEV=1` on a listener that reaches the network is
+  the combination to avoid — the log alone is then enough to sign. It is warned
+  about, not refused: where the listener sits is the operator's infrastructure
+  decision.
 - Static dirs are compile-time embedded (`go:embed web/spa web/admin`) so the
   binary is a single artifact.
 - One `Logger` (slog, JSON) with a `RequestID` on every request.
@@ -82,9 +86,12 @@ Implemented. Evidence, from the commands above run against the tree:
   `TestSignerShellHidesTheToken` assert it on the log file.
 - [x] `/healthz` returns 200 JSON; SIGTERM logs "draining" then "stopped" and
   the port closes.
-- [x] Dev mode is refused on a non-loopback listener; a missing secret is a
-  start-time problem, so dev generates ephemeral secrets and prints the
-  admin password once (dev mode only, never in production).
+- [x] Dev mode is refused on a non-loopback listener *(later reversed — a
+  listener outside loopback is now a warning on every start, and dev mode
+  accepts any bind; the caveat about ephemeral secrets being printed to the log
+  is why the warning exists)*; a missing secret is a start-time problem, so dev
+  generates ephemeral secrets and prints the admin password once (dev mode only,
+  never in production).
 - [x] gofmt clean, vet clean, `go test -mod=vendor ./cmd/signsrv` passes
   (12 cases: routes, traversal, CSP for both faces, config validation,
   env-over-file precedence, loopback parsing, log hygiene).

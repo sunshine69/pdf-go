@@ -70,8 +70,11 @@ VOLUME /var/lib/signsrv
 # not refuse the bind, because the surrounding network is not visible to the
 # container and the decision is the operator's.
 #
-# SIGNSRV_TRUST_PROXY=1 is required when a proxy sets X-Forwarded-For; without
-# it the rate limits bind to the socket peer, which is the proxy.
+# SIGNSRV_TRUST_PROXY=1 is right when a proxy you control sets X-Forwarded-For:
+# without it the rate limits bind to the socket peer, which is the proxy, and
+# every visitor shares one bucket. It is wrong when clients reach the listener
+# directly — including on a published bind with nothing in front — because then
+# a client chooses the address the limits are keyed to.
 #
 # SIGNSRV_PUBLIC_URL is not defaulted here on purpose: it is the address the
 # signing links are built from, so a guessed default would produce links that
