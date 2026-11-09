@@ -67,6 +67,7 @@ func signSelftest(configPath, tsaOverride string, rest []string) int {
 	fontData, fontName := selftestFont(cfg)
 	s, err := signpdf.NewService(signpdf.Config{
 		KeystoreDir: cfg.Keystore,
+		CASubject:   cfg.CASubject,
 		Passphrase:  cfg.KeystorePassphrase(),
 		TSAURL:      cfg.TSAURL,
 		FontData:    fontData,
@@ -192,6 +193,7 @@ func checkPDF(configPath, tsaOverride string, rest []string) int {
 	}
 	s, err := signpdf.NewService(signpdf.Config{
 		KeystoreDir: cfg.Keystore,
+		CASubject:   cfg.CASubject,
 		Passphrase:  cfg.KeystorePassphrase(),
 		TSAURL:      tsa,
 		Clock:       time.Now,

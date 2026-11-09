@@ -61,6 +61,18 @@ The keystore (`var/keystore`) is the CA private key. It is backed up once, to
 a device kept offline, together with the passphrase. There is no second copy
 of the passphrase inside the service. See `SECURITY.md`.
 
+Record both with the backup, because a backup you cannot verify or restore is
+not a backup:
+
+```
+openssl x509 -in /var/lib/signsrv/keystore/ca.crt -noout -enddate -fingerprint -sha256
+```
+
+The fingerprint identifies which CA a given backup belongs to — with time you
+will have old ones, and a restored keystore with the wrong passphrase looks like
+corruption rather than a mismatch. The `enddate` is the CA's expiry, which no
+running check will warn you about (see *CA expiry*).
+
 ## Restore
 
 Restore is a copy, then three checks. The service is stopped for the copy.
@@ -100,7 +112,14 @@ they are in `var/audit`, and they are the evidence.
 ```
 signsrv checkconfig -config $CFG    # effective config, secrets as digests
 signsrv dbstatus     -config $CFG    # schema version and row counts
+openssl x509 -in /var/lib/signsrv/keystore/ca.crt -noout -enddate
 ```
+
+The last one is the CA certificate's expiry date. It is not covered by
+`checkconfig`: the expiry is only checked when a signature is attempted, and by
+then the signing service is returning 503. The CA lives 10 years from the day the
+data directory was first written, so read the date once, note it, and diarise it
+with a year of slack. See *CA expiry* below.
 
 `checkconfig` exits non-zero listing every problem. It prints the redacted
 configuration even when the configuration is broken — that is the line to
@@ -164,11 +183,29 @@ The JWT key (`var/jwt.ed25519.key`, mode 0600) is created on first start.
 Replacing it drops every API session; the signing links are unaffected,
 because a link is a token and not a JWT. Restart after replacing it.
 
-The CA is `var/keystore/ca.key` and `ca.crt`, created on first start. To
-replace it, move both files out of the keystore directory (keep them, offline),
-then restart: the service creates a new CA on first start. Signatures made with
-the old CA keep verifying — each signature carries its own certificate chain.
-New signatures use the new CA. Tell the verifiers the new CA certificate.
+The CA is `var/keystore/ca.key` and `ca.crt`, created on first start, and named
+by the `ca_*` config keys — which are honoured **on that first start only**.
+To replace it, move both files out of the keystore directory (keep them,
+offline), then restart: the service creates a new CA on first start. Signatures
+made with the old CA keep verifying — each signature carries its own certificate
+chain. New signatures use the new CA. Tell the verifiers the new CA certificate.
+
+**CA expiry.** The CA certificate is valid for 10 years from the first start, and
+nothing warns you before it lapses. The check runs when the keystore is loaded —
+at startup, and again on every signing call — so the symptom is the ERROR line
+`signpdf: CA expires at <date>, regenerate the keystore` in the log, with the
+service otherwise running normally and only document creation answering 503.
+Verification of existing documents is unaffected. Check the date and diarise it:
+
+```
+openssl x509 -in /var/lib/signsrv/keystore/ca.crt -noout -enddate -fingerprint -sha256
+```
+
+Replacing it is a planned outage for issuing, not an emergency: documents already
+signed keep verifying forever, because each one carries the leaf certificate and
+the RFC 3161 timestamp inside it. The new CA needs its fingerprint published so
+verifiers can check the `ca.crt` they receive against it; anyone who pinned the
+old one needs the new one to see `trusted` again.
 
 ## One secret that cannot be recovered
 

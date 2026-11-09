@@ -85,11 +85,16 @@ type Config struct {
 	FontData    []byte
 	FontName    string
 	Clock       func() time.Time
+
+	// CASubject identifies the CA when a keystore is created on first
+	// start. Ignored when the keystore already exists. Leave nil for the
+	// built-in defaults.
+	CASubject *CASubject
 }
 
 // NewService loads (or creates) the CA and prepares the appearance font.
 func NewService(cfg Config) (*Service, error) {
-	ca, err := LoadCA(cfg.KeystoreDir, cfg.Passphrase)
+	ca, err := LoadCAWith(cfg.KeystoreDir, cfg.Passphrase, cfg.CASubject)
 	if err != nil {
 		return nil, err
 	}
@@ -244,6 +249,16 @@ func (s *Service) finish(doc *pdfsign.Document, cert *x509.Certificate) (*Out, e
 // issueLeaf mints a short-lived signing certificate for one signature. Validity
 // is deliberately minutes long: the key exists only for the signing call, and
 // a leaf that outlives the signature is a key sitting around to be stolen.
+// leafOrg is the Organization on every leaf certificate. It is taken from the
+// CA so a reader sees one identity across the chain rather than the configured
+// organisation on the CA and "signsrv" on each signer.
+func (s *Service) leafOrg() []string {
+	if len(s.ca.Cert.Subject.Organization) > 0 {
+		return s.ca.Cert.Subject.Organization
+	}
+	return []string{"signsrv"}
+}
+
 func (s *Service) issueLeaf(pub *ecdsa.PrivateKey, name, email string, now time.Time) (*x509.Certificate, error) {
 	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	n, err := rand.Int(rand.Reader, serialLimit)
@@ -252,7 +267,7 @@ func (s *Service) issueLeaf(pub *ecdsa.PrivateKey, name, email string, now time.
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:   n,
-		Subject:        pkix.Name{CommonName: name, Organization: []string{"signsrv"}},
+		Subject:        pkix.Name{CommonName: name, Organization: s.leafOrg()},
 		EmailAddresses: []string{email},
 		NotBefore:      now.Add(-60 * time.Second),
 		NotAfter:       now.Add(15 * time.Minute),

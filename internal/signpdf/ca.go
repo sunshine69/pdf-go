@@ -135,12 +135,97 @@ func (ca *CA) Fingerprint() string {
 	return strings.ToUpper(hex.EncodeToString(sum[:]))
 }
 
+// CASubject is the identity written into a newly created CA certificate's
+// subject. It exists so the self-signed CA can name the organisation that runs
+// the service instead of the placeholder "signsrv CA".
+//
+// These fields are self-asserted. A self-signed certificate carries no
+// third-party attestation, so a richer subject makes the certificate more
+// legible to a human and to a PDF reader, not more trusted: trust still comes
+// from importing the certificate and checking its fingerprint out of band.
+//
+// A nil or empty CASubject leaves the historical defaults (CN "signsrv CA",
+// O "signsrv"), so an operator who sets nothing gets the certificates this
+// project shipped before the field existed.
+type CASubject struct {
+	CommonName         string
+	Organization       string
+	OrganizationalUnit string
+	Locality           string
+	Province           string
+	StreetAddress      string
+	PostalCode         string
+	Country            string
+	Email              string
+}
+
+// empty reports whether the subject carries nothing, in which case the CA is
+// created with the historical defaults rather than a nearly-empty DN.
+func (s *CASubject) empty() bool {
+	return s == nil || *s == CASubject{}
+}
+
+// name turns the subject into the pkix form crypto/x509 writes. Empty fields
+// are left out of the distinguished name, so setting only the organisation does
+// not produce an RDN full of empty strings.
+func (s *CASubject) name() pkix.Name {
+	n := pkix.Name{CommonName: "signsrv CA", Organization: []string{"signsrv"}}
+	if s.empty() {
+		return n
+	}
+	if s.CommonName != "" {
+		n.CommonName = s.CommonName
+	}
+	if s.Organization != "" {
+		n.Organization = []string{s.Organization}
+	}
+	if s.OrganizationalUnit != "" {
+		n.OrganizationalUnit = []string{s.OrganizationalUnit}
+	}
+	if s.Locality != "" {
+		n.Locality = []string{s.Locality}
+	}
+	if s.Province != "" {
+		n.Province = []string{s.Province}
+	}
+	if s.StreetAddress != "" {
+		n.StreetAddress = []string{s.StreetAddress}
+	}
+	if s.PostalCode != "" {
+		n.PostalCode = []string{s.PostalCode}
+	}
+	if s.Country != "" {
+		n.Country = []string{strings.ToUpper(s.Country)}
+	}
+	if s.Email != "" {
+		// The value must be encoded as an IA5String: emailAddress allows '@'
+		// and '.', which crypto/asn1's default PrintableString cannot hold,
+		// and a value that fails to encode is dropped from the DN silently.
+		n.ExtraNames = append(n.ExtraNames, pkix.AttributeTypeAndValue{
+			Type:  asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 1}, // emailAddress
+			Value: s.Email,
+		})
+	}
+	return n
+}
+
 // LoadCA reads ca.crt and ca.key from dir. When the files are absent it
 // creates them (0600 on the key), which is the first-start path.
+func LoadCA(dir, passphrase string) (*CA, error) {
+	return LoadCAWith(dir, passphrase, nil)
+}
+
+// LoadCAWith is LoadCA with a subject for a newly created CA.
 //
 // A passphrase that does not open the existing key is a fatal error: the
 // service must not sign with a key it cannot prove it owns.
-func LoadCA(dir, passphrase string) (*CA, error) {
+//
+// The subject is only consulted on creation. A keystore that already holds a
+// certificate was issued under whatever subject it was created with, and
+// re-issuing it to match a changed config would silently break every document
+// signed under the old one, so a changed subject on an existing keystore is
+// ignored, not applied.
+func LoadCAWith(dir, passphrase string, subject *CASubject) (*CA, error) {
 	if dir == "" {
 		return nil, errors.New("signpdf: keystore directory is required")
 	}
@@ -154,7 +239,7 @@ func LoadCA(dir, passphrase string) (*CA, error) {
 	keyData, keyErr := os.ReadFile(keyPath)
 
 	if os.IsNotExist(certErr) && os.IsNotExist(keyErr) {
-		return createCA(dir, passphrase)
+		return createCA(dir, passphrase, subject)
 	}
 	if certErr != nil && !os.IsNotExist(certErr) {
 		return nil, fmt.Errorf("signpdf: read %s: %w", certPath, certErr)
@@ -198,7 +283,7 @@ func LoadCA(dir, passphrase string) (*CA, error) {
 
 // createCA generates the CA key and certificate, writes ca.crt (PEM, 0644)
 // and ca.key (encrypted envelope, 0600).
-func createCA(dir, passphrase string) (*CA, error) {
+func createCA(dir, passphrase string, subject *CASubject) (*CA, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("signpdf: keystore dir: %w", err)
 	}
@@ -213,7 +298,7 @@ func createCA(dir, passphrase string) (*CA, error) {
 	notBefore := time.Now().Add(-1 * time.Hour)
 	template := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "signsrv CA", Organization: []string{"signsrv"}},
+		Subject:      subject.name(),
 		NotBefore:    notBefore,
 		NotAfter:     notBefore.Add(365 * 24 * time.Hour * caYears),
 		// The CA signs documents as well as certificates: the certification

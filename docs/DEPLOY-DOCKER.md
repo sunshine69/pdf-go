@@ -53,6 +53,17 @@ docker volume create signsrv-data
 export SIGNSRV_KEYSTORE_PASS="$(openssl rand -hex 32)"   # write this down NOW
 export SIGNSRV_ADMIN_PASSWORD="$(openssl rand -base64 24)"
 
+# CA identity: first start only. Read *The signing CA* below before running this.
+export SIGNSRV_CA_COMMON_NAME="Example.org Document Signing CA"
+export SIGNSRV_CA_ORG="Example Ltd"
+export SIGNSRV_CA_UNIT="Trust Services"
+export SIGNSRV_CA_EMAIL="signing@example.org"
+export SIGNSRV_CA_STREET="1 Example Street"
+export SIGNSRV_CA_LOCALITY="Example City"
+export SIGNSRV_CA_PROVINCE="Example County"
+export SIGNSRV_CA_POSTAL="EX1 2AB"
+export SIGNSRV_CA_COUNTRY=GB
+
 docker run -d --name signsrv \
   --network host \
   -v signsrv-data:/var/lib/signsrv \
@@ -64,8 +75,60 @@ docker run -d --name signsrv \
   -e SIGNSRV_SMTP_PORT=587 \
   -e SIGNSRV_KEYSTORE_PASS \
   -e SIGNSRV_ADMIN_PASSWORD \
+  -e SIGNSRV_CA_COMMON_NAME -e SIGNSRV_CA_ORG -e SIGNSRV_CA_UNIT \
+  -e SIGNSRV_CA_EMAIL -e SIGNSRV_CA_STREET -e SIGNSRV_CA_LOCALITY \
+  -e SIGNSRV_CA_PROVINCE -e SIGNSRV_CA_POSTAL -e SIGNSRV_CA_COUNTRY \
   signsrv:v0.0.1 serve
 ```
+
+### The signing CA — read this before the first start
+
+The service generates its own signing CA on first start: an ECDSA P-256 key
+pair, sealed into `var/keystore/ca.key` with `keystore_pass`, and a self-signed
+certificate at `var/keystore/ca.crt`. There is no separate generate command and
+no certificate to import, so **the first start is the only moment the CA's
+identity can be set.** Afterwards the `ca_*` fields are ignored completely:
+honouring them would mean re-issuing a CA that already has signatures pointing at
+it, which invalidates them.
+
+Set them before that first start, or the CA is named `signsrv CA / O=signsrv` and
+every signer you issue inherits `O=signsrv`. All nine are optional; unset ones are
+left out of the distinguished name entirely rather than appearing as empty
+fields. They can go in the config file instead, under the same names without the
+`SIGNSRV_` prefix — but then they must be in it before the volume is first
+written. An env var that is not passed with `-e` does not reach the container.
+
+The values are **self-asserted**. A self-signed certificate attests nothing about
+the party named in it, so a fuller subject makes the certificate legible to
+humans and PDF readers — it does not make it trusted. Trust comes from the
+recipient importing `ca.crt` and checking its fingerprint over a channel you do
+not control.
+
+Confirm what was actually created:
+
+```sh
+# Copy it out and inspect it on the host. The image has no openssl.
+docker cp signsrv:/var/lib/signsrv/keystore/ca.crt /tmp/ca.crt
+openssl x509 -in /tmp/ca.crt -noout -subject -fingerprint -sha256 -enddate
+rm /tmp/ca.crt
+```
+
+Record the SHA-256 fingerprint and the `enddate` with the passphrase (§6). The
+fingerprint is what a verifier checks `ca.crt` against, and once signatures exist
+the subject cannot be changed without issuing a new CA and re-notifying everyone.
+The `enddate` is the CA's own expiry — see §6 for why nothing warns you about it.
+
+`checkconfig` prints the subject it will use, so you can confirm the settings
+before anything is written to the volume:
+
+```
+keystore_dir=/var/lib/signsrv/keystore
+ca_subject=CN=Example.org Document Signing CA, O=Example Ltd, ... (honoured on first start only)
+```
+
+The subject you set also appears on every signer's certificate as its
+`Organization`, so a reader inspecting a signature sees one identity across the
+chain instead of your organisation on the CA and `signsrv` on each signer.
 
 Before it starts serving for real, ask it what it thinks the configuration is:
 
@@ -181,6 +244,9 @@ which is deliberate — the behaviour must not depend on which you chose.
 | `storage_dir` | `var/storage` | uploaded and signed PDFs |
 | `keystore_dir` | `var/keystore` | the CA. Created on first start, mode 0750 |
 | `keystore_pass` | — | **required.** Decrypts the CA. See §6 |
+| `ca_common_name` | `signsrv CA` | CA subject. **Read at first start only.** See *The signing CA* in §2 |
+| `ca_org` | `signsrv` | CA subject, and the `Organization` on every signer's certificate |
+| `ca_unit` `ca_email` `ca_street` `ca_locality` `ca_province` `ca_postal` `ca_country` | unset | CA subject. Omitted from the DN when unset |
 | `admin_password` | — | **required** at first start, seeds the admin. After that the DB hash is the truth |
 | `smtp_host` | — | required when `dev=0` |
 | `smtp_port` / `smtp_starttls` | `587` / `true` | |
@@ -324,6 +390,77 @@ certificate. Keep it offline, with the key file, and not in the compose file.
 
 To replace the CA: back up `keystore/ca.key` and `ca.crt` offline, move them
 out of the directory, restart; the service creates a new CA on first start.
+
+### The CA: the thing that has a deadline
+
+The keystore is the signing authority for every document you have issued, so
+treat it like a certificate authority and not like a config file.
+
+**It expires.** The CA certificate is valid for **10 years** from the day the
+volume was first written. `checkconfig` does not warn you in advance; the expiry
+is checked when the keystore is loaded, at startup and on every signing call, and
+the failure looks like this:
+
+```
+signpdf: CA expires at 2036-11-09, regenerate the keystore
+```
+
+The service starts and serves anyway: verification, the admin app and the API all
+keep working, and only document creation answers 503. That is why this fails
+quietly in production — the process looks healthy — and loudly in the selftest.
+Every document already signed still verifies; nothing you have already done
+breaks.
+
+Grep the log for it rather than waiting for a customer to notice. That ERROR
+line, not the 503, is the signal to act on:
+
+```
+{"level":"ERROR","msg":"signing service unavailable","error":"signpdf: CA expires at 2036-11-09, regenerate the keystore","create":"endpoint will answer 503"}
+```
+
+**Put the CA's `NotAfter` date in your calendar now, with a year of slack:**
+
+```sh
+docker cp signsrv:/var/lib/signsrv/keystore/ca.crt /tmp/ca.crt
+openssl x509 -in /tmp/ca.crt -noout -enddate; rm /tmp/ca.crt
+```
+
+**What breaks, and what does not.** Losing `keystore_pass` or `ca.key`, or
+letting the certificate expire, stops *new* signatures and nothing else:
+
+| | still works? |
+|---|---|
+| "Has this document been altered?" | Yes — the verifier needs nothing from you. The leaf certificate and the RFC 3161 timestamp are inside the PDF |
+| The chain to your CA | Yes — the CA certificate is embedded in each signature's PKCS#7 |
+| `trusted` on the recipient's reader | Unchanged. It is `false` for a self-signed CA until the recipient imports `ca.crt` as a trust anchor. A richer subject does not change this |
+| Issuing a new signature | No |
+
+So an expired CA is an outage for issuing, not a retroactive invalidation of the
+documents. Plan the renewal as an outage window, not as a panic.
+
+**Renew before you replace.** Replace means a brand-new key and a new identity,
+and every recipient who imported the old `ca.crt` has to import the new one.
+That is why the fingerprint recorded in §2 belongs with the passphrase: when
+someone asks whether a `ca.crt` they received is genuine, that fingerprint is
+what they check it against. Keep the old pair for as long as any document signed
+under it needs to stay checkable — the old certificates do not have to remain
+reachable, they are already in the documents, but keeping them costs nothing and
+lets you answer a dispute years later.
+
+**Distribute deliberately.** `ca.crt` is public and mode 0644; `ca.key` is
+encrypted with Argon2id and mode 0600, and the service holds no copy of the
+passphrase anywhere above the environment. The private key is never in a
+document. Publishing `ca.crt` on your site is normal and helps verifiers;
+putting `ca.key` anywhere they can reach is the only way this design fails.
+
+**The identity is not a trust mechanism.** The `ca_*` fields name you; they do
+not prove you. A recipient who wants proof of who signed a document has to
+verify the certificate's fingerprint over a channel the signer does not control,
+and the only thing that gives them that is a CA from an issuer they already
+trust — or your own `ca.crt` pinned by policy. If your documents need
+third-party attestation, that means a signing certificate from a commercial
+trust list, which is a different design from this one: this service is built
+around a self-issued CA and cannot use one as its root.
 
 ---
 

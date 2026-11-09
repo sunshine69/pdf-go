@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sunshine69/pdf-go/internal/signpdf"
 )
 
 // Config is the effective configuration of the service.
@@ -27,6 +29,9 @@ type Config struct {
 	StorageDir string
 	Keystore   string
 	Outbox     string
+	// CASubject identifies the CA certificate when a keystore is created on
+	// first start. nil leaves the built-in "signsrv CA" name in place.
+	CASubject  *signpdf.CASubject
 	TrustProxy bool
 	Dev        bool
 	// WorkerInterval is how often the worker drains the mail queue and
@@ -161,6 +166,7 @@ func LoadConfig(path string) (*Config, error) {
 	c.StorageDir = get("storage_dir", "var/storage")
 	c.Keystore = get("keystore_dir", "var/keystore")
 	c.keystoreSet = env["keystore_dir"] != "" || file["keystore_dir"] != ""
+	c.CASubject = caSubjectFrom(get)
 	c.Outbox = get("outbox_dir", "var/outbox")
 	c.TSAURL = get("tsa_url", "https://freetsa.org/tsr")
 	c.SMTPHost = get("smtp_host", "")
@@ -326,6 +332,7 @@ func (c *Config) Redacted() string {
 		"db_path=" + c.DBPath,
 		"storage_dir=" + c.StorageDir,
 		"keystore_dir=" + c.Keystore,
+		"ca_subject=" + c.describeCASubject(),
 		"keystore_pass=" + c.keystoreDigest,
 		"admin_password=" + c.adminPassDigest,
 		"jwt_secret_file=" + c.jwtFile,
@@ -383,6 +390,9 @@ var configKeys = map[string]bool{
 	"listen": true, "public_url": true, "db": true, "db_path": true,
 	"storage_dir": true, "keystore_dir": true, "outbox_dir": true,
 	"keystore_pass": true, "admin_password": true, "jwt_secret_file": true,
+	"ca_common_name": true, "ca_org": true, "ca_unit": true, "ca_email": true,
+	"ca_locality": true, "ca_province": true, "ca_street": true,
+	"ca_postal": true, "ca_country": true,
 	"tsa_url": true, "link_ttl": true, "max_pdf_mb": true,
 	"smtp_host": true, "smtp_port": true, "smtp_starttls": true,
 	"smtp_user": true, "smtp_pass": true, "mail_from": true,

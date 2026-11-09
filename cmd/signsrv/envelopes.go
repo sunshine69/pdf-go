@@ -35,6 +35,7 @@ func signService(cfg *Config, log *slog.Logger) *signpdf.Service {
 	fontData, fontName := selftestFont(cfg)
 	s, err := signpdf.NewService(signpdf.Config{
 		KeystoreDir: cfg.Keystore,
+		CASubject:   cfg.CASubject,
 		Passphrase:  cfg.KeystorePassphrase(),
 		TSAURL:      cfg.TSAURL,
 		FontData:    fontData,
