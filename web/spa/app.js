@@ -331,13 +331,13 @@ function renderConsent() {
   fileField.appendChild(file);
   app.appendChild(fileField);
   // readFile fills this in; the consent body sends it.
-  const imageData = { sha: "" };
+  const imageData = { dataURL: "" };
   file.addEventListener("change", () => {
     const f = file.files && file.files[0];
-    if (!f) { imageData.sha = ""; return; }
+    if (!f) { imageData.dataURL = ""; return; }
     if (!/^image\/(png|jpeg)$/.test(f.type)) { show("That is not a PNG or a JPEG."); file.value = ""; return; }
     if (f.size > 512 * 1024) { show("The image is over 512 KB."); file.value = ""; return; }
-    readFile(f);
+    readFile(f, imageData);
   });
 
   // The box and its words are joined by for/id, not by nesting a box inside a
@@ -385,7 +385,7 @@ function renderConsent() {
       consent: true,
       document_sha: env.document_sha,
     };
-    if (imageData.sha) body.image = imageData.sha;
+    if (imageData.dataURL) body.image = imageData.dataURL;
     const res = await api("/consent", { method: "POST", body: JSON.stringify(body) });
     const out = await handle(res);
     if (!out) return;
@@ -404,14 +404,23 @@ function renderConsent() {
 
 // The file is read into a data: URL, which is the only place the image is held
 // in this app: the bytes go to the server and the server answers with a sha.
-function readFile(f) {
+//
+// The target is a parameter, not a captured variable. `imageData` belongs to
+// the consent panel that created the file input, so a top-level function that
+// named it directly would refer to nothing at all: the assignment throws
+// ReferenceError inside FileReader.onload, an async callback nobody catches, and
+// the upload then vanishes with no message and no trace in the request the
+// browser sends. A test cannot see that either, so the dependency is spelled
+// out instead.
+function readFile(f, imageData) {
   const reader = new FileReader();
   reader.onload = () => {
     // The data URL is the body the server accepts; it lives only for the
     // duration of this panel and is never written to storage.
-    imageData.sha = String(reader.result);
+    imageData.dataURL = String(reader.result);
     show("Image attached.");
   };
+  reader.onerror = () => show("That file could not be read.");
   reader.readAsDataURL(f);
 }
 
