@@ -97,7 +97,10 @@ func signCmd(configPath, tsaOverride string, rest []string) int {
 		Reason:    "signed",
 		Signature: name,
 		TSAURL:    cfg.TSAURL,
-		Widget:    signpdf.Widget{Page: 1, Y: 60, W: 220, H: 30},
+		// X is left unset: a widget with neither coordinate keeps the default
+		// bottom-right placement, which is where this single-signature command
+		// has always put the signature.
+		Widget: signpdf.Widget{W: signpdf.AppearanceWidth, H: signpdf.AppearanceHeight},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "signsrv: sign: %v\n", err)

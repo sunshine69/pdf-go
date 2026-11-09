@@ -42,6 +42,16 @@ func (d *Deps) logf(msg string, args ...any) {
 	}
 }
 
+// logWarnf is the batch's warning line: the batch continued and the document it
+// produced is valid, but it is not what the signer asked for. The cases worth
+// warning about are the ones where a fallback turned a failure into a silent
+// downgrade.
+func (d *Deps) logWarnf(msg string, args ...any) {
+	if d.Log != nil {
+		d.Log.Warn("signflow: "+msg, args...)
+	}
+}
+
 // The signing batch of step 09/10. The batch is the only place that turns a
 // collection of consents into signed bytes, so it is the one place allowed to
 // write a sign revision, to move the envelope from collecting to signed, and
@@ -526,24 +536,53 @@ func (d *Deps) failEnvelope(ctx context.Context, env *signstore.Envelope, partyI
 	}
 }
 
+// consentExtensions are the blob suffixes a consent image can carry. The
+// consent write names the blob from the content type it decoded as — .png for
+// PNG, .jpg for JPEG — so a read that asks for one fixed suffix finds only half
+// of what can be stored.
+var consentExtensions = []string{".png", ".jpg"}
+
 // consentImage reads the signature image a consent captured, if it captured
 // one. A consent without an image signs with the typed text only.
+//
+// The suffix is not known at read time, so each candidate is tried: the blob is
+// content addressed and the signature image is at most 512 KB, so probing two
+// suffixes is two directory lookups at worst. A miss still returns nil rather
+// than an error, because the appearance is allowed to sign with the typed name
+// and failing the batch over a missing decoration would destroy a live signing
+// session. It is logged: an image that was uploaded, stored and then not found
+// is a bug in this package, and a signer who sees their own handwriting missing
+// from the page has no way to tell us so.
 func (d *Deps) consentImage(ctx context.Context, c *signstore.Consent) ([]byte, error) {
 	if c.ImageSHA == "" {
 		return nil, nil
 	}
-	data, err := d.Store.GetBlob(c.ImageSHA, ".png")
-	if errors.Is(err, signstore.ErrNotFound) {
-		return nil, nil
+	for _, ext := range consentExtensions {
+		data, err := d.Store.GetBlob(c.ImageSHA, ext)
+		switch {
+		case err == nil:
+			return data, nil
+		case errors.Is(err, signstore.ErrNotFound):
+			continue // try the other suffix
+		default:
+			return nil, err
+		}
 	}
-	return data, err
+	// Reaching here means no suffix held the blob: every candidate missed,
+	// since any other error returned above.
+	d.logWarnf("consent image not found",
+		"consent", c.ID, "party", c.PartyID, "envelope", c.EnvelopeID,
+		"image_sha", c.ImageSHA)
+	return nil, nil
 }
 
-// partyWidget places the signature widgets down the first page, the same
-// column the selftest uses, so the signed document looks the same whatever
-// signed it.
+// partyWidget places the signature widgets down the first page. It defers to
+// signpdf so that the box size and the spacing between boxes have one
+// definition: the stride has to clear the height of a box, and a stack whose
+// spacing is written in a second place can drift back into overlapping without
+// anything noticing.
 func partyWidget(index int) signpdf.Widget {
-	return signpdf.Widget{Page: 1, X: 60, Y: 60 + 40*float64(index), W: 220, H: 30}
+	return signpdf.PartyWidget(index)
 }
 
 // alreadySigned counts the parties this envelope already has a signature

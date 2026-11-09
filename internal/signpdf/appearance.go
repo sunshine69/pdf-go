@@ -26,14 +26,63 @@ const (
 	// edge when the fill spec does not name a signature field.
 	margin = 36.0
 
+	// The appearance is drawn in a coordinate space of its own, 220x80. The
+	// numbers below are in that space; TestSignatureImageIsVisibleOnThePage
+	// measures what reaches the page rather than trusting the geometry to hold.
+	//
 	// signatureSize, nameSize, dateSize: the three lines of the appearance.
 	signatureSize = 26.0
 	nameSize      = 9.0
 	dateSize      = 8.0
 
-	imageWidth  = 64.0
-	imageHeight = 48.0
+	// The drawn-signature row. An uploaded image sits on its own row under the
+	// typed name, with the party name and the signing date beside it: the image
+	// is the signature, so it gets a row of its own rather than sharing one with
+	// the words. The row starts below the typed line's descenders and the small
+	// lines start clear of the image's right edge, so nothing overlaps.
+	//
+	// imageRowHeight is the height the image is drawn at, not the aspect ratio
+	// it keeps: a tall upload is letterboxed into the row, not stretched.
+	imageRowX      = 6.0
+	imageRowY      = 4.0
+	imageRowWidth  = 56.0
+	imageRowHeight = 40.0
+
+	// The two columns the appearance draws in: textX for the lines that run the
+	// full width, and nameDateXImg for the name and date once an image occupies
+	// the left of their row.
+	textX        = 6.0
+	nameDateXImg = imageRowX + imageRowWidth + 8
 )
+
+// WidgetPlacement is where a stack of signature boxes begins and how far apart
+// successive boxes sit. A stack places party i at
+//
+//	Y = WidgetY + WidgetStride*i
+//
+// The stride has to clear the height of one box: the appearance is
+// AppearanceHeight tall, and a stride below that lets one party's signature
+// paint over the previous party's. It went unnoticed while the lower half of a
+// box was blank, and is unmistakable once that half carries a drawn signature
+// image.
+const (
+	WidgetX      = 60
+	WidgetY      = 60
+	WidgetStride = AppearanceHeight + 10
+)
+
+// PartyWidget is the widget of the index-th signature in a stack. Callers that
+// sign more than one party all place them the same way, so a document looks the
+// same whatever signed it.
+func PartyWidget(index int) Widget {
+	return Widget{
+		Page: 1,
+		X:    WidgetX,
+		Y:    WidgetY + WidgetStride*float64(index),
+		W:    AppearanceWidth,
+		H:    AppearanceHeight,
+	}
+}
 
 // normalizeWidget fills in the defaults: page 1, the standard size.
 func normalizeWidget(w Widget) Widget {
@@ -142,18 +191,28 @@ func (s *Service) appearance(doc *pdfsign.Document, text, name string, now time.
 	app := pdfsign.NewAppearance(AppearanceWidth, AppearanceHeight)
 	app.Border(1, 0x80, 0x80, 0x80)
 
-	left := 6.0
-	if len(image) > 0 {
-		img := doc.AddImage(imageName(image), image)
-		if img != nil {
-			app.Image(img).Rect(4, AppearanceHeight-imageHeight-8, imageWidth, imageHeight).ScaleFit()
-			left = imageWidth + 12
-		}
-	}
+	// The typed signature keeps the top line and the full width whether or not
+	// an image was uploaded, so the no-image appearance is laid out exactly as
+	// it was before the image row existed.
+	left := textX
 	if len(s.fontData) > 0 && text != "" {
 		font := doc.AddFont(s.fontName, s.fontData)
-		app.Text(text).Font(font, signatureSize).Position(left, AppearanceHeight-30)
+		app.Text(text).Font(font, signatureSize).Position(textX, AppearanceHeight-30)
 	}
+
+	// The image takes its own row under the typed name, with the two small
+	// lines beside it. The name and date keep their baselines either way and
+	// only move right, so the pair reads as one block against the image rather
+	// than underneath it.
+	if len(image) > 0 {
+		if img := doc.AddImage(imageName(image), image); img != nil {
+			app.Image(img).
+				Rect(imageRowX, imageRowY, imageRowWidth, imageRowHeight).
+				ScaleFit()
+			left = nameDateXImg
+		}
+	}
+
 	if name != "" {
 		app.Text(name).
 			Font(pdfsign.StandardFont(pdfsign.Helvetica), nameSize).

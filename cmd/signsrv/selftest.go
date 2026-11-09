@@ -106,7 +106,7 @@ func signSelftest(configPath, tsaOverride string, rest []string) int {
 			Reason:    "selftest",
 			Signature: p.sig,
 			TSAURL:    cfg.TSAURL,
-			Widget:    signpdf.Widget{Page: 1, Y: 60 + 40*float64(i), W: 220, H: 30},
+			Widget:    signpdf.PartyWidget(i),
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "signsrv: party %d: %v\n", i+1, err)
