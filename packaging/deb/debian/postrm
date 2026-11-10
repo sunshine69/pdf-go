@@ -1,0 +1,84 @@
+#!/bin/sh
+# postrm — after removal.
+#
+# remove and purge deliberately do NOT touch /var/lib/signsrv.
+#
+# That directory holds the CA private key envelope, every document that was signed, and
+# the append-only audit hash chain. For a signing service those are evidential records,
+# not application state: documents signed under this CA remain signed after the package
+# is gone, and the chain that proves them has to survive the removal of the software
+# that wrote it. Deleting evidence because someone ran `apt remove` is not a
+# default any package should offer. Debian policy agrees in form — purge removes
+# configuration, not data — and here the distinction matters more than usual.
+#
+# purge removes /etc/signsrv, including the secrets. That IS configuration. Losing the
+# keystore passphrase while keeping the keystore means the CA is unreadable, so the
+# notice says so plainly rather than leaving it as a discovery.
+
+set -e
+
+UNIT=signsrv.service
+USER_NAME=${SIGNSETUP_USER:-signsrv}
+
+case "$1" in
+    remove)
+        if [ -d /var/lib/signsrv ]; then
+            echo "signsrv: removed. /var/lib/signsrv is KEPT: it holds the signing CA,"
+            echo "         the signed documents and the audit chain."
+        fi
+        ;;
+
+    purge)
+        rm -f /etc/signsrv/signsrv.env \
+              /etc/signsrv/secrets.env \
+              /etc/signsrv/firstboot-checkconfig.out \
+              /etc/signsrv/firstboot-migrate.out \
+              /etc/signsrv/firstboot-admin.out 2>/dev/null || true
+        rmdir /etc/signsrv 2>/dev/null || true
+
+        if [ -d /var/lib/signsrv ]; then
+            echo "signsrv: purged."
+            echo ""
+            echo "  /var/lib/signsrv was KEPT on purpose. It contains:"
+            echo "      keystore/ca.key    the signing CA, encrypted with the passphrase"
+            echo "      storage/           every document signed by this instance"
+            echo "      audit/             the append-only hash chain"
+            echo ""
+            echo "  The passphrase is now GONE with /etc/signsrv/secrets.env. Without it"
+            echo "  the CA cannot be opened, so this instance can issue no further"
+            echo "  signatures — but documents already signed still verify, because"
+            echo "  verification needs the certificate, not the key."
+            echo ""
+            echo "  If you are certain you want the evidence gone too:"
+            echo "      systemctl stop signsrv"
+            echo "      rm -rf /var/lib/signsrv"
+            echo "      rm -f /var/lib/dpkg/info/signsrv.*"
+            echo "  If instead you mean to keep signing, restore the passphrase into"
+            echo "  /etc/signsrv/secrets.env before installing again:"
+            echo "      SIGNSRV_KEYSTORE_PASS=<the old passphrase>"
+        fi
+
+        # The account is ours to remove, but only if it still is what we created: a
+        # machine may have reused the name for something else.
+        if getent passwd "$USER_NAME" >/dev/null 2>&1 && command -v deluser >/dev/null 2>&1; then
+            shell=$(getent passwd "$USER_NAME" | cut -d: -f7)
+            case "$shell" in
+                */nologin|*/false)
+                    deluser --system "$USER_NAME" >/dev/null 2>&1 || true
+                    delgroup --system "$USER_NAME" >/dev/null 2>&1 || true
+                    ;;
+                *)
+                    echo "signsrv: user $USER_NAME has shell $shell, left alone."
+                    ;;
+            esac
+        fi
+        ;;
+esac
+
+if [ -x /usr/bin/deb-systemd-helper ]; then
+    deb-systemd-helper purge "$UNIT" >/dev/null || true
+    deb-systemd-helper forget-enabled || true
+fi
+
+#DEBHELPER#
+exit 0

@@ -1,0 +1,75 @@
+#!/bin/sh
+# preinst — before unpacking the package's files.
+#
+# The account has to exist before postinst runs chown and before the unit's
+# User=signsrv is resolved, otherwise the first start fails with "user signsrv not
+# found" instead of coming up.
+#
+# This script deliberately does NOT call /usr/lib/signsrv/signsrv-adduser.sh.
+#
+# preinst runs before dpkg unpacks the package's own payload, so on a fresh install
+# that path does not exist yet — the call returns "not found" and dpkg aborts the
+# unpack, leaving the package half-installed. That is a hard failure of the exact
+# scenario a package exists for: first-time installation. (Debian Policy,
+# "Maintenance scripts": a maintainer script must not rely on files from the package
+# being installed, because it runs before they are present — and during a removal the
+# old ones may already be gone.)
+#
+# So the account logic is inlined here. signsrv-adduser.sh is still shipped for
+# operators and for postinst's self-heal; the two bodies are identical on purpose.
+# When you change one, change the other.
+
+set -e
+
+USER_NAME=${SIGNSETUP_USER:-signsrv}
+
+# The account is a system account with no password and no login shell: nothing can
+# authenticate as signsrv, which is the point — the process runs under it via systemd,
+# and nobody should be able to get a shell there.
+create_account() {
+    if getent passwd "$USER_NAME" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if command -v adduser >/dev/null 2>&1; then
+        # A dedicated group (--group) and --system keep this out of the way of local
+        # accounts. --disabled-password means no password is set rather than a locked
+        # one; --shell /usr/sbin/nologin means no interactive login either way.
+        adduser --system --group --home /var/lib/signsrv \
+                --no-create-home --shell /usr/sbin/nologin \
+                --disabled-password --gecos "signsrv PDF signing service" \
+                "$USER_NAME" >/dev/null 2>&1 || {
+            # adduser exits non-zero if the name was taken between the check above and
+            # the call. That is not an error for us.
+            getent passwd "$USER_NAME" >/dev/null 2>&1
+        }
+        return 0
+    fi
+
+    # No adduser (a minimal image where the Recommends chain did not run). useradd is
+    # in passwd, which every dpkg-capable system has, so this is the fallback rather
+    # than a dead end.
+    if command -v useradd >/dev/null 2>&1; then
+        useradd --system --user-group --home-dir /var/lib/signsrv \
+                --shell /usr/sbin/nologin --comment "signsrv PDF signing service" \
+                "$USER_NAME" >/dev/null 2>&1 || {
+            getent passwd "$USER_NAME" >/dev/null 2>&1
+        }
+        return 0
+    fi
+
+    return 1
+}
+
+case "$1" in
+    install|upgrade)
+        create_account || {
+            echo "signsrv: preinst could not create the service account." >&2
+            echo "         Install 'adduser' and run: dpkg --configure signsrv" >&2
+            exit 1
+        }
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

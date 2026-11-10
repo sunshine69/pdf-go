@@ -1,0 +1,24 @@
+Package: signsrv
+Version: 0.0.1-1
+Architecture: amd64
+Maintainer: kaykraft <packaging@kaykraft.org>
+Installed-Size: @INSTALLED_SIZE_KB@
+Depends: adduser, init-system-helpers (>= 1.54)
+Recommends: logrotate, openssl
+Section: web
+Priority: optional
+Homepage: https://github.com/sunshine69/pdf-go
+Description: PDF signing service with evidential signatures
+ signsrv fills a PDF form, invites the signers by email with expiring single-use
+ links, records each consent as a signature, signs the document once everyone has
+ consented, verifies the result, and delivers it to every party.
+ .
+ Signatures are PKCS#7 / CAdES-BES with an RFC 3161 timestamp, so a document
+ certifies its own integrity and every consent is bound to a person by an
+ irrevocable token. A verification needs only the document: no database, no
+ account, and no network.
+ .
+ This package installs the service, a systemd unit, and the first-boot setup that
+ creates the state directories, the CA keystore and the database schema, then starts
+ the service. A reverse proxy (nginx or Caddy) terminating TLS in front of the
+ loopback listener is required to serve the public signing pages.

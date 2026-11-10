@@ -24,6 +24,8 @@ docs/
   build-and-test.md      how to build, and how to test each step by hand
   DEPLOY-DOCKER.md       the Docker image: build, first run, the process, settings,
                          state and backups, upgrade and rollback
+  DEB-PACKAGE.md         the Debian package: how to build the .deb, what an install
+                         sets up, first-boot modes, upgrade and purge semantics
   security-endpoint-audit.md
                        the endpoint audit: every probe and the answer, the three
                        findings and their fixes, the residual risks accepted

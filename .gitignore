@@ -59,3 +59,4 @@ models/.*
 # with mode 0600; ignoring the pattern keeps a careless `git add .` from putting
 # a live token into history.
 *.links.json
+dist/**

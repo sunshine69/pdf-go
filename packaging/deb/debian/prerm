@@ -1,0 +1,34 @@
+#!/bin/sh
+# prerm — before unpacking the new version (upgrade) or before removing (remove/purge).
+#
+# The service must be stopped before its binary is replaced: a signing request in
+# flight holds the old inode, and a version skew between the running process and the
+# schema on disk is worse than a few seconds of downtime.
+
+set -e
+
+UNIT=signsrv.service
+
+case "$1" in
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        if [ -x /usr/bin/deb-systemd-invoke ]; then
+            deb-systemd-invoke stop "$UNIT" >/dev/null 2>&1 || true
+        elif [ -d /run/systemd/system ]; then
+            systemctl --no-reload stop "$UNIT" || true
+        fi
+        ;;
+
+    remove|purge)
+        if [ -x /usr/bin/deb-systemd-helper ]; then
+            deb-systemd-helper disable "$UNIT" >/dev/null || true
+        fi
+        if [ -x /usr/bin/deb-systemd-invoke ]; then
+            deb-systemd-invoke stop "$UNIT" >/dev/null 2>&1 || true
+        elif [ -d /run/systemd/system ]; then
+            systemctl --no-reload stop "$UNIT" || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

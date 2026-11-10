@@ -1,0 +1,151 @@
+#!/bin/sh
+# postinst — after unpacking.
+#
+# The order here is deliberate.
+#
+#   1. The service account is re-asserted. preinst creates it, which is the only point
+#      early enough for the chown and for systemd's User= to resolve; doing it again
+#      here costs nothing because the helper is idempotent, and it covers an install
+#      where preinst was skipped or interrupted.
+#   2. deb-systemd-helper enable ... records the enable intent even where systemd is
+#      not running (a chroot during a build, a container, a machine being installed
+#      via debconf/preseed). `systemctl enable` in those environments fails, and a
+#      maintainer script that fails there leaves the package half-configured.
+#   3. The first-boot script creates the state directories, the secrets and the
+#      configuration, then runs checkconfig and migrate. It is idempotent and the unit
+#      also runs it in ExecStartPre, so an operator who breaks /var/lib/signsrv gets a
+#      repair on the next start rather than a crash loop.
+#   4. deb-systemd-invoke acts on the service only if the machine is actually running
+#      systemd as PID 1, and only if the package is not being unpacked inside a
+#      converter or an upgrade transaction that asked us to keep hands off.
+#
+# $1 for postinst is configure <old-version>, or abort-upgrade <old-version>.
+
+set -e
+
+UNIT=signsrv.service
+FIRSTBOOT=/usr/lib/signsrv/signsrv-firstboot.sh
+ADDUSER=/usr/lib/signsrv/signsrv-adduser.sh
+
+if [ "$1" = abort-upgrade ]; then
+    exit 0
+fi
+
+case "$1" in
+    configure)
+        [ -x "$FIRSTBOOT" ] || {
+            echo "signsrv: $FIRSTBOOT is missing or not executable; run dpkg --configure -a" >&2
+            exit 1
+        }
+
+        # The account is created in preinst. Re-asserting it here costs nothing (the
+        # script is idempotent) and covers the case where preinst was skipped or
+        # interrupted: without the account the unit's User=signsrv cannot resolve and
+        # the chown in the first-boot script silently no-ops, leaving a state tree the
+        # service cannot write to.
+        if ! getent passwd signsrv >/dev/null 2>&1; then
+            [ -x "$ADDUSER" ] || {
+                echo "signsrv: the signsrv account does not exist and $ADDUSER is missing." >&2
+                echo "         Run: apt-get install -y adduser && dpkg --configure signsrv" >&2
+                exit 1
+            }
+            "$ADDUSER" || {
+                echo "signsrv: the signsrv account does not exist and could not be created." >&2
+                echo "         Run: apt-get install -y adduser && dpkg --configure signsrv" >&2
+                exit 1
+            }
+        fi
+
+        # $2 is the version being upgraded from: empty on a fresh install, non-empty on
+        # an upgrade. Everything below depends on that distinction, and getting it wrong
+        # is invisible in a test that only ever upgrades.
+        if [ -n "${2:-}" ]; then UPGRADE=yes; else UPGRADE=; fi
+
+        # Enable. No-op when systemd is not PID 1.
+        #
+        # On an upgrade, was-enabled is consulted first: an operator who ran
+        # `systemctl disable signsrv` must not find the service switched back on by the
+        # next apt upgrade, and deb-systemd-helper keeps its own record of what this
+        # package enabled, so the record is honoured rather than the current symlink.
+        #
+        # On a fresh install the enable is unconditional. Skipping it on the strength of
+        # was-enabled is what leaves a machine with "apt install succeeded" and a
+        # service that will not come back after the next reboot.
+        enabled=no
+        if [ -x /usr/bin/deb-systemd-helper ]; then
+            deb-systemd-helper unmask "$UNIT" >/dev/null || true
+            if [ -n "$UPGRADE" ] && deb-systemd-helper --quiet was-enabled "$UNIT"; then
+                enabled=yes
+            elif deb-systemd-helper enable "$UNIT" >/dev/null; then
+                enabled=yes
+            fi
+        else
+            enabled=maybe
+        fi
+
+        # Configure the instance. Output goes to the terminal the operator is
+        # watching, which is the point: this is where the local-mode notice and the
+        # admin account instructions appear.
+        "$FIRSTBOOT"
+
+        # Start on a fresh install, try-restart on an upgrade.
+        #
+        # try-restart is NOT "restart, or start if it was not running" — it means
+        # "restart only if already running" and is a silent no-op otherwise. Using it
+        # for a fresh install is how a package ends up "successfully installed",
+        # enabled, and never running: nothing ever asked systemd to start it. So the
+        # action follows $2, and an upgrade still gets try-restart so that a service the
+        # operator deliberately stopped stays stopped across an apt upgrade.
+        if [ -n "$UPGRADE" ]; then
+            ACTION=try-restart
+        else
+            ACTION=start
+        fi
+        systemctl --no-reload daemon-reload >/dev/null 2>&1 || true
+
+        # deb-systemd-invoke consults /usr/sbin/policy-rc.d, and a host that answers
+        # 101 — the Debian convention for "do not start services here", present in
+        # build chroots and many container images — suppresses the start. That is the
+        # policy of the machine, not a failure of this package, so it is reported as a
+        # notice with the command to run, not as an error.
+        started=unknown
+        if [ -x /usr/bin/deb-systemd-invoke ]; then
+            if deb-systemd-invoke "$ACTION" "$UNIT" >/dev/null 2>&1; then
+                started=yes
+            elif [ -x /usr/sbin/policy-rc.d ] && ! /usr/sbin/policy-rc.d "$UNIT" start >/dev/null 2>&1; then
+                started=refused
+            else
+                started=no
+            fi
+        elif [ -d /run/systemd/system ]; then
+            systemctl --no-reload "$ACTION" "$UNIT" >/dev/null 2>&1 && started=yes || started=no
+        else
+            started=none
+        fi
+
+        case "$started" in
+            none)
+                echo "signsrv: systemd is not running here; start the service after boot:"
+                echo "         systemctl start signsrv"
+                ;;
+            refused)
+                echo "signsrv: /usr/sbin/policy-rc.d on this host declines to start"
+                echo "         services, so the service was NOT started by this install."
+                echo "         Enable and start it yourself when ready:"
+                echo "             systemctl enable --now signsrv"
+                ;;
+            no)
+                echo "signsrv: the service did not come up. Look with:" >&2
+                echo "         systemctl status signsrv   journalctl -u signsrv -n 50" >&2
+                ;;
+        esac
+
+        if [ "$enabled" = no ]; then
+            echo "signsrv: could not record the unit as enabled for boot; run:" >&2
+            echo "         systemctl enable signsrv" >&2
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+exit 0
