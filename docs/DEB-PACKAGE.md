@@ -164,6 +164,53 @@ put the original passphrase back. It refuses to generate a new one because that 
 brick every previously issued credential and certificate; if the passphrase is truly
 gone and you accept the consequences, `rm -rf /var/lib/signsrv` and reinstall.
 
+## Running without systemd (containers)
+
+A container has no PID 1 to talk to: no systemd, no journal, nothing that reads
+`/lib/systemd/system/signsrv.service`. `packaging/deb/signsrv-init` is the alternative
+entry point. It is **not shipped inside the .deb** — a package that owned both a systemd
+unit and a SysV script would put two owners on one process — so copy it into an image:
+
+```dockerfile
+COPY packaging/deb/signsrv-init /usr/local/sbin/signsrv-init
+RUN apt install -y ./dist/signsrv_*_amd64.deb
+CMD ["/usr/local/sbin/signsrv-init", "run"]
+```
+
+`run` is the foreground mode for a `CMD`/`entrypoint`. `start`, `stop`, `restart`,
+`try-restart`, `reload` and `status` implement the LSB verbs, so `update-rc.d` or a
+supervisor sees the same exit codes it would from a distro init script. If a live
+systemd is detected (`/run/systemd/system` exists — not merely a `systemctl` in `PATH`,
+which is present in containers that have no systemd running), every subcommand exec's
+`systemctl` instead, so one entry point is correct on both kinds of machine.
+
+It reproduces the unit's `User=`/`Group=`, `UMask=0027`, `WorkingDirectory=`, empty
+capability bounding set, and the root-run first-boot setup. It cannot reproduce
+`ProtectSystem=strict`, `PrivateTmp`, `SystemCallFilter`, `NoNewPrivileges` and the rest
+— mount namespaces and seccomp are not something a POSIX shell can set up for a child —
+so give them to the runtime instead, which applies them per container:
+
+```
+docker run --read-only --tmpfs /tmp --tmpfs /var/tmp \
+           --cap-drop=ALL --security-opt=no-new-privileges \
+           --pids-limit=512 --memory=512m \
+           -v signsrv-state:/var/lib/signsrv -v signsrv-conf:/etc/signsrv \
+           <image> /usr/local/sbin/signsrv-init run
+```
+
+`--read-only` answers `ProtectSystem=strict`, `--tmpfs /tmp` answers `PrivateTmp`,
+`--cap-drop=ALL` answers `CapabilityBoundingSet=`, `--security-opt=no-new-privileges`
+answers `NoNewPrivileges`. Mount `/var/lib/signsrv` as a volume: it holds the CA, every
+signed document and the audit chain, and none of it belongs in an image layer.
+
+Privileges drop via `setpriv`, not `su`. `su` reads the account's login shell — which
+this package sets to `/usr/sbin/nologin` so nobody can open a shell as `signsrv` — and
+forks, leaving a process between the caller and the server. `setpriv` ignores the login
+shell and execs directly, the same way a runtime runs an entrypoint under `--user`.
+
+`reload` performs a restart: `signsrv` handles `SIGINT`/`SIGTERM` only, so the `SIGHUP`
+the unit's `ExecReload` sends would be swallowed.
+
 ## Testing the package
 
 ```sh

@@ -1,0 +1,360 @@
+#!/bin/sh
+# packaging/deb/signsrv-init — start, stop and supervise signsrv where systemd is not
+# running.
+#
+#   signsrv-init run              foreground; name this as a container CMD/entrypoint
+#   signsrv-init start            background, pidfile, log file
+#   signsrv-init stop             graceful stop, then forced
+#   signsrv-init restart          stop + start
+#   signsrv-init try-restart      restart only if already running
+#   signsrv-init reload           a restart (see below)
+#   signsrv-init status           liveness, LSB exit code
+#
+# Why this exists. The package's service management is the systemd unit; a .deb that
+# also shipped a SysV script would put two owners on the same process. But a container
+# has no PID 1 to talk to — no systemd, no journal, nothing that reads
+# /lib/systemd/system/signsrv.service — so `systemctl start signsrv` fails and an image
+# built on top of this .deb has no way to launch the thing it installed. This script is
+# that way in. It is deliberately NOT shipped inside the package, so the two mechanisms
+# can never fight over the process on a real host; copy it into an image yourself.
+#
+# If systemd IS running, every subcommand exec's systemctl instead of acting here, so
+# one entry point is correct on both kinds of machine.
+#
+# What is reproduced from the unit, and what is not.
+#
+#   Reproduced: User=/Group=, UMask=0027, WorkingDirectory=, an empty capability
+#   bounding set, and the ExecStartPre setup script running as root. That is the
+#   identity and the filesystem contract the server actually depends on.
+#
+#   NOT reproducible from a shell, and not pretended to be: the unit's filesystem and
+#   kernel isolation (ProtectSystem=strict, PrivateTmp, PrivateDevices,
+#   ProtectKernelTunables, ProtectControlGroups, LockPersonality,
+#   MemoryDenyWriteExecute, SystemCallFilter, RestrictAddressFamilies,
+#   RestrictNamespaces) and NoNewPrivileges. Those are mount namespaces, seccomp and
+#   prctl; a POSIX shell cannot set them up for a child. Inside a container they are the
+#   runtime's job, which does it better because it does it per container rather than per
+#   process. Run the container like the unit:
+#
+#     docker run --read-only --tmpfs /tmp --tmpfs /var/tmp \
+#                --cap-drop=ALL --security-opt=no-new-privileges \
+#                --pids-limit=512 --memory=512m \
+#                -v signsrv-state:/var/lib/signsrv \
+#                -v signsrv-conf:/etc/signsrv \
+#                <image> /usr/lib/signsrv/signsrv-init run
+#
+#   --read-only answers ProtectSystem=strict, --tmpfs /tmp answers PrivateTmp,
+#   --cap-drop=ALL answers CapabilityBoundingSet=, and --security-opt=no-new-privileges
+#   answers NoNewPrivileges. Bring state and config in as volumes, not image layers:
+#   /var/lib/signsrv holds the signing CA, every signed document and the audit chain,
+#   and none of that belongs baked into an image.
+#
+#   Secrets: the unit has EnvironmentFile=. There is no shell equivalent that is both
+#   automatic and unreadable by the service user, so with SIGNSRV_ENV_FILE=1 this script
+#   reads the files itself and exports them to the child — what PID 1 does for the unit.
+#   Default is off: the server reads its own config, which is the smaller blast radius.
+#
+#   Logs go to stdout/stderr for `run` — a container's log driver captures those, and a
+#   log file cannot even be opened inside a --read-only container. `start` redirects to
+#   SIGNSRV_LOG because there is no terminal there.
+#
+#   Reload: the unit's ExecReload sends SIGHUP. signsrv handles SIGINT and SIGTERM only,
+#   so SIGHUP would be swallowed; `reload` here is a restart, and says so, rather than
+#   accepting the signal and pretending.
+#
+# Root is required for run/start/stop/restart, which switch users. `status` works as the
+# service user, so a container running as signsrv can still ask whether it is alive.
+#
+# Settings:
+#
+#   SIGNSRV_USER          service account,   default signsrv
+#   SIGNSRV_BIN           server binary,     default /usr/bin/signsrv
+#   SIGNSRV_CONF          config file,       default /etc/signsrv/signsrv.env
+#   SIGNSRV_SECRETS       secrets file,      default /etc/signsrv/secrets.env
+#   SIGNSRV_STATE         state directory,   default /var/lib/signsrv
+#   SIGNSRV_FIRSTBOOT     setup script,      default /usr/lib/signsrv/signsrv-firstboot.sh
+#   SIGNSRV_LOG           `start` log file,  default /var/lib/signsrv/signsrv.log
+#   SIGNSRV_PIDFILE       pidfile,           default /run/signsrv.pid
+#   SIGNSRV_WAIT          seconds to wait for a stop, default 120
+#   SIGNSRV_ENV_FILE=1    also load CONF and SECRETS into this shell before exec'ing
+#   SIGNSRV_SKIP_FIRSTBOOT=1   skip the setup script (an entrypoint that ran it already)
+
+set -eu
+
+USER_NAME=${SIGNSRV_USER:-signsrv}
+BIN=${SIGNSRV_BIN:-/usr/bin/signsrv}
+CONF=${SIGNSRV_CONF:-/etc/signsrv/signsrv.env}
+SECRETS=${SIGNSRV_SECRETS:-/etc/signsrv/secrets.env}
+STATE=${SIGNSRV_STATE:-/var/lib/signsrv}
+FIRSTBOOT=${SIGNSRV_FIRSTBOOT:-/usr/lib/signsrv/signsrv-firstboot.sh}
+LOGF=${SIGNSRV_LOG:-$STATE/signsrv.log}
+PIDF=${SIGNSRV_PIDFILE:-/run/signsrv.pid}
+WAIT=${SIGNSRV_WAIT:-120}
+
+CMD=${1:-}
+[ -n "$CMD" ] || {
+    printf 'usage: signsrv-init {run|start|stop|restart|try-restart|reload|status}\n' >&2
+    exit 2
+}
+
+note() { printf '[signsrv-init] %s\n' "$*"; }
+bad()  { printf '[signsrv-init] %s\n' "$*" >&2; }
+
+# ------------------------------------------------------------------ systemd first ----
+# Not "is a systemctl binary in PATH": one is present on a host that has systemd and in
+# a container that has no systemd running, and the right answer is the opposite in each.
+# /run/systemd/system exists only while PID 1 is a live systemd.
+if [ -d /run/systemd/system ]; then
+    exec systemctl "$CMD" signsrv.service
+fi
+
+# LSB exit codes, so update-rc.d and any supervisor read this script the same way they
+# read a distro init script.
+LSB_OK=0; LSB_FAIL=1; LSB_NOT_RUNNING=3; LSB_NOT_INSTALLED=4
+
+[ -x "$BIN" ] || { bad "$BIN is missing or not executable"; exit $LSB_NOT_INSTALLED; }
+
+# ------------------------------------------------------------- finding the process ----
+# The pidfile is a hint, never the truth. It is stale after a SIGKILL or after a
+# container restart with /run mounted, and acting on a stale one makes `status` report a
+# dead service as running and `stop` report success while the server keeps signing.
+find_server_pid() {
+    for d in /proc/[0-9]*; do
+        [ -r "$d/cmdline" ] || continue
+        # cmdline is NUL-separated; matching argv[0] and argv[1] exactly, rather than
+        # pgrep -f, so a grep of an unrelated command line cannot impersonate the server.
+        args=$(tr '\0' ' ' <"$d/cmdline" 2>/dev/null) || continue
+        case " $args " in
+            *" $BIN serve "*) printf '%s' "${d#/proc/}"; return 0 ;;
+        esac
+    done
+    return 0
+}
+
+# A pid with a /proc entry is not necessarily alive. A process that has exited but not
+# yet been reaped is a zombie: it keeps its pid and its /proc directory, so `[ -d
+# /proc/N ]` reports a dead server as running — `stop` then waits the whole drain
+# timeout for a corpse, escalates to a SIGKILL that changes nothing, and `status` still
+# says running. The state field (third in /proc/N/stat) is the only reliable answer, and
+# a zombie is Z. This matters more than it sounds here because a container whose PID 1 is
+# `sleep`, or any supervisor that does not reap, leaves children as zombies indefinitely.
+pid_is_live() { # <pid> -> 0 if running
+    [ -n "$1" ] || return 1
+    [ -r "/proc/$1/stat" ] || return 1
+    state=$(awk '{print $3; exit}' "/proc/$1/stat" 2>/dev/null)
+    [ -n "$state" ] || return 1
+    [ "$state" != Z ]
+}
+
+# Every byte this writes is the pid and nothing else — callers capture it with $(...),
+# and a diagnostic on stdout would become part of the value. Earlier revisions printed a
+# note here, and the pidfile ended up containing the sentence "pidfile holds pid 2860
+# which is gone", which then made every later call fail.
+running_pid() {
+    p=""
+    if [ -f "$PIDF" ]; then
+        p=$(sed -n '1p' "$PIDF" 2>/dev/null || true)
+        case "$p" in ''|*[!0-9]*) p= ;; esac
+    fi
+    pid_is_live "$p" || p=$(find_server_pid)
+    printf '%s' "$p"
+}
+
+# ---------------------------------------------------------------- privileges drop ----
+# setpriv does the whole switch in one exec — uid, gid, supplementary groups and the
+# capability bounding set — so there is no window in which a child inherits privileges
+# the parent no longer needed.
+#
+# su is deliberately not used. It looks natural here, but it consults the account's
+# login shell, which this package sets to /usr/sbin/nologin so that nobody can open a
+# shell as signsrv; and it forks, which puts a process between the caller and the
+# server. setpriv ignores the login shell entirely and execs directly, which is both
+# correct and the point: it is the same mechanism a container runtime uses to run an
+# entrypoint as a --user that has no shell.
+#
+# The capability bounding set is cleared with --bounding-set=-all (util-linux spells it
+# "-all"; "-e" and "-ALL" are both rejected, so this is probed rather than assumed).
+# What is still NOT attempted: the unit's mount/seccomp isolation and no_new_privs,
+# which a shell cannot set up. See the header for the runtime flags that do.
+SETPRIV=""
+resolve_ids() {
+    [ "$(id -u)" -eq 0 ] || {
+        bad "must be root to switch to $USER_NAME"
+        bad "or run the server directly as that user, after the setup has run as root:"
+        bad "    $FIRSTBOOT"
+        bad "    su -s /bin/sh -s $USER_NAME -c '$BIN serve -config $CONF'"
+        exit $LSB_FAIL
+    }
+    command -v setpriv >/dev/null 2>&1 || {
+        bad "setpriv is required to switch to $USER_NAME (part of util-linux)"
+        exit $LSB_FAIL
+    }
+    uid=$(id -u "$USER_NAME" 2>/dev/null) || {
+        bad "account $USER_NAME does not exist; install the package, or run"
+        bad "    /usr/lib/signsrv/signsrv-adduser.sh"
+        exit $LSB_FAIL
+    }
+    gid=$(id -g "$USER_NAME")
+    SETPRIV="setpriv --reuid=$uid --regid=$gid --init-groups"
+    if setpriv --reuid=$uid --regid=$gid --init-groups --bounding-set=-all true >/dev/null 2>&1; then
+        SETPRIV="$SETPRIV --bounding-set=-all"
+    else
+        note "this setpriv cannot clear the capability bounding set; the unit does"
+    fi
+}
+
+# Replace this shell with the server, as the service user. exec means no shell is left
+# holding the process group, so a signal sent to this pid lands on signsrv itself.
+exec_as_server() {
+    umask 0027
+    cd "$STATE" 2>/dev/null || cd /
+    # shellcheck disable=SC2086  # word-splitting SETPRIV is intended: it is our own argv
+    exec $SETPRIV "$@"
+}
+
+# ------------------------------------------------------------------ first boot ----
+do_firstboot() {
+    [ "${SIGNSRV_SKIP_FIRSTBOOT:-0}" = 1 ] && return 0
+    [ -x "$FIRSTBOOT" ] || return 0
+    # As root, like the unit's "+=" prefix: it creates and chowns /var/lib/signsrv and
+    # /etc/signsrv, which the service user cannot do.
+    note "running first-boot setup"
+    "$FIRSTBOOT"
+}
+
+# -------------------------------------------------------------------- lifecycle ----
+stop_server() {
+    p=$(running_pid)
+    if [ -z "$p" ]; then
+        note "not running"
+        return 0
+    fi
+    # SIGTERM is the graceful path. A request that is signing can hold a TSA call for up
+    # to 90 seconds; killing it mid-write leaves an envelope stuck in the middle of a
+    # batch, which is a worse outcome than a slow shutdown. Hence the 120s default,
+    # matching the unit's TimeoutStopSec.
+    note "SIGTERM to $p, waiting up to ${WAIT}s for in-flight work to drain"
+    kill -TERM "$p" 2>/dev/null || true
+    i=0
+    # pid_is_live, not `-d /proc/$p`: if the process is a zombie the directory stays and
+    # this loop would burn the whole timeout waiting for something already dead.
+    while pid_is_live "$p"; do
+        if [ "$i" -ge "$WAIT" ]; then
+            bad "still alive after ${WAIT}s; SIGKILL — an in-flight envelope may need review"
+            kill -KILL "$p" 2>/dev/null || true
+            sleep 1
+            break
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    rm -f "$PIDF"
+    note "stopped"
+}
+
+start_server() {
+    if [ -n "$(running_pid)" ]; then
+        note "already running (pid $(running_pid))"
+        return 0
+    fi
+    rm -f "$PIDF"
+    do_firstboot
+    resolve_ids
+    # Backgrounding a *function* forks twice — the shell forks to run the function, and
+    # the function's su forks again — which would put $! on a wrapper rather than on the
+    # server. So the background process is a fresh copy of this script whose last action
+    # is `exec`, and exec chains do not change pid.
+    #
+    # util-linux su execs the shell it is given instead of forking one, that shell execs
+    # setpriv, setpriv execs the server, so the recorded pid is the server's. That is an
+    # implementation detail of su, so the pidfile is re-derived from the /proc scan below
+    # rather than trusted.
+    # The log file is opened by the redirection below, and a redirection is set up by
+    # the shell that performs it — here that is root, before umask 0027 in the child has
+    # any say. Left alone the file is world-readable and owned by root, so the service
+    # user cannot rotate it and anything it logs about documents is readable by every
+    # account on the box. Create it with the ownership and mode the service needs.
+    if [ ! -e "$LOGF" ]; then
+        if ! : >>"$LOGF" 2>/dev/null; then
+            bad "cannot write to $LOGF"
+            return $LSB_FAIL
+        fi
+    fi
+    chown "$USER_NAME:$USER_NAME" "$LOGF" 2>/dev/null || true
+    chmod 0640 "$LOGF" 2>/dev/null || true
+
+    # A subshell, then exec inside it: the fork produces one pid, exec replaces that
+    # subshell with setpriv and then with the server, and exec never changes a pid. So
+    # $! is the server. Backgrounding a *function* instead would fork twice and leave
+    # $! pointing at a wrapper.
+    ( exec_as_server "$BIN" serve -config "$CONF" ) >>"$LOGF" 2>&1 &
+    echo $! >"$PIDF"
+    # su forks once before it execs, so the recorded pid is usually the server's own.
+    # Usually is not a check: if it turned out to be a wrapper, `stop` would signal the
+    # wrapper and leave the server running, and `status` would keep reporting it alive.
+    sleep 1
+    p=$(running_pid)
+    if [ -z "$p" ]; then
+        bad "failed to start; last lines of $LOGF:"
+        tail -20 "$LOGF" 2>/dev/null | sed 's/^/    /' >&2
+        return $LSB_FAIL
+    fi
+    echo "$p" >"$PIDF"
+    note "started (pid $p), logging to $LOGF"
+}
+
+load_settings() {
+    [ "${SIGNSRV_ENV_FILE:-0}" = 1 ] || return 0
+    for f in "$CONF" "$SECRETS"; do
+        [ -r "$f" ] || continue
+        set -a; . "$f"; set +a
+    done
+}
+
+case "$CMD" in
+    run)
+        # Foreground, and this is the subcommand to name as a container CMD. exec leaves
+        # no shell in between, so SIGTERM from `docker stop` reaches signsrv directly and
+        # its drain path runs.
+        resolve_ids
+        do_firstboot
+        load_settings
+        [ -r "$CONF" ] || { bad "$CONF is missing or unreadable by root"; exit $LSB_FAIL; }
+        note "foreground start as $USER_NAME, logs to stdout"
+        # No exec in front of this: exec_as_server's last act is an exec of the server,
+        # so this process is replaced by signsrv and becomes the one the runtime signals.
+        exec_as_server "$BIN" serve -config "$CONF"
+        ;;
+    start)          start_server ;;
+    stop)           stop_server ;;
+    restart|force-reload)
+        stop_server
+        start_server
+        ;;
+    try-restart)
+        if [ -n "$(running_pid)" ]; then
+            stop_server
+            start_server
+        else
+            note "not running, and try-restart does not start something that was stopped"
+        fi
+        ;;
+    reload)
+        note "signsrv handles SIGINT/SIGTERM only, so reload performs a restart"
+        stop_server
+        start_server
+        ;;
+    status)
+        p=$(running_pid)
+        if [ -n "$p" ]; then
+            note "running (pid $p)"
+            exit $LSB_OK
+        fi
+        note "not running"
+        exit $LSB_NOT_RUNNING
+        ;;
+    *)
+        bad "unknown subcommand '$CMD'"
+        exit 2
+        ;;
+esac
