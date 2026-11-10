@@ -5,9 +5,12 @@
 #
 #   build          rebuild signsrv and pdf-go with -trimpath
 #   stop           kill the server that answers today
-#   config         write tmp/prod.conf (0600) for the public URL, keeping any secret
-#                  already in the file — the keystore passphrase has to match the CA
-#                  on disk or every signature issued so far stops verifying
+#   reset          wipe db, keystore, jwt key, storage, outbox, audit and the config,
+#                  so the run is attributable to this run's keys (RESET=0 keeps them)
+#   config         write tmp/prod.conf (0600) for the public URL; with RESET=0 it
+#                  keeps any secret already in the file, which matters because the
+#                  keystore passphrase has to match the CA on disk or every signature
+#                  issued so far stops verifying
 #   start          start on 127.0.0.1:8090 behind the proxy, dev off (real SMTP relay)
 #   key            ensure a client key scoped envelope:write envelope:read
 #   document       extract the form of the contract, write the fill spec, fill it,
@@ -84,6 +87,13 @@ audit_chain() { # <indent> — append the events table to the hash log, then ver
     else
         note "chain valid"
     fi
+# Pull a 64-hex value out of a receipt file without needing a JSON parser. Tolerant of
+# the space a pretty-printer inserts after the colon: a receipt read from a log or an
+# email is often re-indented, and a matcher that only accepts Go's compact form would
+# report "not recorded" for a value that is plainly there.
+receipt_hex() { # receipt_hex <file> <key>
+    sed -n -E 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"([0-9a-f]{64})".*/\1/p' "$1" 2>/dev/null | head -1
+}
 }
 
 umask 077
@@ -104,6 +114,65 @@ log_leak_scan() {
                  | sort -u | sed 's/^/     /' | head -5; }
 }
 
+# ------------------------------------------------- byte identity of the copy ----
+# The party's downloaded copy and the bytes the CA signed have to be the same bytes.
+# The service already records, per envelope, the hash of the file as it was sent and
+# the hash of the archive that went to storage (final_sha256 in the delivery receipt).
+# A byte-level check needs no PKI, so it is a fair gate on the report path too.
+#
+# Two ways of getting the reference, in order of preference:
+#   1. the stored archive itself, hashed on disk — strongest, and needs no receipt;
+#   2. the receipt in tmp/real/storage/<final_sha256>.receipt.json.
+# A downloaded PDF is checked against the same value by hand:
+#   sha256sum downloaded.pdf        # must equal final_sha256
+final_pdf_check() { # <indent> <envelope-id> <sha from the report, may be empty>
+    ind=$1; env=$2; rep_sha=$3
+    # Read from the config rather than a path baked into this function: storage_dir is
+    # a setting, and a check that silently reads the wrong directory reports the archive
+    # missing on a box where it is present. Inlined rather than calling conf_get
+    # because the report subcommand reaches this before that helper is defined.
+    sd=$STORAGE_DIR
+    [ -n "$sd" ] || sd=$(sed -n -E 's/^[[:space:]]*storage_dir[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | head -1)
+    [ -n "$sd" ] || sd=tmp/real/storage
+    sha=$rep_sha
+    if [ -z "$sha" ] || [ "$sha" = null ]; then
+        # Pick the receipt for *this* envelope. Taking the last file in the directory
+        # would certify some other envelope's bytes against this one, and with more
+        # than one document on the box that is a wrong answer that looks right.
+        for r in "$sd"/*.receipt.json; do
+            [ -f "$r" ] || continue
+            e=$(receipt_hex "$r" envelope_id)
+            case "$e" in ""|"$env") ;; *) continue ;; esac
+            v=$(receipt_hex "$r" final_sha256)
+            [ -n "$v" ] && sha=$v && break
+        done
+    fi
+    if [ -z "$sha" ]; then
+        note "${ind}!! no final_sha256 for envelope $env in the report or on disk — cannot state what the party downloaded"
+        return 0
+    fi
+    [ "${#sha}" = 64 ] || { note "${ind}!! final_sha256 is not 64 hex chars: '$sha'"; return 0; }
+    stored=$(find "$sd" -name "${sha}*" -type f ! -name '*.json' 2>/dev/null | head -1)
+    if [ -n "$stored" ]; then
+        got=$(sha256sum "$stored" | cut -d' ' -f1)
+        [ "$got" = "$sha" ] \
+            && note "${ind}the archived document hashes to its own final_sha256 (byte-identical to what was certified)" \
+            || note "${ind}!! archived document hashes to $got but the receipt names $sha — the file was changed after it was signed"
+    else
+        note "${ind}the archive is not on this box (storage_dir may differ); final_sha256 is $sha"
+    fi
+    # dispatch_sha256 names the bytes that left the box; final_sha256 names the bytes
+    # archived. They must agree or a signing round changed the document outside the
+    # signature protocol.
+    if [ -f "$sd/${sha}.receipt.json" ]; then
+        disp=$(receipt_hex "$sd/${sha}.receipt.json" dispatch_sha256)
+        case "$disp" in
+            "")        note "${ind}dispatch_sha256 is not recorded on this receipt; final_sha256 is the reference" ;;
+            "$sha")    note "${ind}dispatch_sha256 == final_sha256: the bytes mailed were the bytes archived" ;;
+            *)         note "${ind}!! dispatch_sha256 ($disp) != final_sha256 ($sha) — bytes changed between send and archive" ;;
+        esac
+    fi
+}
 # ----------------------------------------------------- cancel / report ----
 # Subcommands that come back without building or restarting anything.
 #
@@ -146,6 +215,7 @@ if [ "${1:-}" = "report" ]; then
         > "$WORK/report.json" 2>"$WORK/report.err" \
         || { cat "$WORK/report.err"; fail "report failed"; }
     jq -c "$report_jq" "$WORK/report.json" | sed 's/^/   /'
+    final_pdf_check '   ' "$2" "$(jq -r '.sha256 // empty' "$WORK/report.json" 2>/dev/null)"
     # Signatures alone do not prove a run: the hash chain behind the archive has to
     # agree with the events table, so the report path checks it too.
     audit_chain '   '
@@ -190,12 +260,14 @@ if curl -fsS -o "$WORK/health.pre" --max-time 2 "${BASE}/healthz" 2>/dev/null; t
 fi
 
 # ------------------------------------------------------------------ config ----
-# Idempotent: existing values survive. Only keys that are absent get generated.
+# Idempotent in form: a key already in the file survives. But see the reset section
+# below — by default it deletes the config first, so every run issues fresh secrets.
+# RESET=0 is the mode in which the preservation below is what actually happens.
 #
 # keystore_pass CANNOT be invented once tmp/real/keystore/ca.key exists — the CA is
 # encrypted with it, and a wrong passphrase means the service comes up and every
-# signature already issued reads as invalid. So: keep what is in the file; if there
-# is none and a CA exists, stop and ask rather than guess.
+# signature already issued reads as invalid. So under RESET=0: keep what is in the
+# file; if there is none and a CA exists, stop and ask rather than guess.
 say "config: $CONF"
 conf_get() { # conf_get <key> — value from the existing config, empty if absent
     [ -f "$CONF" ] || return 0
@@ -212,6 +284,12 @@ DB=$(conf_get db)
 [ -n "$DB" ] || DB=tmp/real/signsrv.db
 KS_DIR=$(conf_get keystore_dir)
 [ -n "$KS_DIR" ] || KS_DIR=tmp/real/keystore
+STORAGE_DIR=$(conf_get storage_dir)
+[ -n "$STORAGE_DIR" ] || STORAGE_DIR=tmp/real/storage
+OUTBOX_DIR=$(conf_get outbox_dir)
+[ -n "$OUTBOX_DIR" ] || OUTBOX_DIR=tmp/real/outbox
+AUDIT_DIR=$(conf_get audit_dir)
+[ -n "$AUDIT_DIR" ] || AUDIT_DIR=tmp/real/audit
 
 # Env var wins, then whatever is already in the file, then the default. Without the
 # middle step, an operator who set dev=true or trust_proxy=false in the file finds the
@@ -231,6 +309,51 @@ TRUST_PROXY=$(keep trust_proxy "$TRUST_PROXY" true)
 SMTP_HOST=$(keep smtp_host "$SMTP_HOST" 192.168.20.18)
 SMTP_PORT=$(keep smtp_port "$SMTP_PORT" 25)
 STARTTLS=$(keep smtp_starttls "${SMTP_STARTTLS:-}" false)
+[ -n "$JWT_FILE" ] || JWT_FILE=$KS_DIR/../jwt.ed25519.key
+
+# --------------------------------------------------------------- reset ----
+# Every run from now on starts from nothing: database, keystore, jwt secret, client
+# key, stored PDFs, outbox, audit log and the config itself. Without this the run is
+# *mostly* fresh but carries the old CA and jwt key forward, so the documents signed
+# in this run are signed by a key that has already been used, and a failure cannot be
+# attributed to the run that produced it.
+#
+# It also removes the reason the secrets-preservation logic below exists: with the old
+# state gone there is no passphrase to orphan and no CA to keep, so the new one is
+# generated and written fresh. RESET=0 restores the preserve-everything behaviour.
+#
+# The wipe has to happen here, after the paths are resolved and before anything is
+# generated or written: wipe after generation and the freshly generated values are
+# dropped on the floor, which produces a config with an empty keystore_pass and an
+# admin_password — checkconfig then refuses it with "keystore_pass is required".
+#
+# This is destructive and it is irreversible. Only ever point it at the test tree.
+RESET=${RESET:-1}
+if [ "$RESET" = 1 ]; then
+    say "reset: wiping prior state"
+    [ "${RESET_CONFIRM:-yes}" = "yes" ] || fail "RESET_CONFIRM must be 'yes' to wipe"
+    for p in "$DB" "$KS_DIR" "$JWT_FILE" "$STORAGE_DIR" "$OUTBOX_DIR" "$AUDIT_DIR"; do
+        case "$p" in
+            tmp/*|../tmp/*) ;;
+            *) fail "refusing to wipe: $p is outside tmp/ (set RESET=0 to keep it)" ;;
+        esac
+    done
+    # $JWT_FILE first, and never after $KS_DIR: the default path is
+    # "$KS_DIR/../jwt.ed25519.key", and once the keystore directory is gone that path
+    # no longer resolves, so rm -rf walks past it and leaves a stale key behind for the
+    # service to choke on.
+    for p in "$JWT_FILE" "$DB" "$DB-wal" "$DB-shm" "$KS_DIR" \
+             "$STORAGE_DIR" "$OUTBOX_DIR" "$AUDIT_DIR" \
+             tmp/real/signsrv.jsonl tmp/real/serve.log; do
+        [ -e "$p" ] && { rm -rf "$p"; note "removed $p"; } || true
+    done
+    rm -f "$CONF"
+    rm -rf "$WORK"; mkdir -p "$WORK"
+    # Whatever the deleted config held is stale now, and the CA it protected is gone.
+    # Clearing these here is what makes the generation below actually generate.
+    KS_PASS=""; ADMIN_PW=""
+    note "state reset — a fresh CA, jwt key and client key will be issued this run"
+fi
 
 if [ -z "$KS_PASS" ] && [ -f "$KS_DIR/ca.key" ]; then
     fail "keystore_pass is not in $CONF but $KS_DIR/ca.key exists. Put the CA's
@@ -249,13 +372,20 @@ if [ -z "$TSA_URL" ]; then
     note "proven to predate any later compromise of the key. Set tsa_url in $CONF."
 fi
 
-mkdir -p "$(dirname "$DB")" tmp/real/storage tmp/real/outbox tmp/real/audit
+mkdir -p "$(dirname "$DB")" "$KS_DIR" "$STORAGE_DIR" "$OUTBOX_DIR" "$AUDIT_DIR"
 mkdir -p "$(dirname "$JWT_FILE")"
+# The jwt key is created by the service, not by this script. signauth.LoadKeyring
+# generates it in its own encoding (base64 of the 64-byte ed25519 private blob) plus
+# a .pub sibling, and it refuses anything else: an `openssl genpkey` PEM file is a
+# perfectly good Ed25519 key that the loader cannot read, and the server dies with
+# "is not base64" at boot. If the file already exists, leave it alone and only fix
+# the mode, which LoadKeyring also enforces (0600 or it refuses to load).
 if [ ! -f "$JWT_FILE" ]; then
-    openssl genpkey -algorithm ed25519 -out "$JWT_FILE" 2>/dev/null || fail "jwt key gen failed"
-    note "generated $JWT_FILE"
+    note "$JWT_FILE absent — the service will create it at first start"
+else
+    chmod 600 "$JWT_FILE"
+    note "reusing $JWT_FILE"
 fi
-chmod 600 "$JWT_FILE"
 
 # Secrets live inline in this file (0600) rather than in a second file that is easy
 # to forget: one artifact, one owner, one mode.
@@ -299,6 +429,12 @@ note "$(cut -d= -f1 "$CONF" | grep -v '^#' | grep -v '^$' | tr '\n' ' ')"
     sed -E 's/(pass|secret)[^ ]*=.*/\1...=<redacted>/' "$WORK/checkconfig.out"
     fail "checkconfig refused the config"
 }
+# CHECK_ONLY=1 stops here: enough to prove a reset produced a usable config without
+# binding a port or dispatching anything to the relay.
+if [ "${CHECK_ONLY:-0}" = 1 ]; then
+    say "CHECK_ONLY=1: config verified, not starting the server"
+    exit 0
+fi
 if [ "$DEV" = true ]; then
     note "checkconfig clean. dev=true: invitations are written to outbox_dir as .eml"
     note "files instead of being mailed, and dev_mode_blocked_* guards are off."
@@ -487,6 +623,9 @@ if [ -s "$WORK/report.json" ]; then
         && note "PASS - all parties signed, every signature verifies, timestamps present" \
         || note "FAIL - read the fields above"
 fi
+
+# The party's copy and the certified copy are the same bytes — or the run says so.
+final_pdf_check '     ' "$ENVID" "$(jq -r '.sha256 // empty' "$WORK/report.json" 2>/dev/null)"
 
 audit_chain '     '
 log_leak_scan
