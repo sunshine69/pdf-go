@@ -15,6 +15,17 @@ func (s *server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 
+	// The CA is published in the clear, next to health: a recipient verifying a
+	// PDF has no account and no token, and the certificate is the public half.
+	s.mux.HandleFunc("GET /ca.crt", s.handleCACert)
+	s.mux.HandleFunc("GET /ca.pem", s.handleCACert)
+	s.mux.HandleFunc("GET /api/v1/ca", s.handleCAFingerprint)
+
+	// The verification tool, so the recipient's instruction is a link on the
+	// same host the document came from rather than a path on someone's laptop.
+	s.mux.HandleFunc("GET /dl/", s.handleDownload)
+	s.mux.HandleFunc("GET /api/v1/downloads", s.handleDownloadManifest)
+
 	// Auth. Login is rate limited at 5/min/IP on its own, because every
 	// attempt runs argon2id: five verifications a minute is the budget a
 	// single address gets.

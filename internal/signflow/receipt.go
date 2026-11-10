@@ -32,16 +32,25 @@ import (
 // Receipt is the JSON document stored as <final_sha>.receipt.json and returned
 // by GET /envelopes/{id}/report.
 type Receipt struct {
-	EnvelopeID   string         `json:"envelope_id"`
-	Title        string         `json:"title"`
-	Iss          string         `json:"iss"`
-	ServerKey    string         `json:"server_key"`
-	FinalSHA256  string         `json:"final_sha256"`
-	Valid        bool           `json:"valid"`
-	Revisions    []ReceiptRev   `json:"revisions"`
-	Parties      []ReceiptParty `json:"parties"`
-	Verification ReceiptVerify  `json:"verification"`
-	IssuedAt     string         `json:"issued_at"`
+	EnvelopeID  string `json:"envelope_id"`
+	Title       string `json:"title"`
+	Iss         string `json:"iss"`
+	ServerKey   string `json:"server_key"`
+	FinalSHA256 string `json:"final_sha256"`
+	// DispatchSHA256 is the hash of the exact bytes the server put on the wire:
+	// the file inside the attachment, taken at the moment the message was
+	// assembled rather than at verification. It normally equals final_sha256;
+	// when the two differ, the bytes left the process changed and the receipt
+	// says which bytes the server believed it was sending. A recipient compares
+	// this against sha256sum of the file they received.
+	DispatchSHA256 string         `json:"dispatch_sha256"`
+	DispatchBytes  int            `json:"dispatch_bytes"`
+	Filename       string         `json:"filename,omitempty"`
+	Valid          bool           `json:"valid"`
+	Revisions      []ReceiptRev   `json:"revisions"`
+	Parties        []ReceiptParty `json:"parties"`
+	Verification   ReceiptVerify  `json:"verification"`
+	IssuedAt       string         `json:"issued_at"`
 }
 
 // ReceiptRev is one revision in the chain, in chain order.
@@ -128,6 +137,11 @@ func (d *Deps) BuildReceipt(ctx context.Context, env *signstore.Envelope,
 
 	final := sha256.Sum256(data)
 	finalSHA := hex.EncodeToString(final[:])
+	// The dispatch_* fields stay blank here on purpose. They answer "what bytes
+	// did this process actually put on the wire", and the only place that knows
+	// is the send path, so only the send path fills them in - otherwise a
+	// second writer could quietly agree with final_sha256 and the comparison
+	// would prove nothing.
 
 	rec := &Receipt{
 		EnvelopeID:  env.ID,
@@ -299,4 +313,41 @@ func (d *Deps) tsaAuthority() string {
 		return raw
 	}
 	return u.Host
+}
+
+// stampDispatch records which bytes the server is about to send, into the
+// receipt that travels with them, and refuses the send when those bytes are not
+// the bytes the verify gate checked.
+//
+// Two hashes, one comparison. final_sha256 is what the gate verified;
+// dispatch_sha256 is what this process hands to the mailer. On every healthy run
+// they are the same string, and the field looks like decoration. Its value is
+// the day they are not: the recipient would otherwise receive a document and an
+// attestation that disagree, in one message, with nothing in either to tell them
+// which to trust.
+//
+// The check is done here rather than by the recipient because the server is the
+// only party that can see both sides, and because refusing here means no
+// untrustworthy pair ever reaches anyone's inbox.
+func (d *Deps) stampDispatch(receipt, data []byte, filename string) ([]byte, error) {
+	r := &Receipt{}
+	if err := json.Unmarshal(receipt, r); err != nil {
+		return nil, fmt.Errorf("signflow: receipt before dispatch: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	got := hex.EncodeToString(sum[:])
+	if r.FinalSHA256 != "" && got != r.FinalSHA256 {
+		return nil, fmt.Errorf(
+			"signflow: refusing to send: the document about to be mailed hashes to %s (%d bytes), "+
+				"but the receipt attests to %s",
+			got, len(data), r.FinalSHA256)
+	}
+	r.DispatchSHA256 = got
+	r.DispatchBytes = len(data)
+	r.Filename = filename
+	out, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("signflow: receipt after dispatch: %w", err)
+	}
+	return out, nil
 }

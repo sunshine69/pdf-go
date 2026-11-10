@@ -3,6 +3,7 @@ package signpdf
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -39,8 +40,12 @@ type SignerInfo struct {
 // Verify reads `in` and reports every signature. Parameters are fixed by
 // policy, not by the caller:
 //
-//   - TrustSelfSigned(true): the CA is self-signed and not in any system
-//     store, so chain trust is asserted by the service, not by the OS.
+//   - Trust anchor: with a pinned pool (Service.roots, from Config.RootsPEM)
+//     the chain must lead to one of those certificates and embedded self-signed
+//     roots are refused. Without one, TrustSelfSigned(true): the CA is
+//     self-signed and not in any system store, so chain trust is asserted by
+//     the service rather than the OS. Whichever mode is in force, the Report
+//     says which, because `Valid` only means "signed by us" in the pinned mode.
 //   - ExternalChecks(false): verification must work in a sealed network and
 //     must not depend on a responder being up. Leaf certificates carry no
 //     CRLDP/OCSP pointer, so there is nothing to fetch.
@@ -60,9 +65,15 @@ func (s *Service) Verify(ctx context.Context, in []byte) (*Report, error) {
 	if err != nil {
 		return nil, fmt.Errorf("signpdf: open: %w", err)
 	}
-	vb := doc.Verify().
-		TrustSelfSigned(true).
-		ExternalChecks(false).
+	// The library always runs the structural check: the digest has to match the
+	// document, and the signature has to match the certificate carried inside
+	// it. That answers "is this document intact, and did these signatures match
+	// it at signing time" - a real answer, but silent on who ran the CA, and a
+	// self-signed root inside the document satisfies it just as well as ours
+	// does. The anchor is what turns the verdict into one about authorship: see
+	// Service.anchor and the TrustedChain/issuedBy check below.
+	vb := doc.Verify()
+	vb = vb.TrustSelfSigned(true).ExternalChecks(false).
 		MinRSAKeySize(2048).
 		MinECDSAKeySize(256).
 		RequireDigitalSignature(true).
@@ -88,6 +99,16 @@ func (s *Service) Verify(ctx context.Context, in []byte) (*Report, error) {
 			if len(sig.Certificate.EmailAddresses) > 0 {
 				info.Email = sig.Certificate.EmailAddresses[0]
 			}
+			if s.anchor != nil {
+				info.Trusted = issuedBy(sig.Certificate, s.anchor)
+				if !info.Trusted {
+					report.Errors = append(report.Errors, fmt.Sprintf(
+						"signature by %s was not issued by %s",
+						info.Name, s.anchor.Subject.CommonName))
+					info.Valid = false
+					report.Valid = false
+				}
+			}
 		}
 		for _, e := range sig.Errors {
 			if e != nil {
@@ -101,8 +122,20 @@ func (s *Service) Verify(ctx context.Context, in []byte) (*Report, error) {
 		report.Errors = append(report.Errors, "no signatures found")
 		report.Valid = false
 	}
-	if !report.Valid {
-		return report, nil
-	}
 	return report, nil
+}
+
+// issuedBy reports whether leaf was issued by anchor. It checks the signature
+// the issuing CA put on the leaf rather than building a chain: this PKI is two
+// levels deep (CA signs leaves directly), so a direct signature is the whole
+// chain, and Go's chain builder enforces an extended-key-usage policy this PKI
+// does not satisfy and would reject our own documents.
+func issuedBy(leaf, anchor *x509.Certificate) bool {
+	if anchor.IsCA {
+		return leaf.CheckSignatureFrom(anchor) == nil
+	}
+	// A certificate that cannot issue certificates cannot have issued this one.
+	// Refusing here is what stops -pin pointing at some unrelated certificate
+	// and reporting every document as untrusted rather than as a bad anchor.
+	return false
 }

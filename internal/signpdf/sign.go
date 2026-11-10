@@ -75,6 +75,14 @@ type Service struct {
 	fontName string
 	fontData []byte
 	clock    func() time.Time
+
+	// anchor, when set, is the certificate every signing certificate in a
+	// verified document must have been issued by. Verify checks that directly
+	// (the leaf's signature against the anchor's key) rather than building a
+	// chain, because our CA signs leaves in one hop and because Go's chain
+	// builder applies an extended-key-usage policy this PKI does not satisfy,
+	// which would reject our own documents.
+	anchor *x509.Certificate
 }
 
 // Config is the wiring NewService needs.
@@ -90,6 +98,12 @@ type Config struct {
 	// start. Ignored when the keystore already exists. Leave nil for the
 	// built-in defaults.
 	CASubject *CASubject
+
+	// Roots, when non-nil, is the set of certificates a chain must lead to.
+	// Used by NewVerifier only; signing does not look at it.
+	// Anchor is the certificate every signing certificate in a verified
+	// document must have been issued by. See Service.anchor.
+	Anchor *x509.Certificate
 }
 
 // NewService loads (or creates) the CA and prepares the appearance font.
@@ -111,11 +125,67 @@ func NewService(cfg Config) (*Service, error) {
 	return s, nil
 }
 
+// NewVerifier builds a Service that can only verify. Verification reads the
+// signature and the certificate chain inside the document and consults nothing
+// else -- Verify touches no field of the Service except the ones it does not
+// read at all -- so this constructor opens no keystore, loads no key and
+// creates no CA.
+//
+// That is the point. A recipient running `signsrv checkpdf FILE` has no keystore
+// and no business creating one: NewService would happily mint a fresh CA in the
+// working directory, and the fingerprint of that CA then looks like evidence in
+// the report when it is evidence of nothing.
+//
+// CA() returns nil on a verifier. Only verification is supported; the signing
+// methods would fault, and nothing in this package calls them on a verifier.
+func NewVerifier(cfg Config) (*Service, error) {
+	s := &Service{
+		tsaURL:   cfg.TSAURL,
+		fontName: cfg.FontName,
+		fontData: cfg.FontData,
+		clock:    cfg.Clock,
+		anchor:   cfg.Anchor,
+	}
+	if s.fontName == "" {
+		s.fontName = "signsrv-hand"
+	}
+	if s.clock == nil {
+		s.clock = time.Now
+	}
+	return s, nil
+}
+
+// PinToCA makes a service that holds a CA require its documents to have been
+// signed under that CA, so a document signed by an unrelated self-signed
+// authority is refused. A service with no anchor accepts any well-formed chain,
+// which is a much weaker statement than the report appears to make.
+func (s *Service) PinToCA() {
+	if s.ca == nil || s.ca.Cert == nil {
+		return
+	}
+	s.anchor = s.ca.Cert
+}
+
 // CA exposes the authority so the store layer can record its fingerprint.
 func (s *Service) CA() *CA { return s.ca }
 
 // TSAURL is the configured timestamp authority.
 func (s *Service) TSAURL() string { return s.tsaURL }
+
+// Roots returns the trust anchor this service verifies against, nil when it
+// accepts a chain that terminates anywhere. A caller printing a verdict has to
+// say which mode is in force: pinned means the signature leads to a named CA,
+// unpinned means the chain only had to hold together.
+// Anchor returns the certificate every signing certificate must have been
+// issued by, nil when the service accepts any well-formed chain. A caller
+// printing a verdict has to say which mode is in force: an anchor makes
+// "valid" a statement about who signed, without one it is only a statement
+// that the document is intact.
+func (s *Service) Anchor() *x509.Certificate { return s.anchor }
+
+// SetAnchor installs a trust anchor after construction, for a caller that
+// learns it later than the config does. Safe to call before the first Verify.
+func (s *Service) SetAnchor(c *x509.Certificate) { s.anchor = c }
 
 // Certify freezes `in` with a certification signature carrying
 // Permission(NoChanges). Filling happens before this call: the result is the

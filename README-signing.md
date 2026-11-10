@@ -257,7 +257,7 @@ command):
 | `client list` / `client revoke ID` | clients |
 | `secrets init` | prompts for the missing secrets, writes them into the config file, mode 0600 |
 | `sign-selftest [IN [OUT]] [-tsa URL]` | certify + one approval, verify, print the report. The TSA default is `tsa_url` |
-| `checkpdf FILE [-tsa URL]` | verify every signature in a file, offline; the timestamp is checked against the TSA certificate inside the signature, so no network is needed |
+| `checkpdf FILE [-config FILE] [-pin FILE] [-tsa URL]` | verify every signature in a file, offline; no config is needed, nothing is written to disk. `trust: pinned` means every signing certificate had to be issued by the anchor (the CA baked into a `build-release.sh` binary, or the file given with `-pin`); `trust: none` means only integrity was checked. See [Validation-Guide.md](Validation-Guide.md) |
 | `sign NAME EMAIL IN [OUT]` | one approval signature; the key is made for the call and dropped, never written |
 | `audit-verify` | walk the hash chain. Exit 0 = valid, 1 = a break (with the reason) |
 | `audit-write` | append a heartbeat event, which opens the day's file |

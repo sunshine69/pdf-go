@@ -280,6 +280,16 @@ func (d *Deps) sendSignedCopy(ctx context.Context, env *signstore.Envelope, p si
 	}
 	slug := slugTitle(env.Title)
 
+	// The receipt is about to travel beside the document, and it states which
+	// bytes the server verified. Before either one leaves, confirm the file
+	// attached here really is those bytes - a recipient cannot detect a
+	// disagreement on their own, because both artifacts arrive in the same
+	// message and appear equally authoritative.
+	receipt, err := d.stampDispatch(receipt, data, slug+"-signed.pdf")
+	if err != nil {
+		return err
+	}
+
 	// The signed copy carries no signing link: the document is finished, and the
 	// links that asked for signatures are dead. The template is given the names
 	// of the files it is about to receive, so the body describes the message

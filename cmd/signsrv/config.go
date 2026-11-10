@@ -43,6 +43,10 @@ type Config struct {
 	// AuditDir is where the nightly audit files are written. The chain of
 	// hashes across the files is what makes a tampered audit log detectable.
 	AuditDir string
+	// DownloadsDir holds the binaries a recipient is sent to download, served
+	// read-only at /dl/. Empty means the instance offers no downloads and the
+	// endpoint says so, rather than guessing a path.
+	DownloadsDir string
 
 	// Signing policy.
 	TSAURL  string
@@ -199,6 +203,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	c.LogPath = get("log_path", "var/log/signsrv.jsonl")
 	c.AuditDir = get("audit_dir", "var/audit")
+	c.DownloadsDir = get("downloads_dir", "")
 	c.LogLevel = strings.ToLower(get("log_level", "info"))
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error", "warning":
@@ -397,7 +402,7 @@ var configKeys = map[string]bool{
 	"smtp_host": true, "smtp_port": true, "smtp_starttls": true,
 	"smtp_user": true, "smtp_pass": true, "mail_from": true,
 	"trust_proxy": true, "dev": true, "log_level": true, "log_path": true,
-	"audit_dir": true,
+	"audit_dir": true, "downloads_dir": true,
 	// worker_interval is read by Load (below) and documented in
 	// config.example.env, so the parser has to accept it: an operator who sets
 	// it in a config file gets a hard error otherwise, which is how a documented

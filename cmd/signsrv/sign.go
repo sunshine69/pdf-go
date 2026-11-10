@@ -75,6 +75,11 @@ func signCmd(configPath, tsaOverride string, rest []string) int {
 		fmt.Fprintf(os.Stderr, "signsrv: signing service: %v\n", err)
 		return 1
 	}
+	// The report this command prints is the verification of a document it just
+	// signed, so it has to check the signature against the CA that signed it.
+	// Without the anchor, this command would print "valid": true for a document
+	// the CA never issued.
+	s.PinToCA()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -113,7 +118,7 @@ func signCmd(configPath, tsaOverride string, rest []string) int {
 		return 1
 	}
 
-	printReport(selftestReport{
+	r := selftestReport{
 		Valid:     rep.Valid,
 		In:        inPath,
 		SHA256:    hexSha(out.Data),
@@ -124,7 +129,9 @@ func signCmd(configPath, tsaOverride string, rest []string) int {
 		Errors:    rep.Errors,
 		ByteSize:  len(out.Data),
 		CertStart: len(in),
-	})
+	}
+	applyTrust(&r, s, "keystore in "+cfg.Keystore, false)
+	printReport(r)
 
 	if outPath != "" {
 		if err := os.WriteFile(outPath, out.Data, 0o600); err != nil {

@@ -36,6 +36,13 @@ func run(args []string) int {
 	// can be pointed at a local TSA and at the "no TSA" case. It exists for
 	// the acceptance script; a running service never uses it.
 	tsaOverride := fs.String("tsa", "", "override tsa_url (sign-selftest)")
+	// -pin is the trust anchor for `checkpdf` with no config file: a file
+	// containing the instance CA in PEM. The released binary carries its own
+	// (scripts/build-release.sh bakes it in), so a recipient does not need
+	// this flag; it exists for an operator pointing the tool at another
+	// instance's CA. No URL form on purpose: a verification must not need the
+	// network, and fetching the anchor over HTTPS trusts the DNS anyway.
+	pinPath := fs.String("pin", "", "path to a PEM certificate a chain must lead to (checkpdf)")
 	fs.Usage = usage
 	// Flags are accepted on either side of the subcommand: both
 	// `signsrv -config f serve` and `signsrv serve -config f` work.
@@ -63,7 +70,7 @@ func run(args []string) int {
 	case "sign-selftest":
 		return signSelftest(*configPath, *tsaOverride, rest)
 	case "checkpdf":
-		return checkPDF(*configPath, *tsaOverride, rest)
+		return checkPDF(*configPath, *tsaOverride, *pinPath, rest)
 	case "sign":
 		return signCmd(*configPath, *tsaOverride, rest)
 	case "worker":
@@ -123,7 +130,7 @@ func argAt(args []string, i int) string {
 // because it separates flags from the subcommand and its arguments, and a
 // value it does not recognize as belonging to a flag becomes a positional
 // argument — `checkpdf -tsa URL file` would then look like two files.
-var valueFlags = map[string]bool{"-config": true, "-tsa": true}
+var valueFlags = map[string]bool{"-config": true, "-tsa": true, "-pin": true}
 
 func splitArgs(args []string) (cmd string, flags, rest []string) {
 	for i := 0; i < len(args); i++ {
@@ -211,9 +218,21 @@ func usage() {
       Certify, sign three test parties, verify. Exits 0 only when the finished
       document is valid. The acceptance harness for docs/steps/04-pdfsign.md.
 
-  signsrv checkpdf FILE [-config FILE] [-tsa URL]
+  signsrv checkpdf FILE [-config FILE] [-pin FILE] [-tsa URL]
       Verify a document on disk and print the report. Exits non-zero when it
-      is not valid.
+      is not valid. No config file is required: the certificate chain is read
+      from the document, nothing is created on disk, and no network is used.
+
+      The report says which trust rule was in force:
+        "trust": "pinned"  a chain had to lead to a named CA, so the verdict
+                           also says who signed the document
+        "trust": "none"    no anchor was available, so the verdict says the
+                           document is intact and the signatures hold together,
+                           and nothing about who ran the CA
+
+      The anchor comes from -pin FILE, or from the CA baked into a binary built
+      by scripts/build-release.sh, or from the keystore when -config is given.
+      Without one the run prints a warning on stderr.
 
   signsrv version
 
