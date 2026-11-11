@@ -1,59 +1,106 @@
 # Skill: prepare a contract PDF and dispatch it for signing
 
 Two binaries. `pdf-go` prepares the document and drives the service. `signsrv`
-is the service (API + signing pages + worker). This file is the shortest path
-that works; `README-signing.md` is the full run, `docs/runbook-e2e.md` is the
-automated one.
+is the service (API + signing pages + worker). `README-signing.md` is the full
+run, `docs/runbook-e2e.md` is the automated one.
+
+There are two ways to do this and both work. **The API route (next section) is
+the default**: four HTTP requests, no binary to build, nothing installed beyond
+`curl` and `jq`. The CLI route (section 0 onward) is the same operation wrapped
+in `pdf-go`, useful when you want the fill verified locally before anything is
+sent. Read the API section even if you use the CLI — the checks and the failure
+modes are the same ones.
 
 Every command below is one that has been run against a live server and is
 quoted from that run. Flags are Go-style: `-flag value`, and `--flag` works
 too. **Flags go before positional arguments** — Go's parser stops at the first
 non-flag word, so `-send file.pdf` is the shape, never `file.pdf -send`.
 
-## The server alone — no CLI, no machine key
+## The procedure: fill and dispatch, API only
 
-Everything below is a convenience wrapper around one HTTP API. If you are an
-agent or a script, the API is the whole product: one login and the PDF on disk
-are sufficient to prepare, fill, dispatch, track and export a document. Nothing
-here needs `pdf-go`, a machine key, or a browser.
+This is the whole operation, and it is what has been run against production.
+An agent should follow this section and need nothing else: one login, the PDF on
+disk, four requests. Nothing fills or sends a document outside the API: no
+machine key, no browser, and no `pdf-go` in the dispatch path. The one place a
+local tool helps is reading the field names in step 2, which is optional.
+
+**1. Log in.** The admin password is enough; no client key is needed for any of
+this.
 
 ```sh
-# one credential
-curl -sS -H 'content-type: application/json' \
-  -d '{"email":"you@your.host","password":"…"}' \
-  http://127.0.0.1:8080/api/v1/auth/login | jq -r .access   # -> $A
-
-# upload the blank PDF, the fill spec and the parties in ONE request.
-# The service fills the form itself and returns the party links inline.
-curl -sS -X POST -H "Authorization: Bearer $A" \
-  -F "template=@contract.pdf;type=application/pdf" \
-  -F "title=Supply agreement" \
-  -F "spec=<spec.json" -F "parties=<parties.json" \
-  http://127.0.0.1:8080/api/v1/envelopes
+A=$(curl -sS -H 'content-type: application/json' \
+  -d "{\"email\":\"$EMAIL\",\"password\":\"$PW\"}" \
+  https://host.example/api/v1/auth/login | jq -r .access)
 ```
 
-`spec.json` is `{"fill":{"values":{"Text1":"…"}},"widget":{…},"subject":"…"}`.
-`parties.json` is `[{"email":"a@b.c","name":"Ann","order":1}]`. Pass them with
-`-F name=<file`, **not** `-F name=@file`: `@` sends a file part, and the service
-reads these two as plain form fields, so `@` yields a 400 on a field that is
-obviously present.
+An admin token answers with `scopes: ["admin:read"]` and the middleware treats
+that as carrying every scope, so it reaches the envelope routes directly. Do not
+be fooled by the single scope name — it is not a restriction. A machine key
+(`signsrv client add`, or `POST /api/v1/admin/clients`) exists to grant a caller
+*less* than an admin, or to avoid holding a human password. It is never a
+prerequisite for filling or dispatching.
 
-The response is `201` with `{envelope, fill, links}` — `fill.applied` lists the
-fields the server wrote, and `links[].url` is what each party signs from. Then
-`POST /api/v1/envelopes/{id}/send`, and the party side is public:
-`POST /api/v1/sign/{token}/claim`, `GET …/envelope` (carries `document_sha`),
-`POST …/consent` with `{consent:true, document_sha, signature_text, image}`,
-where `image` is a `data:image/png;base64,…` string. Poll
-`GET /api/v1/envelopes/{id}` to `delivered`, then read
-`GET /api/v1/envelopes/{id}/report` — the pass condition is `complete: true`
-with every signer `valid: true` and `errors: []` — and
-`GET …/audit.zip` for the evidence bundle.
+**2. Get the field names.** Never guess them. The server does not expose a
+field-listing route, so read them from the local file:
 
-An admin login token carries `admin:read`, which the middleware treats as all
-scopes, so it reaches the envelope routes directly. A machine key
-(`client add`, or `POST /api/v1/admin/clients`) is for a caller that must be
-granted *less* than an admin, or that must not hold a human password. It is not
-a prerequisite for the flow.
+```sh
+pdf-go extract contract.pdf -o schema.json   # stdout is a human report, not JSON
+jq -r '.fields[].name' schema.json
+```
+
+Use only names from this output. A name that is not in the form is a hard
+error, not a silent skip: the fill fails with `unknown field "…"; run extract to
+list the available fields` and the envelope is not created. That error is the
+fast path back to step 2.
+
+**3. Create, fill and address in ONE request.** The service fills the form
+itself; nothing is filled locally.
+
+```sh
+curl -sS -X POST -H "Authorization: Bearer $A" \
+  -F "template=@contract.pdf;type=application/pdf" \
+  -F "title=Supply agreement - Steve Kieu" \
+  -F "spec=<spec.json" -F "parties=<parties.json" \
+  https://host.example/api/v1/envelopes
+```
+
+- `spec.json` is `{"fill":{"values":{"Text1":"Kaykraft Pty Ltd", …}}}`.
+  `widget` and `subject` are optional siblings of `fill`.
+- `parties.json` is `[{"email":"…","name":"…","order":1,"title":"…"}]`, and
+  `title` may be omitted.
+- Pass both with `-F "name=<file"`, **not** `-F "name=@file"`. `@` produces a
+  file part, Go's `FormValue` ignores file parts, and you get a 400 that says a
+  field is required when the field is plainly present. This is the single most
+  common way to get this wrong.
+
+A `201` returns the envelope, `fill.applied` (the fields the server actually
+wrote) and the party links inline in `links[].url`. Check that `applied` lists
+every field you meant to fill, and `fill.lockedForm: true` (the form is sealed
+so nothing can be changed under a signature).
+
+**4. Send.** `POST /api/v1/envelopes/{id}/send` with the bearer token. The party
+routes after that are public, under `/api/v1/sign/{token}`: `claim` (with the
+email address), `envelope` (carries `document_sha`), and `consent` with
+`{consent:true, document_sha, signature_text, image}` where `image` is a
+`data:image/png;base64,…` string. The link alone, without a claim, yields the
+title and deadline and nothing else.
+
+**5. Confirm the invitation left, and confirm the signature.** `send` returning
+`200` says the request was accepted, not that mail arrived. Read
+`GET /api/v1/envelopes/{id}` and the party row: status `sent` means queued,
+`claimed` means the party opened the link. Then `GET /api/v1/envelopes/{id}/report`
+— the pass condition is `complete: true` with every signer `valid: true` and
+`errors: []` — and `GET …/audit.zip` for the evidence bundle. Event rows use
+the key `kind`, not `type`.
+
+Do not report a signing job as done on the strength of a `201`. Report it on the
+strength of `complete: true`.
+
+A server started with `dev=true` creates the admin account itself (`dev@localhost`)
+when the database has no admins, and logs the password it set. It is the only case
+where the service creates a login for you; production never does. See
+`docs/CONFIG.md`.
+
 
 ## 0. Build, configure, serve
 

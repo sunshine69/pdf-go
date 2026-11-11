@@ -5,8 +5,13 @@ JSON, write the form back from JSON, stamp images and text at exact positions,
 and read the result back to check it.
 
 This module also builds `signsrv`, a document signing service that uses
-`internal/pdf` as a library. See [README-signing.md](README-signing.md) and
-the design documents in [docs/](docs/).
+`internal/pdf` as a library.
+
+**Working on the service?** Read [docs/QUICK-START.md](docs/QUICK-START.md)
+first: package map, the life of a document, the auth model, where to change
+what, and the known pitfalls. Then [README-signing.md](README-signing.md) to run
+it, and [docs/](docs/) for everything else — that index says which docs are
+current and which are historical design records.
 
 It uses the pure-Go PDF library `github.com/benoitkugler/pdf`, so
 there is no cgo, no external binary and no shared library to install.
