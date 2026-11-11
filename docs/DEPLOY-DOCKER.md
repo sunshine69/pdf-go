@@ -156,15 +156,67 @@ only when someone asks.
 
 ### Accounts, after the first start
 
+**There is no default admin account, and no environment variable creates one.**
+This is the most common point of confusion after an install, so read this before
+looking for a lost password.
+
+| What | Where it is set | Creates an account? |
+| --- | --- | --- |
+| `SIGNSRV_ADMIN_PASSWORD` / `admin_password=` | env, or the config file | **No.** It is only the password the *seeding step* uses |
+| `SIGNSETUP_ADMIN_EMAIL` | env, to `signsrv-firstboot` only | Yes, but only on a **deb** install (see below) |
+| `signsrv admin add EMAIL` | a command you run | **Yes** — this is the real way |
+| `signsrv-utils admin add EMAIL` | a command you run, same result | **Yes** — and it resolves the database from the service's own config without needing its secrets |
+| `dev=true` | env, or the config file | **Yes**, `dev@localhost`, only when the database has no admins. Never in production |
+
+`admin_password` is read at start-up to satisfy config validation and, on a deb
+install, to seed the one account named by `SIGNSETUP_ADMIN_EMAIL`. The Docker image
+never runs `signsrv-firstboot`, so inside a container `SIGNSRV_ADMIN_PASSWORD` seeds
+**nothing on its own**: the service starts green, `/healthz` answers 200, and
+`/admin/` refuses every login. If you set a password but no account, that generated
+or configured password belongs to nobody.
+
+The one exception is `dev=true`: a dev instance with no admins seeds
+`dev@localhost` with its own admin password and logs the address, so `docker run`
+with `SIGNSRV_DEV=true` gives you a usable login immediately. That convenience is
+switched off in production by the same flag that turns off the other dev
+behaviours, and it will not add the account if any admin already exists.
+
+Create the account explicitly. `admin add` takes the password from
+`SIGNSRV_ADMIN_PASSWORD`, which the container already has when it comes from the
+`env_file`, so no extra flag is needed; minimum 12 characters:
+
 ```sh
-docker exec signsrv signsrv admin add you@example.org                     # password from SIGNSRV_ADMIN_PASSWORD
+docker exec signsrv signsrv admin add you@example.org
+docker exec signsrv signsrv admin list        # confirm it exists before you try to log in
+```
+
+If the password is not in the container environment, `admin add` prompts for it
+twice instead — which fails under `docker exec` without `-it`, so add `-it` in that
+case or pass `-e SIGNSRV_ADMIN_PASSWORD=...` explicitly.
+
+`admin add` is not idempotent: a second call for an address that already exists is
+an error, not a password reset. Use `admin passwd EMAIL` for that; it stamps the
+credential epoch, which ends every access token and deletes the refresh chain — the
+action to take when a token is stolen.
+
+On a **deb** install the account can be created for you, but only if you say so
+before the first start:
+
+```sh
+SIGNSETUP_ADMIN_EMAIL=you@your.host SIGNSETUP_ADMIN_PASSWORD=... apt install ./signsrv_*.deb
+```
+
+`SIGNSETUP_ADMIN_EMAIL` is a first-boot setup variable. It is **not** a service
+setting, it is not read by `signsrv serve`, and it is not consulted again after the
+first run — so setting it later, or setting it in the container environment, does
+nothing at all. When it is absent on a deb install the installer says so in its
+summary rather than leaving you to guess.
+
+```sh
 docker exec signsrv signsrv client add batch envelope:write envelope:read # prints the key ONCE
 docker exec signsrv signsrv user add ops                                  # SPA login; prints the JWT secret
 docker exec signsrv signsrv dbstatus                                      # schema version + row counts
 ```
-
-`admin passwd` stamps the credential epoch, which ends every access token and
-deletes the refresh chain — the action to take when a token is stolen.
 
 ### Why `--network host`
 

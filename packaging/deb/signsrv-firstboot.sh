@@ -379,8 +379,10 @@ if [ "$MODE" = relay ] && [ -z "$ADMIN_EMAIL" ]; then
     # operator with a green install has no way to guess that /admin/ is unreachable.
     note ""
     note "  No admin account exists yet. As root, create one now (12+ characters):"
-    note "      signsrv -config $CONF admin add you@your.host"
-    note "      signsrv -config $CONF admin list"
+    note "      signsrv-utils admin add you@your.host"
+    note "      signsrv-utils admin list"
+    note "  signsrv-utils reads the database path from $CONF and asks for nothing"
+    note "  else, so it works even when the service itself refuses to start."
     note "  Then sign in at <public_url>/admin/."
 fi
 

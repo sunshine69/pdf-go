@@ -123,11 +123,8 @@ func (s *server) run(ctx context.Context) error {
 	}
 	s.log.Info("signsrv listening", "addr", s.cfg.Listen, "dev", s.cfg.Dev,
 		"go", runtime.Version(), "public_url", s.cfg.PublicURL)
-	if s.cfg.Dev && strings.HasPrefix(s.cfg.AdminPassword(), "dev-") {
-		// Dev mode only, and only for an ephemeral password that was
-		// generated because the config had none. Never printed in production.
-		s.log.Info("dev admin password", "password", s.cfg.AdminPassword(),
-			"note", "dev mode only; set SIGNSRV_ADMIN_PASSWORD to fix it")
+	if s.cfg.Dev {
+		s.ensureDevAdmin(ctx)
 	}
 
 	shutdown := make(chan struct{})

@@ -22,6 +22,8 @@ docs/
   13-users-one-endpoint.md  users table, caller-minted tokens, chore endpoints
   14-drafter-notify.md   the drafter's notices: decline, undeliverable, notify_email
   build-and-test.md      how to build, and how to test each step by hand
+  CONFIG.md              every setting: the config-file key, its SIGNSRV_* env var,
+                         the default, and what refuses to start without it
   DEPLOY-DOCKER.md       the Docker image: build, first run, the process, settings,
                          state and backups, upgrade and rollback
   DEB-PACKAGE.md         the Debian package: how to build the .deb, what an install

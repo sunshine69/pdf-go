@@ -59,6 +59,7 @@ Installed signsrv in local mode: invitations are written to
 | Path | What |
 | --- | --- |
 | `/usr/bin/signsrv` | the server |
+| `/usr/bin/signsrv-utils` | account console: reads `db=` from the config and nothing else |
 | `/usr/lib/signsrv/signsrv-{adduser,firstboot}.sh` | setup helpers, both idempotent |
 | `/lib/systemd/system/signsrv.service` | unit, hardened, `StateDirectory=signsrv` |
 | `/etc/signsrv/signsrv.env` | config, 0640 `root:signsrv` so the service can read it |
@@ -131,14 +132,54 @@ access with network policy, before binding anywhere but loopback.
 
 ## First admin account
 
+The installer creates an admin only if you told it which address, and only on the
+first run:
+
 ```sh
-signsrv -config /etc/signsrv/signsrv.env admin add you@your.host
-signsrv -config /etc/signsrv/signsrv.env admin list
-signsrv -config /etc/signsrv/signsrv.env admin passwd you@your.host   # rotates the bcrypt cost too
+SIGNSETUP_ADMIN_EMAIL=you@your.host apt install ./signsrv_0.0.1-1_amd64.deb
 ```
 
-The password is read from the terminal, never from argv, so it does not appear in
-`ps` or in shell history.
+`SIGNSETUP_ADMIN_EMAIL` is a **setup** variable, read by `signsrv-firstboot` and by
+nothing else. It is not a service setting, `signsrv serve` never reads it, and it is
+not consulted again after the first boot — exporting it later, or putting it in
+`/etc/signsrv/signsrv.env`, does nothing. If it was absent, the install summary says
+so; the package does not invent an address, because a guessed one would be the only
+account on a signing CA.
+
+Without it there is no account and `/admin/` accepts no login. Create one:
+
+```sh
+signsrv-utils admin add you@your.host
+signsrv-utils admin list
+signsrv-utils admin passwd you@your.host
+```
+
+`signsrv-utils` is the account console. It reads `db=` from `/etc/signsrv/signsrv.env`
+and nothing else, so it works whatever the rest of the configuration says — including
+while the service is refusing to start, which is precisely when you need to know which
+accounts exist. Pass `-config FILE` for a config elsewhere, or `-db PATH` to name the
+database directly and read no config at all.
+
+The password comes from `SIGNSRV_ADMIN_PASSWORD` if it is set, otherwise it is
+prompted for twice on the terminal with echo off; it is never an argument, so it does
+not land in `ps` or in shell history. Minimum 12 characters.
+
+`signsrv` has the same verbs (`signsrv -config … admin add`) and they do the same
+thing to the same table. They are **not** what you want in an incident: `signsrv`
+validates the entire server configuration before it will open the database, so a
+missing `smtp_host`, a non-https `public_url`, or a secret that lives only in
+`/etc/signsrv/secrets.env` stops it cold. Note that `source`-ing both files is not
+enough — shell variables are not passed to the child process unless you `export`
+them (`set -a` before sourcing does).
+
+`admin add` is **not** idempotent —
+re-running it for an address that exists is an error, not a password reset, which is
+why you use `admin passwd` for a rotation. `passwd` also stamps the credential epoch:
+every access token minted under the old password is refused from then on and the
+refresh chain is deleted, which makes it the action to take when a token is stolen.
+
+Passwords are stored as argon2id with a per-account salt. The database never holds a
+plaintext password, and no endpoint can print one.
 
 ## Upgrades and removal
 

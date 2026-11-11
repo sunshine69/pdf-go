@@ -10,6 +10,51 @@ quoted from that run. Flags are Go-style: `-flag value`, and `--flag` works
 too. **Flags go before positional arguments** — Go's parser stops at the first
 non-flag word, so `-send file.pdf` is the shape, never `file.pdf -send`.
 
+## The server alone — no CLI, no machine key
+
+Everything below is a convenience wrapper around one HTTP API. If you are an
+agent or a script, the API is the whole product: one login and the PDF on disk
+are sufficient to prepare, fill, dispatch, track and export a document. Nothing
+here needs `pdf-go`, a machine key, or a browser.
+
+```sh
+# one credential
+curl -sS -H 'content-type: application/json' \
+  -d '{"email":"you@your.host","password":"…"}' \
+  http://127.0.0.1:8080/api/v1/auth/login | jq -r .access   # -> $A
+
+# upload the blank PDF, the fill spec and the parties in ONE request.
+# The service fills the form itself and returns the party links inline.
+curl -sS -X POST -H "Authorization: Bearer $A" \
+  -F "template=@contract.pdf;type=application/pdf" \
+  -F "title=Supply agreement" \
+  -F "spec=<spec.json" -F "parties=<parties.json" \
+  http://127.0.0.1:8080/api/v1/envelopes
+```
+
+`spec.json` is `{"fill":{"values":{"Text1":"…"}},"widget":{…},"subject":"…"}`.
+`parties.json` is `[{"email":"a@b.c","name":"Ann","order":1}]`. Pass them with
+`-F name=<file`, **not** `-F name=@file`: `@` sends a file part, and the service
+reads these two as plain form fields, so `@` yields a 400 on a field that is
+obviously present.
+
+The response is `201` with `{envelope, fill, links}` — `fill.applied` lists the
+fields the server wrote, and `links[].url` is what each party signs from. Then
+`POST /api/v1/envelopes/{id}/send`, and the party side is public:
+`POST /api/v1/sign/{token}/claim`, `GET …/envelope` (carries `document_sha`),
+`POST …/consent` with `{consent:true, document_sha, signature_text, image}`,
+where `image` is a `data:image/png;base64,…` string. Poll
+`GET /api/v1/envelopes/{id}` to `delivered`, then read
+`GET /api/v1/envelopes/{id}/report` — the pass condition is `complete: true`
+with every signer `valid: true` and `errors: []` — and
+`GET …/audit.zip` for the evidence bundle.
+
+An admin login token carries `admin:read`, which the middleware treats as all
+scopes, so it reaches the envelope routes directly. A machine key
+(`client add`, or `POST /api/v1/admin/clients`) is for a caller that must be
+granted *less* than an admin, or that must not hold a human password. It is not
+a prerequisite for the flow.
+
 ## 0. Build, configure, serve
 
 ```sh

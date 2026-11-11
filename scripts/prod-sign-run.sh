@@ -477,6 +477,27 @@ fi
 export SIGNSRV_TOKEN
 SIGNSRV_TOKEN=$(cat "$KEYFILE")
 
+# ------------------------------------------------------------- admin account ----
+# The client key above is what drives the API, so a run works without any admin
+# account — which is exactly why the gap goes unnoticed: /admin/ then refuses every
+# login and nothing in the run output says so. admin_password in the config seeds
+# nothing by itself; there is no default address. ADMIN_EMAIL makes it explicit.
+say "admin account"
+if [ -n "${ADMIN_EMAIL:-}" ]; then
+    if "$BIN/signsrv" -config "$CONF" admin list 2>/dev/null | grep -qi -- "$ADMIN_EMAIL"; then
+        note "admin $ADMIN_EMAIL already exists"
+    else
+        SIGNSRV_ADMIN_PASSWORD="$ADMIN_PW" "$BIN/signsrv" -config "$CONF" admin add "$ADMIN_EMAIL" \
+            > "$WORK/admin.out" 2>&1 \
+            || { cat "$WORK/admin.out"; fail "admin add failed"; }
+        sed 's/^/   /' "$WORK/admin.out"
+        note "sign in at ${PUBLIC}/admin/ as $ADMIN_EMAIL (the admin_password in $CONF)"
+    fi
+else
+    note "no ADMIN_EMAIL set: the API works, /admin/ has no account to sign in with."
+    note "  later: SIGNSRV_ADMIN_PASSWORD=... $BIN/signsrv -config $CONF admin add you@example.org"
+fi
+
 # --------------------------------------------------------------- document ----
 # Read the form. Never guess a field name: a name that is not in the document is a
 # 400 at create, and a name that is there but wrong is a document that says the
