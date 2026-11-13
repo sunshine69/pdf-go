@@ -55,6 +55,10 @@ func run(args []string) int {
 		return runPages(rest)
 	case "add-logo", "stamp", "logo":
 		return runAddLogo(rest)
+	case "append", "add-pages", "attach-page":
+		return runAppend(rest, false)
+	case "insert":
+		return runAppend(rest, true)
 	case "doc", "guide":
 		fmt.Print(guide)
 		return report.OK
@@ -106,6 +110,17 @@ func usage() {
       (top-left, center, bottom-right, ...) and --box
       (media, crop, trim, bleed, art, content, header, footer) place it;
       --field NAME anchors it on the widget of a form field.
+
+  pdf-go append <in.pdf> [--from notes.md | --text "..."] [-o out.pdf]
+      Typeset Markdown, HTML or plain text and add it as new pages. The added
+      pages copy the page size of the document, so an annex matches the contract
+      it joins. --at N inserts after the 0-based page N instead of appending at
+      the end; 'insert' is the same command and requires --at. --format markdown
+      (default), html or text, inferred from the file name; "-" reads stdin.
+      Headings, bold, italic, code, lists, quotes, rules and tables are
+      supported. Characters the base-14 fonts cannot draw (Japanese, Chinese,
+      emoji) are reported instead of being written as dots; --strict fails on
+      them, otherwise they are still reported in the JSON.
 
   pdf-go envelope create --server URL --template in.pdf --spec fill.json \
       --parties parties.json [--title T] [--expires 72h] [--send]

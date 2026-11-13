@@ -23,6 +23,8 @@ pdf-go verify  <out.pdf>   [spec.json]            read it back and compare
 pdf-go fields  <in.pdf>    [-page N]              compact field listing
 pdf-go pages   <in.pdf>    [--page 1,3-5]        page boxes and geometry
 pdf-go add-logo <in.pdf> <img> [--page 1 --position top-right]
+pdf-go append   <in.pdf> [--from notes.md] [-o out.pdf]  typeset text onto new pages
+pdf-go insert   <in.pdf> --from notes.md --at N          ... at a chosen position
 pdf-go doc                                        full JSON reference
 ```
 
@@ -66,6 +68,30 @@ priority order:
 Coordinates are PDF points: origin lower-left, y upwards, `rect` is
 `[x0 y0 x1 y1]`. `pdf-go pages` prints the boxes of every page. Prefer the
 `crop` box: the media box is the paper, the crop box is what gets printed.
+
+## Appending pages
+
+`append` typesets Markdown, HTML or plain text and splices the result in as new
+pages. Added pages copy the size and rotation of the page they follow, so an
+annex matches the document it joins rather than assuming A4.
+
+```sh
+pdf-go append signed.pdf --from terms.md --title "Schedule 2" -o final.pdf
+pdf-go insert signed.pdf --from note.txt --at 2   # after the third page
+```
+
+Text runs from `--from FILE` (`-` for stdin) or `--text`. The format is taken
+from the file extension, defaulting to Markdown. The report says which page the
+annex starts on (`at`), how many pages were added and how many lines were
+typeset.
+
+Content that does not fit goes on further pages; nothing is clipped and nothing
+is dropped. Because the standard 14 fonts cover Latin-1 only, characters they
+cannot draw (CJK, Cyrillic, Greek, emoji) are reported as warnings and written
+as `.`; `--strict` makes them a failure instead of a quiet substitution.
+
+Appending changes the document, so it happens before signing: append first,
+then send the envelope.
 
 ## Reports and exit codes
 

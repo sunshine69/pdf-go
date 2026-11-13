@@ -20,7 +20,9 @@ non-flag word, so `-send file.pdf` is the shape, never `file.pdf -send`.
 
 This is the whole operation, and it is what has been run against production.
 An agent should follow this section and need nothing else: one login, the PDF on
-disk, four requests. Nothing fills or sends a document outside the API: no
+disk, four requests, and a review gate between them: create fills and stores,
+you look at the PDF, and only then does `send` mail anyone. Nothing fills or
+sends a document outside the API: no
 machine key, no browser, and no `pdf-go` in the dispatch path. The one place a
 local tool helps is reading the field names in step 2, which is optional.
 
@@ -78,14 +80,70 @@ wrote) and the party links inline in `links[].url`. Check that `applied` lists
 every field you meant to fill, and `fill.lockedForm: true` (the form is sealed
 so nothing can be changed under a signature).
 
-**4. Send.** `POST /api/v1/envelopes/{id}/send` with the bearer token. The party
+`applied` records what was written, **not that the visible text is what you
+asked for**. A field carrying `maxLen` truncates, and a `readOnly` field is
+written anyway — the viewer just shows it as filled in. So a long value in a
+short field passes every check here and still reads wrong on paper. Confirm the
+rendered page (step 4) whenever a value is near a length limit.
+
+**4. Look at the contract before anyone is emailed.** Creating does not mail.
+The envelope sits at `ready`, every party at `invited`, and no message leaves
+the server until you call `send` — so the filled document is already reviewable
+and the cost of a mistake so far is one stored PDF.
+
+```sh
+curl -sS -H "Authorization: Bearer $A" \
+  https://host.example/api/v1/envelopes/$EID/document -o contract.pdf
+pdftoppm -f 1 -l 1 -r 80 -png contract.pdf page   # then look at page-1.png
+```
+
+`GET …/document` is not gated on status; it streams the current revision, named
+`certified` while signatures are pending and `signed` afterwards. If the layout
+or a value is wrong, discard the envelope and create a new one:
+
+```sh
+curl -sS -X POST -H "Authorization: Bearer $A" -H 'content-type: application/json' \
+  -d '{"reason":"the totals were wrong"}' \
+  https://host.example/api/v1/envelopes/$EID/cancel
+```
+
+`cancel` **requires** a `reason` in a JSON body — an empty body is 422
+`invalid_reason`, and note the asymmetry: `send` ignores the body entirely while
+`cancel` rejects a missing one, so `curl -X POST` alone works for one and not
+the other. A cancelled envelope cannot be sent: `send` answers 409
+`state_conflict`. One envelope per document version, so never re-fill in place.
+
+A party that was never invited is not mailed when you cancel its envelope; the
+`notified` count in the cancel response is not a delivery promise.
+
+**5. Send.** `POST /api/v1/envelopes/{id}/send` with the bearer token. The party
 routes after that are public, under `/api/v1/sign/{token}`: `claim` (with the
 email address), `envelope` (carries `document_sha`), and `consent` with
 `{consent:true, document_sha, signature_text, image}` where `image` is a
 `data:image/png;base64,…` string. The link alone, without a claim, yields the
 title and deadline and nothing else.
 
-**5. Confirm the invitation left, and confirm the signature.** `send` returning
+**6. If you want it checked locally first, before the party ever sees it.** The
+server filled the form, so the answer to "does it look right?" is already in
+step 4's download. To confirm values mechanically, pull the blank form's field
+list and compare against the downloaded document, or use the CLI:
+
+```sh
+pdf-go extract contract.pdf -o filled.json      # contract.pdf = step 4 download
+jq -r '.fields[] | "\(.name) = [\(.value)]"' filled.json
+```
+
+This is the step that catches the truncation and `readOnly` cases above, because
+it reads the document back rather than trusting the create response.
+
+`pdf-go verify <doc.pdf> <spec.json>` also compares values, exit 0 match / 3
+mismatch, but it takes the **CLI** spec shape `{"values":{…}}`, not the API
+shape `{"fill":{"values":…}}`. Hand it the API shape and `values` comes back
+empty, so it checks nothing and exits 0: a false pass. Pass the shape `extract`
+produced instead, and treat `checked: 0` or a `matches` list that does not name
+your fields as a failure.
+
+**7. Confirm the invitation left, and confirm the signature.** `send` returning
 `200` says the request was accepted, not that mail arrived. Read
 `GET /api/v1/envelopes/{id}` and the party row: status `sent` means queued,
 `claimed` means the party opened the link. Then `GET /api/v1/envelopes/{id}/report`

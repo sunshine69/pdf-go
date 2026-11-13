@@ -115,6 +115,23 @@ type ValueReport struct {
 	Match bool   `json:"match"`
 }
 
+// AppendReport is printed by `append` and `insert`.
+type AppendReport struct {
+	Source string `json:"source"`
+	Output string `json:"output"`
+
+	// Input names where the typeset text came from, so a reviewer told that an
+	// annex reads wrong can find the file it was built from. Empty when the
+	// text arrived on the command line or over stdin.
+	Input     string   `json:"input,omitempty"`
+	Format    string   `json:"format"`
+	At        int      `json:"at"`
+	PageCount int      `json:"pageCount"`
+	Added     int      `json:"added"`
+	Lines     int      `json:"lines"`
+	Warnings  []string `json:"warnings,omitempty"`
+}
+
 // Error is the envelope printed for a failure.
 type Error struct {
 	Error  string `json:"error"`
