@@ -91,6 +91,29 @@ func TestAdminPollsStatsWithVisibilityCheck(t *testing.T) {
 	}
 }
 
+// The 30s poll belongs to the dashboard alone. Every view tears down the page
+// through shell()/clear(), so a tick that fires while some other view is on
+// screen wipes that view and throws the operator back to the stats page — the
+// envelope detail did exactly this a few seconds after "open". Two things keep
+// that from happening: the timer callback checks it is still on the dashboard,
+// and shell() disarms the timer on entry to any view.
+func TestAdminPollStaysOnDashboard(t *testing.T) {
+	b := mustRead(t, "app.js")
+	// The callback is gated on the current view, not just tab visibility.
+	if !regexp.MustCompile(`if \(view === "/" &&`).MatchString(b) {
+		t.Fatal(`the poll does not check it is still on the dashboard before rebuilding the page`)
+	}
+	// shell() runs for every view and must disarm the timer, so a tick cannot
+	// be left armed while the operator is on the detail page or a form.
+	shell := regexp.MustCompile(`(?s)function shell\(title, path\) \{.*?\n\}`).FindString(b)
+	if shell == "" {
+		t.Fatal("cannot find shell() to check it disarms the poll")
+	}
+	if !strings.Contains(shell, "clearInterval(pollTimer)") {
+		t.Fatal("shell() does not clear pollTimer, so a non-dashboard view can be wiped by a stray tick")
+	}
+}
+
 // Every fetch carries same-origin credentials and the token in a header only.
 func TestAdminFetchesUseSameOrigin(t *testing.T) {
 	b := mustRead(t, "app.js")

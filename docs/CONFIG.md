@@ -129,6 +129,48 @@ the existing certificate.
 | `ca_country` | `SIGNSRV_CA_COUNTRY` |
 | `ca_email` | `SIGNSRV_CA_EMAIL` |
 
+
+**Filling in the CA subject.** These keys apply only when the keystore is created
+(both `ca.key` and `ca.crt` absent). They become permanent once written: editing
+them later does nothing, and re-creating the CA invalidates every signature issued
+so far, so anyone who imported the old `ca.crt` by fingerprint has to re-import.
+Print the result with `signsrv-utils checkconfig` before the first start, and
+confirm the DN with `openssl x509 -in var/keystore/ca.crt -noout -subject`.
+
+If you need to produce the pair by hand (air-gapped bootstrap, or a CSR to a
+real CA), openssl must reproduce what the service expects, or startup refuses
+the key:
+
+    cd var/keystore   # must be empty; the service will not overwrite either file
+    openssl ecparam -genkey -name prime256v1 -noout -out ca.plain.key  # P-256, not RSA
+    openssl req -new -x509 -key ca.plain.key -out ca.crt -days 3650 \
+        -subj "/C=US/ST=California/L=San Francisco/O=Example Labs/OU=Signing/CN=Example Signing CA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:1" \
+        -addext "keyUsage=critical,digitalSignature,nonRepudiation,keyCertSign,cRLSign" \
+        -addext "extendedKeyUsage=1.3.6.1.5.5.7.3.36"
+    chmod 644 ca.crt
+    openssl pkcs8 -topk8 -nocrypt -in ca.plain.key -out ca.plain.der
+    rm ca.plain.key
+
+`ca.plain.der` is PKCS8 DER, which is what the service seals into `ca.key`
+with `keystore_pass` — that envelope format is private, so the supported way
+to install a hand-made key is to seal it on a machine that has the service
+(`signsrv` on an empty keystore dir), not to hand-write the file.
+
+What actually matters in that command, and what does not:
+
+- `keyUsage=digitalSignature` is enforced: the verifier builds a context with
+  `RequireDigitalSignature(true)`, so a CA without it fails at signature time.
+- `extendedKeyUsage=1.3.6.1.5.5.7.3.36` (Document Signing, RFC 9336) is
+  *emitted* by the service but not checked by it — this project's verifier looks at
+  key usage, not EKU. Keep it anyway: it is what tells a third-party reader
+  (Adobe, `crypttools`) that the certificate is for signing documents rather than
+  for TLS or code signing.
+- Use `keyCertSign`, not `keyCertification` or `certSign`: openssl only accepts
+  the former, and it is the same bit Go's `KeyUsageCertSign` writes.
+- `-days 3650` matches the 10-year CA the service creates. A shorter life is
+  not refused, but startup stops when the certificate expires, so make sure the
+  number is the one you intend to maintain.
 ### Logging
 
 | Key | Env var | Default | Required | Meaning |

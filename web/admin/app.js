@@ -11,6 +11,11 @@ let accessToken = "";
 let refreshToken = "";
 const TIMEOUT_MS = 20000;
 let pollTimer = null;
+// view names the screen currently on screen ("dashboard", "envelopes",
+// "envelope", "settings"). shell() sets it from the route it is handed, so
+// every view is covered without each one having to remember. The poll reads it
+// to decide whether it is still allowed to rebuild the page.
+let view = "";
 
 async function api(path, opts = {}, allowRetry = true) {
   const controller = new AbortController();
@@ -124,6 +129,14 @@ function showLogin() {
 }
 
 function shell(title, path) {
+  view = path;
+  // The 30s auto-refresh belongs to the dashboard only. Every view starts by
+  // tearing down the page here, so the poll must be cleared on entry to any
+  // view; showDashboard re-arms it after it builds. Leaving it running made
+  // the interval fire showDashboard() from the envelope detail and the
+  // envelopes table alike, which clear()ed the user's view and dropped them
+  // back to the stats page a few seconds after they clicked "open".
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   clear();
   app.appendChild(el("h1", title));
   const nav = el("nav", undefined, "nav");
@@ -197,13 +210,18 @@ async function showDashboard() {
     app.appendChild(list);
   }
 
-  // Poll every 30s, and only while this tab is visible: a dashboard in a
-  // background tab is not being read, and the stats query is not free.
+  // Poll every 30s, and only while this tab is visible and still showing the
+  // dashboard: a background tab is not being read, and the stats query is not
+  // free. The view check is the important half — a tick can already be queued
+  // when the user navigates away, and showDashboard rebuilds the whole page
+  // through shell()/clear(). Without it, a tick that fires just after the user
+  // leaves the dashboard wipes their new view and returns them to the stats.
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(() => {
-    if (document.visibilityState === "visible") showDashboard();
+    if (view === "/" && document.visibilityState === "visible") showDashboard();
   }, 30000);
 }
+
 
 // ---------------------------------------------------------------------------
 // envelope table
