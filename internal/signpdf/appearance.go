@@ -74,14 +74,59 @@ const (
 // PartyWidget is the widget of the index-th signature in a stack. Callers that
 // sign more than one party all place them the same way, so a document looks the
 // same whatever signed it.
-func PartyWidget(index int) Widget {
-	return Widget{
-		Page: 1,
-		X:    WidgetX,
-		Y:    WidgetY + WidgetStride*float64(index),
-		W:    AppearanceWidth,
-		H:    AppearanceHeight,
+//
+// base is what the envelope asked for: the page, and optionally the signature
+// field the stack is anchored to. The zero Widget is a legitimate base and
+// means "page 1, default corner" — every envelope created before signatures had
+// a page to ask for, and every caller that has no opinion.
+//
+// The index offsets within one page only. A base that names a page moves the
+// whole stack to that page; it does not spread it over several.
+func PartyWidget(base Widget, index int) Widget {
+	w := base
+	if w.Page < 1 {
+		w.Page = 1
 	}
+	if w.W <= 0 {
+		w.W = AppearanceWidth
+	}
+	if w.H <= 0 {
+		w.H = AppearanceHeight
+	}
+	// A field anchor places one signature, not a column of them: the stack
+	// offset would walk the second party's box off the field it was anchored to.
+	// The first party takes the field, the rest fall back to the stack.
+	if w.Field != "" && index == 0 {
+		return w
+	}
+	w.Field = ""
+	if w.X == 0 && w.Y == 0 {
+		// No coordinates asked for: the default column, one box per party.
+		w.X = WidgetX
+		w.Y = WidgetY + WidgetStride*float64(index)
+		return w
+	}
+	// The caller named a spot. Successive parties still need a row of their own,
+	// so the stack grows the same way the default column does — upward, because
+	// the origin is the bottom-left of the page. A base of {X:60, Y:60} therefore
+	// reproduces the default column exactly, and a base that only names a page
+	// differs from the old fixed placement by that page and nothing else.
+	w.Y = w.Y + WidgetStride*float64(index)
+	return w
+}
+
+// PartyIndex is the slot a party occupies in the stack. It is the party's
+// position in the envelope's signing order, not its position in the batch that
+// is running now: an envelope where party 1 has already signed and party 2 has
+// not must leave party 1's signature where it is and place party 2 below it.
+// Numbering the stack from the batch instead re-paints the whole column on
+// every late signature, and in a partial signing the late party would land on
+// top of the one who signed first.
+func PartyIndex(orderIdx int) int {
+	if orderIdx < 1 {
+		return 0
+	}
+	return orderIdx - 1
 }
 
 // normalizeWidget fills in the defaults: page 1, the standard size.

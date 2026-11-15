@@ -1,0 +1,362 @@
+{
+  "cmd/pdf-go/admin_test.go": {
+    "SecretdGVzdC1zZWNyZXQtdGhhdC1pcy1sb25nLWVub3VnaC0zMmJ5dGVz": {
+      "File": "cmd/pdf-go/admin_test.go",
+      "Line_no": [
+        17,
+        42,
+        78,
+        85,
+        91,
+        116,
+        128,
+        137,
+        139,
+        141,
+        216,
+        253,
+        276
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "Secret",
+        "dGVzdC1zZWNyZXQtdGhhdC1pcy1sb25nLWVub3VnaC0zMmJ5dGVz"
+      ]
+    }
+  },
+  "cmd/signsrv/chores.go": {
+    "passwordu.HasPassword,": {
+      "File": "cmd/signsrv/chores.go",
+      "Line_no": [
+        229,
+        258,
+        285,
+        302,
+        303,
+        314,
+        342,
+        358
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "password",
+        "u.HasPassword,",
+        "secret",
+        "u.HasSecret,"
+      ]
+    }
+  },
+  "cmd/signsrv/server.go": {
+    "Passwordcfg.SMTPPassword(),": {
+      "File": "cmd/signsrv/server.go",
+      "Line_no": [
+        229,
+        287,
+        313,
+        318
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "Password",
+        "cfg.SMTPPassword(),"
+      ]
+    }
+  },
+  "docs/build-and-test.md": {
+    "PasswordTestRefresh|TestLogout|TestClient|TestRequire|TestRateLimit|TestPathToken|TestSession": {
+      "File": "docs/build-and-test.md",
+      "Line_no": [
+        126,
+        134,
+        138,
+        140,
+        187,
+        190,
+        192,
+        205,
+        250,
+        269,
+        354,
+        355,
+        357,
+        359,
+        383,
+        385,
+        408,
+        409,
+        411,
+        441,
+        442,
+        509
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "Password",
+        "TestRefresh|TestLogout|TestClient|TestRequire|TestRateLimit|TestPathToken|TestSession",
+        "Token",
+        "TestSend|TestExpired|TestLinkExpiry|TestMailFailure|TestHostileName|TestNameWith"
+      ]
+    }
+  },
+  "e2e/e2e.go": {
+    "PASSWORDadminPass},": {
+      "File": "e2e/e2e.go",
+      "Line_no": [
+        71,
+        72,
+        79,
+        80,
+        90,
+        96,
+        103,
+        113,
+        291,
+        292,
+        416,
+        442,
+        444,
+        493,
+        535,
+        663,
+        720,
+        730,
+        1168,
+        1235,
+        1271,
+        1273,
+        1285,
+        1286,
+        1289,
+        1300,
+        1302
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "PASSWORD",
+        "adminPass},",
+        "password",
+        "adminPass,",
+        "token",
+        "adminTok,"
+      ]
+    }
+  },
+  "e2e/negatives13.go": {
+    "TOKENadminTok,": {
+      "File": "e2e/negatives13.go",
+      "Line_no": [
+        9,
+        12,
+        14,
+        50,
+        51,
+        58,
+        60,
+        61,
+        66,
+        69,
+        81,
+        86,
+        94,
+        98,
+        101,
+        158,
+        167,
+        170,
+        177,
+        178,
+        179,
+        182,
+        185,
+        187,
+        199,
+        210,
+        221,
+        258,
+        262,
+        274,
+        275,
+        282,
+        379,
+        382,
+        387,
+        396,
+        406
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "TOKEN",
+        "adminTok,"
+      ]
+    }
+  },
+  "internal/signauth/usertoken_test.go": {
+    "Secretc2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNl": {
+      "File": "internal/signauth/usertoken_test.go",
+      "Line_no": [
+        16,
+        18,
+        21,
+        39,
+        45,
+        48,
+        49,
+        50,
+        70,
+        74,
+        97,
+        98,
+        115,
+        130,
+        134,
+        149,
+        161,
+        162,
+        182,
+        200,
+        203,
+        204,
+        223,
+        227,
+        228,
+        235,
+        236,
+        247,
+        262,
+        265,
+        266,
+        273,
+        275,
+        276,
+        285,
+        292,
+        294,
+        305,
+        307
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "Secret",
+        "c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNl",
+        "Secret",
+        "cliSecret,"
+      ]
+    }
+  },
+  "internal/signstore/users.go": {
+    "SecrethasSecret": {
+      "File": "internal/signstore/users.go",
+      "Line_no": [
+        14,
+        21,
+        23,
+        28,
+        29,
+        37,
+        41,
+        42,
+        45,
+        91,
+        101,
+        102,
+        103,
+        105,
+        106,
+        107,
+        110,
+        118,
+        123,
+        124,
+        130,
+        139,
+        150,
+        161,
+        194,
+        196,
+        199,
+        216
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "Secret",
+        "hasSecret"
+      ]
+    }
+  },
+  "scripts/acceptance-05.sh": {
+    "TOKEN$D/signsrv.db": {
+      "File": "scripts/acceptance-05.sh",
+      "Line_no": [
+        24,
+        51,
+        66,
+        114,
+        115,
+        144,
+        149,
+        150,
+        151,
+        152,
+        226,
+        227,
+        229,
+        236,
+        238
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "TOKEN",
+        "$D/signsrv.db",
+        "TOKEN",
+        "$D/signsrv.jsonl"
+      ]
+    }
+  },
+  "web/admin/app.js": {
+    "tokenrefreshToken": {
+      "File": "web/admin/app.js",
+      "Line_no": [
+        1,
+        7,
+        8,
+        9,
+        10,
+        24,
+        44,
+        46,
+        50,
+        51,
+        98,
+        117,
+        119,
+        123,
+        124
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "token",
+        "refreshToken"
+      ]
+    }
+  },
+  "web/spa/app.js": {
+    "tokentokenFromPath(),": {
+      "File": "web/spa/app.js",
+      "Line_no": [
+        1,
+        8,
+        17,
+        20,
+        31,
+        38,
+        45,
+        218
+      ],
+      "Pattern": "(?i)['\"]?(password|passwd|token|api_key|secret|access_key|admin_pass|algolia_admin_key|algolia_api_key|alias_pass|aos_key|api_key_sid|apikey|apiSecret|app_debug|app_id|app_key|appkey|appkeysecret|application_key|appsecret|appspot|aws_access|aws_access_key_id|aws_key|aws_secret|aws_secret_key|aws_token|AWSSecretKey|b2_app_key|bintray_apikey|bintray_gpg_password|bintray_key|bintraykey|bluemix_api_key|bluemix_pass|browserstack_access_key|bucket_password|bucketeer_aws_access_key_id|bucketeer_aws_secret_access_key|built_branch_deploy_key|bx_password|cache_s3_secret_key|cattle_access_key|cattle_secret_key|certificate_password|ci_deploy_password|client_secret|client_zpk_secret_key|clojars_password|cloud_api_key|cloud_watch_aws_access_key|cloudant_password|cloudflare_api_key|cloudflare_auth_key|cloudinary_api_secret|cloudinary_name|codecov_token|connectionstring|consumer_key|consumer_secret|credentials|cypress_record_key|database_password|database_schema_test|datadog_api_key|datadog_app_key|db_password|db_server|db_username|dbpasswd|dbpassword|deploy_password|digitalocean_ssh_key_body|digitalocean_ssh_key_ids|docker_hub_password|docker_key|docker_pass|docker_passwd|docker_password|dockerhub_password|dockerhubpassword|droplet_travis_password|dynamoaccesskeyid|dynamosecretaccesskey|elastica_host|elastica_port|elasticsearch_password|encryption_key|encryption_password|env.heroku_api_key|env.sonatype_password|eureka.awssecretkey)['\"]?[\\s]?[=:\\s\\|][\\s]*?['\"]?([^'\"\\s]+)['\"]?",
+      "Matches": [
+        "token",
+        "tokenFromPath(),"
+      ]
+    }
+  }
+}

@@ -300,6 +300,10 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 	}
 	sum := signfill.Summarize(rep)
 
+	if err := checkWidget(filled, r.Widget); err != nil {
+		return nil, err
+	}
+
 	now := time.Now().UTC()
 	if d.Clock != nil {
 		now = d.Clock().UTC()
@@ -355,6 +359,14 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 		ExpiresAt:   expiresAt,
 		CreatedAt:   formatTime(now),
 		NotifyEmail: r.NotifyEmail,
+		// The placement travels with the envelope. Until now the create
+		// accepted a widget, wrote it into the audit event, and the batch
+		// signed without it — so every signature landed on page 1 whatever the
+		// drafter asked for.
+		WidgetField: r.Widget.Field,
+		WidgetPage:  int64(r.Widget.Page),
+		WidgetX:     r.Widget.X,
+		WidgetY:     r.Widget.Y,
 	}
 
 	// One transaction for every row. If any insert fails the whole create is
@@ -434,7 +446,7 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 			"title":     r.Title,
 			"parties":   len(r.Parties),
 			"expires":   expiresAt,
-			"widget":    r.Widget,
+			"widget":    widgetEventField(r.Widget),
 			"subject":   r.Subject,
 			"message":   r.Message,
 			"fill":      sum,

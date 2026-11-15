@@ -81,10 +81,17 @@ used: it would let a reader alter the document the parties consented to.
 line 1 typed signature text in the embedded handwriting font at 26pt,
 line 2 `{{Name}}` at 9pt grey, line 3 `{{Date}}` at 8pt grey, 1pt border.
 If the party supplied an image, `Image(...)` is placed on the left, text
-shifted right. Widget placement comes from the fill spec
-(`signature_field` name) when the template declares a signature field,
-otherwise from `SignOptions.Widget{Page,X,Y,W,H}`; default is bottom-right of
-page 1 crop box minus 36pt margins. `.Standard()` is not used (we control layout).
+shifted right. Widget placement comes from `SignOptions.Widget{Field,Page,X,Y,W,H}`:
+a `Field` names a signature field the document already carries, and `widget.go`
+resolves it to that field's own page and rectangle at signing time (the page list
+is walked, not the AcroForm, because the page number is the point). A name that
+is not in the document is not an error — the signature is still applied at the
+requested page — because a drifted template should not kill a live signing
+session. With neither field nor coordinates, the default is the bottom-right
+column of page 1. `PartyWidget(base, index)` stacks successive parties upward
+from `base`; `base` zero reproduces that default exactly, so envelopes created
+before placement existed sign where they always did. `.Standard()` is not used
+(we control layout).
 
 **Verify.** `verify.go` wraps `doc.Verify()` with: `TrustSelfSigned(true)`,
 `ExternalChecks(false)`, `MinRSAKeySize(2048)`, `HTTPTimeout(10s)`, context.

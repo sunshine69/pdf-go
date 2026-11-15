@@ -1,0 +1,14 @@
+batch-size: 8
+check-mode: letter+word
+debug: true
+defaultexclude: ebug
+exclude: .aig*
+fptn: .*
+group-index-a: []
+group-index-b: []
+path-exclude: []
+profile: ""
+regexp: []
+save-config: cred-detect-config.yaml
+skipbinary: true
+words-file: ""

@@ -15,7 +15,7 @@ import (
 var schemaSQL string
 
 // CurrentVersion is the schema version this build expects.
-const CurrentVersion = 6
+const CurrentVersion = 7
 
 type migration struct {
 	version int
@@ -58,6 +58,13 @@ var migrations = []migration{
 		// The drafter's address, added in step 14: a decline and a permanently
 		// failed invitation are otherwise invisible to the person who asked.
 		_, err := tx.ExecContext(ctx, schemaV6)
+		return err
+	}},
+	{version: 7, apply: func(ctx context.Context, tx *sql.Tx) error {
+		// The placement the create already asked for. Four nullable columns, so
+		// an envelope created before this version reads back as "the drafter
+		// named nothing", which is what it always meant.
+		_, err := tx.ExecContext(ctx, schemaV7)
 		return err
 	}},
 }

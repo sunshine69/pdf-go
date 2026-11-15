@@ -115,6 +115,16 @@ type Envelope struct {
 	// when an invitation can never be delivered. Empty means nobody asked to be
 	// told, and every envelope created before schema 6 is empty.
 	NotifyEmail string
+
+	// Widget is where the party signatures go. Every zero value means "the
+	// service chooses", which is what every envelope created before schema 7
+	// means: page 1, bottom-left column. The batch reads these and passes them
+	// to the signing service; before this they were recorded in the created
+	// event and then thrown away.
+	WidgetField string
+	WidgetPage  int64
+	WidgetX     float64
+	WidgetY     float64
 }
 
 // Party is a row of the parties table.

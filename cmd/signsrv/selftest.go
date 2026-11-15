@@ -111,7 +111,9 @@ func signSelftest(configPath, tsaOverride string, rest []string) int {
 			Reason:    "selftest",
 			Signature: p.sig,
 			TSAURL:    cfg.TSAURL,
-			Widget:    signpdf.PartyWidget(i),
+			// No base: the selftest document has one page and no signature
+			// field, so it wants the default column on page 1.
+			Widget: signpdf.PartyWidget(signpdf.Widget{}, i),
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "signsrv: party %d: %v\n", i+1, err)

@@ -263,6 +263,12 @@ func (d *Deps) runBatchItem(ctx context.Context, item *signstore.BatchItem) (*Ba
 	}
 
 	now := d.clock()
+	// The stack position is the party's place in the finished document, not
+	// their place in this batch. A batch re-claimed after one party has already
+	// signed starts counting at 0; using that number put the second signature on
+	// the first one's box, and the overlap is invisible until someone prints it.
+	stackBase := alreadySigned(parties, revisions)
+	widgetBase := widgetOf(env)
 	order := make([]signstore.Party, 0, len(parties))
 	for _, p := range parties {
 		if p.Status == signstore.PartyConsented && !signed[p.ID] {
@@ -288,7 +294,7 @@ func (d *Deps) runBatchItem(ctx context.Context, item *signstore.BatchItem) (*Ba
 			Signature: c.SignatureText,
 			Image:     image,
 			Now:       now,
-			Widget:    partyWidget(i),
+			Widget:    partyWidget(widgetBase, stackBase+i),
 			TSAURL:    d.TSAOverride,
 		})
 		if err != nil {
@@ -576,13 +582,27 @@ func (d *Deps) consentImage(ctx context.Context, c *signstore.Consent) ([]byte, 
 	return nil, nil
 }
 
-// partyWidget places the signature widgets down the first page. It defers to
-// signpdf so that the box size and the spacing between boxes have one
-// definition: the stride has to clear the height of a box, and a stack whose
-// spacing is written in a second place can drift back into overlapping without
-// anything noticing.
-func partyWidget(index int) signpdf.Widget {
-	return signpdf.PartyWidget(index)
+// partyWidget places one signature, given where the envelope said the
+// signatures go and how far down the stack this party is. It defers to signpdf
+// so that the box size and the spacing between boxes have one definition: the
+// stride has to clear the height of a box, and a stack whose spacing is written
+// in a second place can drift back into overlapping without anything noticing.
+func partyWidget(base signpdf.Widget, index int) signpdf.Widget {
+	return signpdf.PartyWidget(base, index)
+}
+
+// widgetOf turns the envelope's stored placement back into a widget. The
+// columns are NULL when the drafter named nothing, which scans as the zero
+// value, which is exactly what signpdf reads as "choose for me" — so an
+// envelope created before there were widget columns, and one created without a
+// widget, both land on the default stack.
+func widgetOf(env *signstore.Envelope) signpdf.Widget {
+	return signpdf.Widget{
+		Field: env.WidgetField,
+		Page:  int(env.WidgetPage),
+		X:     env.WidgetX,
+		Y:     env.WidgetY,
+	}
 }
 
 // alreadySigned counts the parties this envelope already has a signature

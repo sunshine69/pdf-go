@@ -1,6 +1,7 @@
 package pdf
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,6 +21,33 @@ func Load(path string, password string) (*model.Document, *model.Encrypt, error)
 	// Pages are addressed by index, so flatten the tree once.
 	_ = doc.Catalog.Pages.Flatten()
 	return &doc, enc, nil
+}
+
+// PageCount counts the pages of an in-memory PDF. It exists because the
+// signature placement is validated against the document that will carry the
+// signatures, and at create time that document is bytes in a variable, not a
+// file on disk.
+func PageCount(data []byte) (int, error) {
+	doc, _, err := reader.ParsePDFReader(bytes.NewReader(data), reader.Options{})
+	if err != nil {
+		return 0, fmt.Errorf("read pdf: %w", err)
+	}
+	pages := doc.Catalog.Pages.Flatten()
+	return len(pages), nil
+}
+
+// FieldPages reports the page and rectangle of every form field in an
+// in-memory PDF, keyed by fully qualified field name. The signature widget can
+// name a field, and a name that is not in the document is a typo the drafter
+// should hear about at create, not a signature that silently lands on page 1.
+func FieldPages(data []byte) (map[string]FieldTarget, error) {
+	doc, _, err := reader.ParsePDFReader(bytes.NewReader(data), reader.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("read pdf: %w", err)
+	}
+	// Targets resolves each field's widget annotation back to its page, so the
+	// page numbers it reports are 1-based and match what the signers see.
+	return Targets(&doc), nil
 }
 
 // commonFlagNames are the flags shared by every field type.

@@ -93,7 +93,8 @@ func (s *Store) Tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 // ---------- envelopes ----------
 
 const envelopeCols = "id, title, status, template_sha, filled_sha, current_sha, serial," +
-	" created_by, created_at, updated_at, expires_at, sent_at, delivered_at, cancelled_at, notify_email"
+	" created_by, created_at, updated_at, expires_at, sent_at, delivered_at, cancelled_at, notify_email," +
+	" widget_field, widget_page, widget_x, widget_y"
 
 // CreateEnvelope inserts a new envelope. Status is validated; the allowed
 // transitions are checked by signflow, not here.
@@ -109,11 +110,30 @@ func (s *Store) CreateEnvelope(ctx context.Context, e *Envelope) error {
 	}
 	e.UpdatedAt = timeNow()
 	_, err := s.db.ExecContext(ctx,
-		"insert into envelopes("+envelopeCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"insert into envelopes("+envelopeCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		e.ID, e.Title, string(e.Status), e.TemplateSHA, e.FilledSHA, e.CurrentSHA, e.Serial,
 		createdBy(e.CreatedBy), e.CreatedAt, e.UpdatedAt, e.ExpiresAt,
-		e.SentAt, e.DeliveredAt, e.CancelledAt, notifyEmail(e.NotifyEmail))
+		e.SentAt, e.DeliveredAt, e.CancelledAt, notifyEmail(e.NotifyEmail),
+		notifyEmail(e.WidgetField), widgetPage(e.WidgetPage), widgetCoord(e.WidgetX), widgetCoord(e.WidgetY))
 	return err
+}
+
+// widgetPage and widgetCoord store "the caller named no page / no coordinate" as
+// NULL rather than as 0, so one stored fact has one representation. On read the
+// zero value means no opinion, which is what every envelope predating this
+// column already meant — they carry NULL, and NULL reads back as 0.
+func widgetPage(v int64) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+func widgetCoord(v float64) any {
+	if v == 0 {
+		return nil
+	}
+	return v
 }
 
 // createdBy writes NULL when there is no creator row, so "no admin created
@@ -213,12 +233,17 @@ func scanRow(r rowScanner, cols ...any) error {
 	vals := make([]any, len(cols))
 	nulls := make([]sql.NullString, len(cols))
 	nullInts := make([]sql.NullInt64, len(cols))
+	nullFloats := make([]sql.NullFloat64, len(cols))
 	for i, c := range cols {
 		switch c.(type) {
 		case *string:
 			vals[i] = &nulls[i]
 		case *int64:
 			vals[i] = &nullInts[i]
+		case *float64:
+			// A NULL coordinate is "the caller named none", and scanning NULL
+			// straight into a float64 is an error rather than a zero.
+			vals[i] = &nullFloats[i]
 		default:
 			vals[i] = c
 		}
@@ -232,6 +257,8 @@ func scanRow(r rowScanner, cols ...any) error {
 			*p = nulls[i].String
 		case *int64:
 			*p = nullInts[i].Int64
+		case *float64:
+			*p = nullFloats[i].Float64
 		}
 	}
 	return nil
@@ -242,7 +269,8 @@ func scanEnvelope(r rowScanner) (*Envelope, error) {
 	var status string
 	err := scanRow(r, &e.ID, &e.Title, &status, &e.TemplateSHA, &e.FilledSHA, &e.CurrentSHA,
 		&e.Serial, &e.CreatedBy, &e.CreatedAt, &e.UpdatedAt, &e.ExpiresAt,
-		&e.SentAt, &e.DeliveredAt, &e.CancelledAt, &e.NotifyEmail)
+		&e.SentAt, &e.DeliveredAt, &e.CancelledAt, &e.NotifyEmail,
+		&e.WidgetField, &e.WidgetPage, &e.WidgetX, &e.WidgetY)
 	e.Status = EnvelopeStatus(status)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound

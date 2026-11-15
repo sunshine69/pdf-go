@@ -52,10 +52,22 @@ type PartyOptions struct {
 }
 
 // Widget is the on-page placement of a signature appearance.
+//
+// Every field is optional and every default is the same one the service has
+// always used: page 1, bottom-right of the crop box inside 36 pt of margin,
+// 220x80. Nothing here forces a caller to know the document's geometry.
 type Widget struct {
-	Page int // 1-based; 0 means 1
-	X, Y float64
-	W, H float64
+	// Field names a signature field already in the document. When it is set and
+	// X/Y are not, the widget is placed on the page that field's own widget sits
+	// on, at that field's own rectangle — this is what puts signatures on page 17
+	// of a 40-page contract instead of piling up on page 1. X and Y are the more
+	// specific instruction and always win when both are given; a Field that
+	// cannot be found falls back to Page/X/Y rather than failing the signature,
+	// because a signature in the wrong corner beats a signing session that died.
+	Field string
+	Page  int // 1-based; 0 means 1
+	X, Y  float64
+	W, H  float64
 }
 
 // Out is the result of one signing pass.
@@ -275,6 +287,17 @@ func (s *Service) SignParty(ctx context.Context, in []byte, o PartyOptions) (*Ou
 		return nil, fmt.Errorf("signpdf: open: %w", err)
 	}
 	w := normalizeWidget(o.Widget)
+	// A named signature field moves the appearance to that field's own page and
+	// rectangle before anything else is computed. A miss is not an error: the
+	// signature is still applied at the requested page and corner. A signing
+	// session that dies over a template whose field name drifted is worse than
+	// one placed in the default corner, and the party has no way to fix the
+	// template from where they are standing.
+	if w.Field != "" {
+		if a, ok := findFieldWidget(doc, w.Field); ok {
+			w = anchorWidget(w, a)
+		}
+	}
 	wx, wy, err := placement(doc, w)
 	if err != nil {
 		return nil, err

@@ -120,6 +120,15 @@ including `values`, `logos`, `paints`, and `lockForm`. A single spec file
 produces the same fill through the CLI and through the API, and the acceptance
 script asserts that the two agree.
 
+`widget` is where the signatures go: `{"field":"...", "page":N, "x":N, "y":N}`,
+all optional. It is stored on the envelope (schema 7) and read back by the batch,
+which signs each party on that page, stacked upward from that spot; `field`
+anchors to a signature field the document carries. The create validates it
+against the *certified* document — a page past the end, or a field name that is
+not in the template, is a 400 at create, not a signature in the wrong place
+hours later. An empty `widget` means the service chooses, and chooses the default
+column on page 1.
+
 The response is `{envelope, fill, links, request}`. `links` carries the raw
 tokens: they exist in this response and nowhere else, the database stores
 `token_hash`, and the log never sees them.
