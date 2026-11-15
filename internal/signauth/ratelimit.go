@@ -36,7 +36,15 @@ const (
 	// queue row per party and, when a sender is configured, renders and sends
 	// each message. It is cheaper than a create and more expensive than a read,
 	// so it gets its own bucket: a client that spam-sends cannot exhaust the
-	// create budget, and cannot use send to mail a party thousands of times.
+	// create budget.
+	//
+	// Since send became the repeatable mailing action, this bucket is also the
+	// only thing standing between an insistent operator and a party's inbox. A
+	// second send while the first is still queued is free — the queue holds at
+	// most one unsent row per party per kind, so extra clicks add nothing. A
+	// second send after the first has gone out is genuinely another message,
+	// which is what the button is for. The tight guard against a mail cannon is
+	// RemindLimit below, which still rides the remind route.
 	SendLimit = 30
 
 	// RemindLimit is the budget of the remind endpoint, counted per envelope

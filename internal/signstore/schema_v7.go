@@ -10,7 +10,7 @@ package signstore
 // the caller asked for. A drafter who specified page 4 got page 1 and no error,
 // which is the worst kind of wrong answer.
 //
-// Three columns rather than one JSON blob, for the same reason the rest of this
+// Four columns rather than one JSON blob, for the same reason the rest of this
 // schema is flat: the batch reads them on every signature, and a page number
 // that has to be unmarshalled is a page number that can be silently malformed.
 // A zero page and zero coordinates mean "the service decides", which is exactly

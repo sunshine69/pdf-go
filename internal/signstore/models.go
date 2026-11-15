@@ -129,13 +129,17 @@ type Envelope struct {
 
 // Party is a row of the parties table.
 type Party struct {
-	ID           string
-	EnvelopeID   string
-	OrderIdx     int
-	Email        string
-	Name         string
-	Status       PartyStatus
-	TokenHash    string
+	ID         string
+	EnvelopeID string
+	OrderIdx   int
+	Email      string
+	Name       string
+	Status     PartyStatus
+	TokenHash  string
+	// TokenRaw is the plaintext link, stored so a message can be rendered
+	// after the process that minted it has exited. The hash above is what
+	// authorises a signing request; this is what gets printed in an email.
+	TokenRaw     string
 	TokenExpires string
 	ClaimAt      string
 	ConsentAt    string

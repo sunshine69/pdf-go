@@ -142,9 +142,13 @@ func TestAdminKeyShownOnce(t *testing.T) {
 
 // The actions the detail page must offer. Each is a call the operator makes
 // from the envelope, not from a search box.
+//
+// There is no /remind here on purpose. It is the same call as /send now, and
+// two buttons that mail the same people with the same links is how operators
+// ended up guessing which one worked after a restart.
 func TestAdminDetailActionsExist(t *testing.T) {
 	b := mustRead(t, "app.js")
-	for _, want := range []string{"/send", "/remind", "/reissue", "/sign", "/cancel", "/audit.zip", "/document"} {
+	for _, want := range []string{"/send", "/reissue", "/sign", "/cancel", "/audit.zip", "/document"} {
 		if !strings.Contains(b, want) {
 			t.Fatalf("app.js has no action for %s", want)
 		}

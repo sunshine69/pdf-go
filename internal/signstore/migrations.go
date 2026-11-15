@@ -15,7 +15,7 @@ import (
 var schemaSQL string
 
 // CurrentVersion is the schema version this build expects.
-const CurrentVersion = 7
+const CurrentVersion = 8
 
 type migration struct {
 	version int
@@ -65,6 +65,13 @@ var migrations = []migration{
 		// an envelope created before this version reads back as "the drafter
 		// named nothing", which is what it always meant.
 		_, err := tx.ExecContext(ctx, schemaV7)
+		return err
+	}},
+	{version: 8, apply: func(ctx context.Context, tx *sql.Tx) error {
+		// The plaintext link, so a queued message survives a restart, and the
+		// unique index that makes "queue this party's invite" mean at most one
+		// unsent row rather than one per click.
+		_, err := tx.ExecContext(ctx, schemaV8)
 		return err
 	}},
 }

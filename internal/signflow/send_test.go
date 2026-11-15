@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sunshine69/pdf-go/internal/signmail"
+	"github.com/sunshine69/pdf-go/internal/signstore"
 	"github.com/sunshine69/pdf-go/web"
 )
 
@@ -75,7 +76,7 @@ func TestTokenLookupRoundTrip(t *testing.T) {
 	// the real store, not a fake, because the item is about the table.
 	d := newDeps(t)
 	ctx := context.Background()
-	if err := d.Store.SetPartyToken(ctx, "nope", sum, "2026-11-06T00:00:00Z"); err == nil {
+	if err := d.Store.SetPartyToken(ctx, "nope", sum, tok, "2026-11-06T00:00:00Z"); err == nil {
 		t.Fatal("a token of a missing party was stored")
 	}
 	if _, err := LookupLink(ctx, d.Store, tok, time.Now()); !errors.Is(err, ErrTokenUnknown) {
@@ -147,8 +148,107 @@ func TestSendProducesOneEmlPerParty(t *testing.T) {
 	}
 }
 
-// Acceptance 4: send twice -> the second call is a state conflict.
-func TestSendTwiceIsConflict(t *testing.T) {
+// Acceptance 4, restated: send twice is not an error and does not duplicate.
+//
+// The old contract refused the second call outright, which is what made the
+// button unusable the moment an invite went astray. The new contract is that
+// the button always works and the queue decides how many emails result:
+//
+//   - With a sender configured, each send drains what it queued, so a second
+//     send really does post a second email — that is the point of pressing it.
+//   - With no sender, the rows wait in the queue, and two clicks on a queue
+//     that has not run produce one row, not two.
+//
+// In both cases the link is the one minted at create.
+func TestSendTwiceWithASenderMailsTwice(t *testing.T) {
+	outbox := t.TempDir()
+	d := mailDeps(t, outbox)
+	in := sampleBytes(t)
+	created, err := d.Create(context.Background(), CreateRequest{
+		Template:  in,
+		Fill:      fillSpecFor(t, in),
+		Parties:   parties(1),
+		Title:     "NDA",
+		ExpiresIn: 48 * time.Hour,
+		Actor:     "api:test",
+		LinkBase:  "http://127.0.0.1:8090",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	envID := created.Envelope.ID
+	first, err := d.Send(context.Background(), envID, "api:test", time.Now())
+	if err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	second, err := d.Send(context.Background(), envID, "api:test", time.Now())
+	if err != nil {
+		t.Fatalf("second send: %v, want the call to be accepted", err)
+	}
+	if len(second) != 1 || second[0].Token != first[0].Token {
+		t.Fatalf("re-send changed the link: first %q, second %q",
+			first[0].Token, second[0].Token)
+	}
+	// Two drains, so two rows, both marked sent. The party is meant to receive
+	// the second copy; the first one is the copy they say never arrived.
+	rows, err := d.Store.CountMail(context.Background(), envID, KindInvite, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 2 {
+		t.Fatalf("%d invite rows after two drained sends, want 2", rows)
+	}
+	unsent, err := d.Store.CountMail(context.Background(), envID, KindInvite, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsent != 0 {
+		t.Fatalf("%d invite rows still unsent, want 0", unsent)
+	}
+}
+
+// TestSendTwiceWithNoSenderMailsOnce is the dedupe half. Nothing has drained
+// the queue between the clicks, so the second click finds the first click's
+// unsent row and revives it instead of adding a twin.
+func TestSendTwiceWithNoSenderMailsOnce(t *testing.T) {
+	d := newDeps(t) // no mailer: the queue is left as a restart would find it
+	in := sampleBytes(t)
+	created, err := d.Create(context.Background(), CreateRequest{
+		Template:  in,
+		Fill:      fillSpecFor(t, in),
+		Parties:   parties(1),
+		Title:     "NDA",
+		ExpiresIn: 48 * time.Hour,
+		Actor:     "api:test",
+		LinkBase:  "http://127.0.0.1:8090",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	envID := created.Envelope.ID
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := d.Send(ctx, envID, "api:test", time.Now()); err != nil {
+			t.Fatalf("send %d: %v", i+1, err)
+		}
+	}
+	rows, err := d.Store.CountMail(ctx, envID, KindInvite, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("%d unsent invite rows after three clicks, want 1", rows)
+	}
+	if env, err := d.Store.GetEnvelope(ctx, envID); err != nil {
+		t.Fatal(err)
+	} else if env.Status != signstore.StatusSent {
+		t.Fatalf("status after three sends: %s, want sent", env.Status)
+	}
+}
+
+// The old acceptance, kept as a shape check: only an envelope that has run its
+// course refuses a send.
+func TestSendOnAFinishedEnvelopeIsConflict(t *testing.T) {
 	outbox := t.TempDir()
 	d := mailDeps(t, outbox)
 	in := sampleBytes(t)
@@ -169,9 +269,11 @@ func TestSendTwiceIsConflict(t *testing.T) {
 	if _, err := d.Send(context.Background(), envID, "api:test", time.Now()); err != nil {
 		t.Fatalf("first send: %v", err)
 	}
-	_, err = d.Send(context.Background(), envID, "api:test", time.Now())
-	if !IsConflict(err) {
-		t.Fatalf("second send: %v, want a state conflict", err)
+	if _, err := d.Cancel(context.Background(), envID, "api:test", "wrong document"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if _, err := d.Send(context.Background(), envID, "api:test", time.Now()); !IsConflict(err) {
+		t.Fatalf("send on a cancelled envelope: %v, want a state conflict", err)
 	}
 }
 
@@ -551,5 +653,112 @@ func TestMailFailureLeavesEnvelopeStateAndNotifiesAdmin(t *testing.T) {
 	}
 	if env.Status != Sent {
 		t.Fatalf("status drifted to %q after the mail gave up", env.Status)
+	}
+}
+
+// restartDeps is one process. Calling it again over the same store is the
+// process after a restart: the signer and the mailer are rebuilt, and nothing
+// else is carried across except what is in the database and on disk.
+func restartDeps(t *testing.T, store *signstore.Store, outbox string) *Deps {
+	t.Helper()
+	d := newDeps(t) // a real signing service; its store is replaced below
+	d.Store = store
+	d.Flow = NewFlow(store)
+	r, err := signmail.NewRenderer(web.Templates())
+	if err != nil {
+		t.Fatalf("renderer: %v", err)
+	}
+	d.Mail = &Mailer{
+		Renderer: r,
+		Sender:   &signmail.FileSender{Dir: outbox},
+		From:     "signsrv@example.test",
+		LinkBase: "http://127.0.0.1:8090",
+	}
+	return d
+}
+
+// TestMailUnsignedWorksAfterARestart is the operator's question in one test:
+// the server stopped and came back, a party says the invite never arrived, can
+// the button be pressed?
+//
+// The answer used to depend on the process. A queue row stores the hash of a
+// link, and only the plaintext prints the URL, so after a restart the worker
+// could not render an invite for a party whose link the old process had minted:
+// it failed with "the link token is not available" and retried until it gave
+// up. The workaround was a chain of buttons, each with its own rule about what
+// a restart had invalidated.
+//
+// The plaintext is on the party row now, so the row the first process left
+// behind is enough for the second one.
+func TestMailUnsignedWorksAfterARestart(t *testing.T) {
+	outbox := t.TempDir()
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	first := restartDeps(t, store, outbox)
+	in := sampleBytes(t)
+	created, err := first.Create(ctx, CreateRequest{
+		Template:  in,
+		Fill:      fillSpecFor(t, in),
+		Parties:   parties(1),
+		Title:     "Restart test",
+		ExpiresIn: 48 * time.Hour,
+		Actor:     "api:test",
+		LinkBase:  "http://127.0.0.1:8090",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	envID := created.Envelope.ID
+
+	// Queue the invite without mailing it, so there is an unsent row for the
+	// restart to find: this is the state of a queue at the moment the process
+	// dies.
+	queued := restartDeps(t, store, outbox)
+	queued.Mail.Sender = nil
+	links, err := queued.Send(ctx, envID, "api:test", time.Now())
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("%d links, want 1", len(links))
+	}
+	sent := links[0].Token
+
+	// The restart: new Deps, same store, no memory of the token or the
+	// envelope or that anything was ever queued.
+	second := restartDeps(t, store, outbox)
+	after, err := second.Send(ctx, envID, "api:test", time.Now())
+	if err != nil {
+		t.Fatalf("send after restart: %v, want the queued invite to be mailable", err)
+	}
+	if len(after) != 1 || after[0].Token != sent {
+		t.Fatalf("the restart changed the link: before %q, after %q", sent, after[0].Token)
+	}
+
+	// The mail went out, and it carries the link from before the restart, so
+	// the address in the party's earlier inbox and the address in this message
+	// are the same address.
+	files, err := readDirFiles(outbox)
+	if err != nil {
+		t.Fatalf("read the outbox: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("nothing in the outbox after a restart")
+	}
+	carries := false
+	for _, f := range files {
+		if strings.Contains(string(f), sent) {
+			carries = true
+		}
+	}
+	if !carries {
+		t.Fatalf("none of the %d messages in the outbox carries the pre-restart token", len(files))
+	}
+
+	// The link resolves: the row authorised it before the restart and still
+	// does after, because the hash never moved.
+	if _, err := ResolveSigner(ctx, store, sent, time.Now()); err != nil {
+		t.Fatalf("the pre-restart link does not resolve after the restart: %v", err)
 	}
 }

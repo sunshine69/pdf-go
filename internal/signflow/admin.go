@@ -310,42 +310,22 @@ func (d *Deps) Cancel(ctx context.Context, envelopeID, actor, reason string) (*C
 	return res, nil
 }
 
-// Remind re-sends the invite to every party that has not yet had its say. The
-// rate limit (two in ten minutes) is enforced at the handler on the envelope
-// key, not here; nothing in this function refuses the second call.
+// Remind is Send. It is kept because the route and the rate limit exist, and
+// because a reminder row already in the queue still has to render.
+//
+// It used to be a second, different action: Remind queued kind "reminder" and
+// refused to touch a token it could not print, Send queued kind "invite" and
+// only ran on a ready envelope. Two buttons, two rules about which one worked
+// after a restart, and neither one obviously the right thing to press. Now
+// that the link is stored in plaintext on the party row, Send can do the whole
+// job — mail everyone who has not signed, with the link they already hold —
+// so this is a thin alias rather than a second implementation.
 func (d *Deps) Remind(ctx context.Context, envelopeID, actor string) (int, error) {
-	env, err := d.Store.GetEnvelope(ctx, envelopeID)
+	links, err := d.Send(ctx, envelopeID, actor, d.clock())
 	if err != nil {
 		return 0, err
 	}
-	if env.Status != Sent && env.Status != Collecting {
-		return 0, ErrStateConflict
-	}
-	parties, err := d.Store.ListParties(ctx, envelopeID)
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, p := range parties {
-		if p.Status == signstore.PartyConsented || p.Status == signstore.PartyDeclined ||
-			p.Status == signstore.PartyExpired {
-			continue
-		}
-		if err := d.Store.EnqueueMail(ctx, envelopeID, p.ID, KindReminder, ""); err != nil {
-			return 0, err
-		}
-		n++
-	}
-	if err := d.Store.AddEvent(ctx, envelopeID, actor, "remind",
-		PayloadJSON(map[string]any{"parties": n})); err != nil {
-		return 0, err
-	}
-	if n > 0 && d.Mail != nil && d.Mail.Sender != nil {
-		if _, err := d.Drain(ctx, envelopeID, d.clock()); err != nil {
-			return 0, err
-		}
-	}
-	return n, nil
+	return len(links), nil
 }
 
 // ReissueResult reports the parties whose token was replaced, with their new
@@ -388,10 +368,9 @@ func (d *Deps) Reissue(ctx context.Context, envelopeID, actor string) (*ReissueR
 			return nil, err
 		}
 		exp := TokenExpiry(time.Now(), MaxLinkTTL, parseExpiry(env.ExpiresAt))
-		if err := d.Store.SetPartyToken(ctx, p.ID, HashLink(token), formatTime(exp)); err != nil {
+		if err := d.Store.SetPartyToken(ctx, p.ID, HashLink(token), token, formatTime(exp)); err != nil {
 			return nil, err
 		}
-		RememberToken(p.ID, token)
 		res.Reissued = append(res.Reissued, ReissuedParty{
 			PartyID: p.ID, Email: p.Email, Link: LinkFor(d.linkBase(), token)})
 	}

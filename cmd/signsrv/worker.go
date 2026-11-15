@@ -226,7 +226,7 @@ func (w *worker) drainMail(ctx context.Context) {
 			return
 		}
 		msg, err := signflow.Build(ctx, w.deps.Mail.Renderer, w.deps.Store, item,
-			w.deps.Mail.From, w.deps.Mail.LinkBase, signflow.RawToken(item.PartyID),
+			w.deps.Mail.From, w.deps.Mail.LinkBase,
 			w.partyCount(ctx, item.EnvelopeID), time.Now())
 		if err != nil {
 			w.failMail(ctx, item, err.Error())

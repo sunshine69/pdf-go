@@ -67,7 +67,43 @@ curl -sS -X POST -H "Authorization: Bearer $A" \
 ```
 
 - `spec.json` is `{"fill":{"values":{"Text1":"Kaykraft Pty Ltd", …}}}`.
-  `widget` and `subject` are optional siblings of `fill`.
+  `subject` and `widget` are optional siblings of `fill`.
+
+**3b. Say where the signatures go — the service does not guess.** There is no
+auto-detection: nothing scans the document for a "Sign here" line, and no page
+is inferred. `widget` decides it, and omitting it puts every signature in a
+220x80pt box at **X=60, Y=60 on page 1** — the bottom-left corner of page 1,
+which is legal and usually not what you meant.
+
+```json
+{"fill":{…},"widget":{"field":"SigClient"}}          // anchor on a form field
+{"fill":{…},"widget":{"page":3}}                     // default corner, page 3
+{"fill":{…},"widget":{"page":3,"x":72,"y":648}}      // exact spot, party 1
+```
+
+Coordinates are PDF points, origin at the **lower-left** of the page, y upwards
+(same as `rect` from `extract`). Multiple parties are stacked 90pt apart on that
+one page, each box above the previous. `{"field":…}` anchors **only the first**
+party on the field; the rest fall back to the stack, because the offset would
+walk them off the field it was anchored to.
+
+Get the names and geometry from the document first — `pdf-go fields contract.pdf`
+lists signature fields among its types, and `pdf-go pages contract.pdf` gives the
+page boxes:
+
+```sh
+pdf-go fields contract.pdf | grep -B1 '"signature"'   # candidate anchors
+pdf-go pages  contract.pdf                            # page size, crop box
+```
+
+A wrong field name or an out-of-range page **refuses the create** with
+`"field" "… is not a field of this document"` — it does not warn and carry on.
+The page is validated against the **filled** document, since `--spec` fill can
+add or drop pages, so page 3 on the template may not be page 3 afterwards.
+
+CLI: `--widget NAME`, `--widget-page N`, `--widget-x X`, `--widget-y Y`
+(the three coordinate flags are the same object; unset flags are omitted so the
+service default applies rather than "page 0").
 - `parties.json` is `[{"email":"…","name":"…","order":1,"title":"…"}]`, and
   `title` may be omitted.
 - Pass both with `-F "name=<file"`, **not** `-F "name=@file"`. `@` produces a
@@ -322,6 +358,19 @@ form, and cannot sign again.
 `complete: true` with every signer `valid: true` and `errors: []` is the pass
 condition. The signed PDF and the receipt are delivered to each party; the
 receipt names the digest, the certificate serial and the TSA stamp.
+
+That report proves the **cryptographic** signature is valid — it does not say the
+signature is in a sensible place on the page. A valid signature in the wrong
+corner is still valid. Render the page it should be on and look:
+
+```sh
+curl -sS -H "Authorization: Bearer $A" \
+  https://host.example/api/v1/envelopes/$EID/document -o signed.pdf
+pdftoppm -f 3 -l 3 -r 80 -png signed.pdf sig    # -f/-l = the page you placed it on
+```
+
+If it landed in the bottom-left of page 1 you did not set `widget`, and the fix
+is to create again with one — not to re-sign.
 
 ## Rules an agent must not break
 

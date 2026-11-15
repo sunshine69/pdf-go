@@ -276,8 +276,11 @@ async function showEnvelope(id) {
     });
     actions.appendChild(b);
   };
-  action("send", "/envelopes/" + encodeURIComponent(id) + "/send");
-  action("remind", "/envelopes/" + encodeURIComponent(id) + "/remind");
+  // One mailing button, safe to press as often as needed: it mails the parties
+  // who have not signed, with the links they already hold. "remind" used to sit
+  // beside it as a second, subtly different action, which meant guessing which
+  // one worked after a restart. The route still exists; the button does not.
+  action("mail unsigned", "/envelopes/" + encodeURIComponent(id) + "/send");
   action("reissue links", "/envelopes/" + encodeURIComponent(id) + "/reissue");
   action("sign now", "/envelopes/" + encodeURIComponent(id) + "/sign");
   const cancelBtn = el("button", "cancel");

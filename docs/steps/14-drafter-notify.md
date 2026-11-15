@@ -58,7 +58,10 @@ drafter rather than to a party. `mail_queue` grows two columns for that:
   drafter the address is wrong; "it failed" tells them nothing.
 - **A reminder does not earn a notice.** The party may have the original invite
   and simply not have used it yet. A reminder giving up is a symptom, not a
-  finding.
+  finding. This is also why the mailing button queues kind `invite` and not
+  `reminder`: the second copy of a link is sent precisely because the first one
+  may never have arrived, and a message sent for that reason deserves the notice
+  if it bounces.
 
 ## 4. Tests
 

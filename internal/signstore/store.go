@@ -288,7 +288,7 @@ type rowScanner interface {
 
 // ---------- parties ----------
 
-const partyCols = "id, envelope_id, order_idx, email, name, status, token_hash," +
+const partyCols = "id, envelope_id, order_idx, email, name, status, token_hash, token_raw," +
 	" token_expires_at, claim_at, consent_at, delivered_at, session_hash, reason"
 
 // CreateParty inserts a party. A duplicate (envelope_id, email) or
@@ -305,8 +305,8 @@ func (s *Store) CreateParty(ctx context.Context, p *Party) error {
 		return fmt.Errorf("signstore: party token_expires_at is required")
 	}
 	_, err := s.db.ExecContext(ctx,
-		"insert into parties("+partyCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		p.ID, p.EnvelopeID, p.OrderIdx, p.Email, p.Name, string(p.Status), p.TokenHash,
+		"insert into parties("+partyCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		p.ID, p.EnvelopeID, p.OrderIdx, p.Email, p.Name, string(p.Status), p.TokenHash, p.TokenRaw,
 		p.TokenExpires, p.ClaimAt, p.ConsentAt, p.DeliveredAt, p.SessionHash, p.Reason)
 	return err
 }
@@ -323,7 +323,7 @@ func (s *Store) ListParties(ctx context.Context, envelopeID string) ([]Party, er
 	for rows.Next() {
 		var p Party
 		if err := scanRow(rows, &p.ID, &p.EnvelopeID, &p.OrderIdx, &p.Email, &p.Name, &p.Status,
-			&p.TokenHash, &p.TokenExpires, &p.ClaimAt, &p.ConsentAt, &p.DeliveredAt,
+			&p.TokenHash, &p.TokenRaw, &p.TokenExpires, &p.ClaimAt, &p.ConsentAt, &p.DeliveredAt,
 			&p.SessionHash, &p.Reason); err != nil {
 			return nil, err
 		}
@@ -337,7 +337,7 @@ func (s *Store) GetParty(ctx context.Context, id string) (*Party, error) {
 	row := s.db.QueryRowContext(ctx, "select "+partyCols+" from parties where id = ?", id)
 	var p Party
 	err := scanRow(row, &p.ID, &p.EnvelopeID, &p.OrderIdx, &p.Email, &p.Name, &p.Status,
-		&p.TokenHash, &p.TokenExpires, &p.ClaimAt, &p.ConsentAt, &p.DeliveredAt,
+		&p.TokenHash, &p.TokenRaw, &p.TokenExpires, &p.ClaimAt, &p.ConsentAt, &p.DeliveredAt,
 		&p.SessionHash, &p.Reason)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -359,7 +359,7 @@ func (s *Store) GetPartyByTokenHash(ctx context.Context, hash string) (*Party, e
 	row := s.db.QueryRowContext(ctx, "select "+partyCols+" from parties where token_hash = ?", hash)
 	var p Party
 	err := scanRow(row, &p.ID, &p.EnvelopeID, &p.OrderIdx, &p.Email, &p.Name, &p.Status,
-		&p.TokenHash, &p.TokenExpires, &p.ClaimAt, &p.ConsentAt, &p.DeliveredAt,
+		&p.TokenHash, &p.TokenRaw, &p.TokenExpires, &p.ClaimAt, &p.ConsentAt, &p.DeliveredAt,
 		&p.SessionHash, &p.Reason)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -380,7 +380,7 @@ func (s *Store) GetPartyBySessionHash(ctx context.Context, hash string) (*Party,
 	row := s.db.QueryRowContext(ctx, "select "+partyCols+" from parties where session_hash = ?", hash)
 	var p Party
 	err := scanRow(row, &p.ID, &p.EnvelopeID, &p.OrderIdx, &p.Email, &p.Name, &p.Status,
-		&p.TokenHash, &p.TokenExpires, &p.ClaimAt, &p.ConsentAt, &p.DeliveredAt,
+		&p.TokenHash, &p.TokenRaw, &p.TokenExpires, &p.ClaimAt, &p.ConsentAt, &p.DeliveredAt,
 		&p.SessionHash, &p.Reason)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -423,13 +423,19 @@ func (s *Store) UpdatePartyStatus(ctx context.Context, id string, status PartySt
 
 // SetPartyToken sets or replaces a party's signing token hash and its
 // expiry. Reissuing a link uses this: the old hash stops resolving.
-func (s *Store) SetPartyToken(ctx context.Context, id, hash, expiresAt string) error {
-	if hash == "" || expiresAt == "" {
-		return fmt.Errorf("signstore: party token hash and expiry are required")
+// SetPartyToken records a party's link token: its hash, which is what a
+// presented link is matched against, and the plaintext, which is what an email
+// prints. Both are required. A stored hash with no plaintext beside it is a
+// live signing request that cannot be mailed by any later process, which is the
+// failure this column exists to make impossible, so it is refused at the write
+// rather than discovered the next time someone clicks send.
+func (s *Store) SetPartyToken(ctx context.Context, id, hash, raw, expiresAt string) error {
+	if hash == "" || raw == "" || expiresAt == "" {
+		return fmt.Errorf("signstore: party token hash, raw token and expiry are required")
 	}
 	res, err := s.db.ExecContext(ctx,
-		"update parties set token_hash = ?, token_expires_at = ? where id = ?",
-		hash, expiresAt, id)
+		"update parties set token_hash = ?, token_raw = ?, token_expires_at = ? where id = ?",
+		hash, raw, expiresAt, id)
 	if err != nil {
 		return err
 	}
@@ -933,11 +939,60 @@ func (s *Store) EnqueueMail(ctx context.Context, envelopeID, partyID, kind, sha2
 // invitation that never arrived. The row's own last_error is not enough,
 // because that column belongs to the notice and gets overwritten the first
 // time the notice itself fails to send.
+// A second request for the same message does not add a row. Every producer of
+// queue rows already means "at most one invite for this party", and each one
+// filters by party status before inserting, but the insert used to be
+// unconditional: an operator clicking the same button twice wrote two rows and
+// the party got two copies of the same email. The partial unique index on the
+// unsent rows states that intent, and this upsert honours it.
+//
+// On conflict the row is revived rather than left alone: next_at moves back to
+// now, and the attempt count and last error are cleared. A row sitting in a
+// thirty-minute backoff after a transport failure is, from the operator's point
+// of view, a message they have just asked for again — the button means "mail
+// them now", and waiting out a backoff that began before the click is not what
+// anyone meant. lease_until is deliberately left as it is: a row in flight is
+// owned by whoever claimed it, and dropping its lease here would let a second
+// worker send the same message while the first is still sending it.
+//
+// The row's sha256, recipient and detail do update. A re-queue after a document
+// changed is asking for the new bytes, and the newest text describes the newest
+// failure.
 func (s *Store) EnqueueMailTo(ctx context.Context, envelopeID, partyID, recipient, kind, sha256, detail string) error {
 	_, err := s.db.ExecContext(ctx,
-		"insert into mail_queue(envelope_id, party_id, kind, sha256, next_at, recipient, detail) values(?,?,?,?,?,?,?)",
+		`insert into mail_queue(envelope_id, party_id, kind, sha256, next_at, recipient, detail)
+		 values(?,?,?,?,?,?,?)
+		 on conflict(envelope_id, party_id, kind) where sent_at is null
+		 do update set next_at = excluded.next_at, attempts = 0, last_error = null,
+		                   sha256 = excluded.sha256, recipient = excluded.recipient,
+		                   detail = excluded.detail`,
 		envelopeID, partyID, kind, sha256, timeNow(), notifyEmail(recipient), notifyEmail(truncate(detail, 400)))
 	return err
+}
+
+// CountMail answers "how many queue rows does this envelope have". The kind
+// may be empty to count all of them, and unsentOnly restricts the count to the
+// rows that have not gone out yet.
+//
+// This exists because the dedupe rule is otherwise invisible. The queue is the
+// only place a duplicate email would show up, and nothing read it, so "clicking
+// send twice mails the party once" was a claim about a table no one could
+// query.
+func (s *Store) CountMail(ctx context.Context, envelopeID, kind string, unsentOnly bool) (int, error) {
+	q := "select count(*) from mail_queue where envelope_id = ?"
+	args := []any{envelopeID}
+	if kind != "" {
+		q += " and kind = ?"
+		args = append(args, kind)
+	}
+	if unsentOnly {
+		q += " and sent_at is null"
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // ClaimMail takes the lease on one unsent message.

@@ -111,3 +111,44 @@ func TestPartyWidgetNormalisesAJunkPage(t *testing.T) {
 		}
 	}
 }
+
+func TestPlacementClampsAStackThatRunsOffTheTop(t *testing.T) {
+	// The consequence of clamping, which the word "clamp" does not convey: a
+	// stack that no longer fits does not walk off the page and does not error.
+	// Every remaining party is placed at the SAME maximum y, so the signatures
+	// pile up on one another and only the last one is legible.
+	//
+	// A drafter who places the base high on the page therefore gets a document
+	// that signs, verifies, and reads wrong. This pins the behaviour in
+	// executable form: the fix is to place the base lower, not to sign again.
+	doc, err := openForTest(testPDF(t))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	box, err := cropBox(doc, 1)
+	if err != nil {
+		t.Fatalf("crop box: %v", err)
+	}
+	maxY := box[3] - margin - AppearanceHeight
+
+	// A base with room for exactly two boxes: the third has nowhere to go.
+	base := maxY - WidgetStride
+	seen := map[float64]int{}
+	for i := 0; i < 3; i++ {
+		w := PartyWidget(Widget{Page: 1, X: WidgetX, Y: base}, i)
+		x, y, err := placement(doc, w)
+		if err != nil {
+			t.Fatalf("party %d: placement: %v", i, err)
+		}
+		if y > maxY {
+			t.Fatalf("party %d at y=%v is above the last legal y=%v", i, y, maxY)
+		}
+		if x != WidgetX {
+			t.Errorf("party %d moved to x=%v, want %v", i, x, WidgetX)
+		}
+		seen[y]++
+	}
+	if seen[maxY] < 2 {
+		t.Fatalf("expected the overflowing parties to share y=%v, got %v", maxY, seen)
+	}
+}

@@ -157,7 +157,7 @@ func TestTokenHashLookup(t *testing.T) {
 		t.Fatalf("empty token: %v, want ErrNotFound", err)
 	}
 	// Reissuing the link drops the old hash.
-	if err := s.SetPartyToken(ctx, "p1", "deadbeef", "2031-01-01T00:00:00Z"); err != nil {
+	if err := s.SetPartyToken(ctx, "p1", "deadbeef", "rawtok", "2031-01-01T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.GetPartyByTokenHash(ctx, "cafebabe"); !errors.Is(err, ErrNotFound) {

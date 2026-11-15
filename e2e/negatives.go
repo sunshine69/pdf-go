@@ -584,11 +584,10 @@ func negCreate(title, expiresIn string, parties int) (string, []negLink, error) 
 	}
 	// Create leaves the request **ready**, and that is the gate: a party may
 	// not act on a request that has not been sent. Create mints the link
-	// tokens, and Send reuses them while the process still holds the plaintext
-	// (rawTokens), so in one process the create's token and the send's are the
-	// same string. The links handed back are the send's, because a request that
-	// is being acted on in these checks has been sent, and a process that
-	// restarted would have re-issued them. The send rides the same client key
+	// tokens, and Send reuses them — the plaintext is on the party row, so the
+	// create's token and the send's are the same string in any process, before
+	// or after a restart. The links handed back are the send's, because a
+	// request being acted on in these checks has been sent. The send rides the same client key
 	// the create did: sending is an envelope write, not an admin action.
 	//
 	// A request created with a deadline is the exception. The expired-link

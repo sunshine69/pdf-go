@@ -20,10 +20,11 @@ import (
 // are pinned here rather than left to be inferred from send.go.
 //
 //	who mints the token       Create, for every party.
-//	who can reuse it          Send, while the plaintext is still in this
-//	                          process's memory (rawTokens); a process that
-//	                          restarted mints a fresh token and re-hashes it.
-//	                          Re-sending invalidates the old token.
+//	who can reuse it          Send, in any process, for as long as the token is
+//	                          unexpired — the plaintext sits on the party row
+//	                          (parties.token_raw), not in memory. A restart
+//	                          changes nothing. Re-sending keeps the same token;
+//	                          only reissue replaces one.
 //	when may a party act      only once the request is sent. The link exists at
 //	                          create; the gate is the status.
 //	the image's type          comes from the bytes, never from the label in the
@@ -123,8 +124,19 @@ func TestCreateMintsTheLinkToken(t *testing.T) {
 func TestPartyCannotActOnAnUnsentRequest(t *testing.T) {
 	f := newLinkFixture(t)
 	ctx := context.Background()
-	if tok := RawToken(f.party); tok != f.token {
-		t.Fatalf("the create's plaintext is not the one in hand: %q vs %q", tok, f.token)
+	// The create's plaintext is the row's plaintext. It used to live in a
+	// process-wide map, which meant this assertion was really about "is the
+	// token still in this process's memory". It is now about the row, which is
+	// the thing that has to be true for any process to send the mail.
+	p, err := f.deps.Store.GetParty(context.Background(), f.party)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.TokenRaw != f.token {
+		t.Fatalf("the create's plaintext is not the one in hand: %q vs %q", p.TokenRaw, f.token)
+	}
+	if HashLink(p.TokenRaw) != p.TokenHash {
+		t.Fatal("the stored hash is not the hash of the stored plaintext")
 	}
 	if f.env.Status != Ready {
 		t.Fatalf("a created request is %s; this test is about a ready one", f.env.Status)
@@ -177,9 +189,16 @@ func TestSendReusesTheTokenOfARunningProcess(t *testing.T) {
 	if _, err := ResolveSigner(ctx, f.deps.Store, links[0].Token, time.Now()); err != nil {
 		t.Fatalf("the sent link does not resolve: %v", err)
 	}
-	// Re-sending is refused: a sent request is not re-dispatched by Send.
-	if _, err := f.deps.Send(ctx, f.env.ID, "api:test", time.Now()); !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("send on a sent request: %v, want %v", err, ErrStateConflict)
+	// Re-sending is allowed and sends the same link. This is the button an
+	// operator presses when a party says the invite never arrived, so it has
+	// to work on an envelope that is already sent, and it has to send the link
+	// that is already in the party's inbox rather than a new one.
+	again, err := f.deps.Send(ctx, f.env.ID, "api:test", time.Now())
+	if err != nil {
+		t.Fatalf("send on a sent request: %v", err)
+	}
+	if len(again) != 1 || again[0].Token != f.token {
+		t.Fatalf("re-send changed the link: %+v, want token %q", again, f.token)
 	}
 	// Reissue is what replaces a link, and it invalidates the old one: the
 	// party holding the first link is told it is dead, not served the request.

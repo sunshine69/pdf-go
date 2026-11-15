@@ -168,8 +168,10 @@ POST   /api/v1/auth/login | /auth/refresh
 POST   /api/v1/envelopes                    create (multipart: template, parties, fill spec)
 GET    /api/v1/envelopes?status=&q=         list
 GET    /api/v1/envelopes/{id}               detail: parties, consents, revisions
-POST   /api/v1/envelopes/{id}/send          certify (if not done) + email all parties
-POST   /api/v1/envelopes/{id}/remind        resend outstanding links
+POST   /api/v1/envelopes/{id}/send          email the parties who have not signed;
+                                            repeatable, reuses their existing links
+POST   /api/v1/envelopes/{id}/remind        deprecated alias of /send (rate limit
+                                            lives here; the admin UI no longer shows it)
 POST   /api/v1/envelopes/{id}/cancel
 POST   /api/v1/envelopes/{id}/sign          manual trigger of the signing batch (admin)
 GET    /api/v1/envelopes/{id}/document      current revision

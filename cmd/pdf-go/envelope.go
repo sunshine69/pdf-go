@@ -316,6 +316,39 @@ func (f *envelopeFlags) call(method, path string, body io.Reader, contentType st
 	return res.StatusCode, b, nil
 }
 
+// widgetSpec assembles the "widget" member of the create document from the
+// placement flags. It returns nil when nothing was asked for, which leaves the
+// key out entirely so the service applies its own default.
+//
+// The zero of each flag is deliberately not sent. A page of 0 and coordinates
+// of 0 would be read as "page 0" and the bottom-left origin, and the service
+// validates the page against the document: an unset flag would fail the create
+// instead of falling back.
+//
+// Nothing here is discovered from the document. There is no signature-field
+// auto-detection: --widget names a field the document already has, and the
+// service refuses the create when that name is absent, precisely so a
+// signature cannot silently land in the default corner.
+func widgetSpec(field string, page int, x, y float64) map[string]any {
+	w := map[string]any{}
+	if field != "" {
+		w["field"] = field
+	}
+	if page != 0 {
+		w["page"] = page
+	}
+	if x != 0 {
+		w["x"] = x
+	}
+	if y != 0 {
+		w["y"] = y
+	}
+	if len(w) == 0 {
+		return nil
+	}
+	return w
+}
+
 // ------------------------------------------------------------- create -------
 
 func envelopeCreate(args []string) int {
@@ -330,7 +363,10 @@ func envelopeCreate(args []string) int {
 	expires := fs.String("expires", "", "link lifetime, 72h or 3d")
 	notify := fs.String("notify", "", "address to tell if a party declines or an invitation cannot be delivered")
 	send := fs.Bool("send", false, "send the invitations after creating")
-	widget := fs.String("widget", "", "widget to lock the form to (empty means every field)")
+	widget := fs.String("widget", "", "name of the form field the signature is anchored on")
+	widgetPage := fs.Int("widget-page", 0, "page the signature stack is placed on (0 = page 1)")
+	widgetX := fs.Float64("widget-x", 0, "x of the signature stack, PDF points from the left")
+	widgetY := fs.Float64("widget-y", 0, "y of the signature stack, PDF points from the bottom")
 	if err := fs.Parse(args); err != nil {
 		return report.Usage
 	}
@@ -353,12 +389,14 @@ func envelopeCreate(args []string) int {
 		}
 		spec = s
 	}
-	// The widget is the signature appearance. An empty --widget means the
-	// service chooses, so the key is left out rather than sent as an empty
-	// string, which the service would read as a malformed object.
+	// The widget is where the signatures are drawn. Nothing is auto-detected:
+	// with no widget at all the service draws the stack at X=60,Y=60 on page 1,
+	// which is a legal but arbitrary spot. Each flag is omitted when unset so
+	// the service's own default applies, rather than being sent as a zero that
+	// would mean "page 0" or "the origin".
 	doc := map[string]any{"fill": spec}
-	if *widget != "" {
-		doc["widget"] = map[string]any{"field": *widget}
+	if w := widgetSpec(*widget, *widgetPage, *widgetX, *widgetY); w != nil {
+		doc["widget"] = w
 	}
 	if *subject != "" {
 		doc["subject"] = *subject

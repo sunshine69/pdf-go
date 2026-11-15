@@ -224,7 +224,7 @@ func (s *Store) ListUndeliveredParties(ctx context.Context, envelopeID string) (
 	for rows.Next() {
 		var p Party
 		if err := scanRow(rows, &p.ID, &p.EnvelopeID, &p.OrderIdx, &p.Email, &p.Name, &p.Status,
-			&p.TokenHash, &p.TokenExpires, &p.ClaimAt, &p.ConsentAt, &p.DeliveredAt,
+			&p.TokenHash, &p.TokenRaw, &p.TokenExpires, &p.ClaimAt, &p.ConsentAt, &p.DeliveredAt,
 			&p.SessionHash, &p.Reason); err != nil {
 			return nil, err
 		}

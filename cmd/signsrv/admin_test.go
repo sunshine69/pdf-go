@@ -262,15 +262,20 @@ func TestAdminRemindTwiceIsLimited(t *testing.T) {
 	if codeOf(t, out) != "rate_limited" {
 		t.Fatalf("problem type on the third remind: %q", codeOf(t, out))
 	}
-	// Both parties were mailed a reminder: the file sender names each message
-	// {kind}-{envelope}-{party}, so one reminder file per party is the proof.
+	// Both parties were mailed: the file sender names each message
+	// {kind}-{envelope}-{party}, so one invite file per party is the proof.
+	// The kind is "invite", not "reminder" — remind is now the send action
+	// under the old route, and an invite is what earns the drafter's notice
+	// when it bounces, which is the point of pressing the button again.
 	for _, p := range partyList(t, store, se.id) {
-		if !hasOutbox(t, cfg.Outbox, "reminder-"+se.id+"-"+p.ID) {
-			t.Fatalf("no reminder mail for party %s; outbox %v", p.ID, outboxFiles(t, cfg.Outbox))
+		if !hasOutbox(t, cfg.Outbox, "invite-"+se.id+"-"+p.ID) {
+			t.Fatalf("no invite mail for party %s; outbox %v", p.ID, outboxFiles(t, cfg.Outbox))
 		}
 	}
-	if n := eventOf(t, store, se.id, "remind"); n == nil {
-		t.Fatalf("no remind event; kinds %v", eventKinds(t, store, se.id))
+	// A re-send has no state change to record, so an explicit event is the only
+	// evidence in the trail that it happened.
+	if n := eventOf(t, store, se.id, "send"); n == nil {
+		t.Fatalf("no send event; kinds %v", eventKinds(t, store, se.id))
 	}
 	// A cancel on a collecting envelope is still allowed after the limit is hit,
 	// because the limit is per action.

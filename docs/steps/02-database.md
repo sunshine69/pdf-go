@@ -71,8 +71,19 @@ Indexes: `parties(token_hash)`, `parties(envelope_id,status)`,
 Key rules:
 
 - `token_hash`, `key_hash`, `pw_hash`: argon2id (passwords) / SHA-256 (opaque
-  tokens, machine keys). Raw token, raw key, raw password exist only in memory
-  for the response that prints them once.
+  tokens, machine keys). Raw key and raw password exist only in memory, for the
+  response that prints them once.
+- **The one exception: `parties.token_raw` (schema v8) holds the plaintext link
+  token.** The hash is still what authorises a signing request — nothing about
+  authorisation changed. The column exists because a link has to be *reprintable*
+  long after the process that minted it is gone: an email in the queue needs the
+  plaintext to print a URL, and a hash cannot produce one. Storing only the hash
+  meant every restart was an email-recovery event. A token is a 72-hour
+  capability, not a standing secret; at rest this store protects nothing the
+  file system and the backup policy do not already protect, and an
+  unrecoverable hash kept the token safe from a reader while making it unusable
+  by the owner — the worse of both. A database dump therefore contains live
+  links, and that is the accepted trade.
 - Status columns are validated in Go, not by SQL CHECK, so the state machine
   lives in one place (`internal/signflow`). Party status is
   `invited|claimed|consented|declined|expired`; envelope status is

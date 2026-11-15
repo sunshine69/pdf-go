@@ -18,7 +18,7 @@ const (
 	envelopeCols = "id, title, status, template_sha, filled_sha, current_sha, serial," +
 		" created_by, created_at, updated_at, expires_at, sent_at, delivered_at, cancelled_at, notify_email," +
 		" widget_field, widget_page, widget_x, widget_y"
-	partyCols = "id, envelope_id, order_idx, email, name, status, token_hash," +
+	partyCols = "id, envelope_id, order_idx, email, name, status, token_hash, token_raw," +
 		" token_expires_at, claim_at, consent_at, delivered_at, session_hash, reason"
 	revisionCols = "id, envelope_id, sha256, prev_id, kind, sig_field, party_id," +
 		" cert_serial, cert_fingerprint, produced_by, size, created_at"
@@ -61,8 +61,8 @@ func insertEnvelope(ctx context.Context, tx *sql.Tx, e *signstore.Envelope) erro
 
 func insertParty(ctx context.Context, tx *sql.Tx, p *signstore.Party) error {
 	_, err := tx.ExecContext(ctx,
-		"insert into parties("+partyCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		p.ID, p.EnvelopeID, p.OrderIdx, p.Email, p.Name, string(p.Status), p.TokenHash,
+		"insert into parties("+partyCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		p.ID, p.EnvelopeID, p.OrderIdx, p.Email, p.Name, string(p.Status), p.TokenHash, p.TokenRaw,
 		p.TokenExpires, p.ClaimAt, p.ConsentAt, p.DeliveredAt, p.SessionHash, p.Reason)
 	return err
 }

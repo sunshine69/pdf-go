@@ -46,7 +46,7 @@ independent facts read from the store, not assumed:
 
 | Check | Result |
 |---|---|
-| Is the token stored in the clear? | No. `parties` has `token_hash` only; a grep of every column finds no plaintext token. |
+| Is the token stored in the clear? | No — at the time of this audit. `parties` had `token_hash` only, and a grep of every column found no plaintext token. **Changed since, by design:** schema v8 added `parties.token_raw`. See `docs/steps/02-database.md` for why reprintability beat irreversibility here, and what it costs (a dump carries live links). The leak scenario above still behaves as recorded — a used link is still refused. |
 | Can the leaked link still be used? | No. `POST …/claim` → **410 `request_closed`**, `consent` → 410, `decline` → 410. The party is `consented`, so `partyOpen` refuses the claim. |
 | Does it outlive the request? | No. The link dies with the request; `token_expires_at` was 2026-11-10 and the envelope is `delivered`. |
 

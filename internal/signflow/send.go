@@ -75,11 +75,11 @@ type Resolver interface {
 
 // Build renders one queue row into a message. It reads the envelope and the
 // party, so a message carries the title, the signer, the link, and the deadline
-// that belong to that row. The store keeps only the token hash, so the caller
-// supplies the raw token; Send re-issues a token it has to, and the create
-// response records the value in memory.
+// that belong to that row, and it needs nothing from the caller beyond the row
+// itself. That is the point: a queued message is renderable by any process, in
+// any order, however long after the row was written.
 func Build(ctx context.Context, r *signmail.Renderer, res Resolver, item *signstore.MailItem,
-	mailFrom, linkBase, rawToken string, parties int, now time.Time) (*signmail.Message, error) {
+	mailFrom, linkBase string, parties int, now time.Time) (*signmail.Message, error) {
 	if r == nil {
 		return nil, ErrNoRenderer
 	}
@@ -95,9 +95,9 @@ func Build(ctx context.Context, r *signmail.Renderer, res Resolver, item *signst
 	// that has stopped working — a declined request closes every link in the
 	// envelope, and an undeliverable one never reached anyone who could use it
 	// — so printing one would hand out a URL that only answers 410. The token
-	// is not looked up, so a row of these kinds renders after a restart, when
-	// rawTokens is empty, instead of failing for three days and being given up
-	// on. The reason and the party's name come from the party row: that row is
+	// is not looked up at all for these kinds, so a row of them renders even
+	// for a party that never had a token, instead of failing for three days and
+	// being given up on. The reason and the party's name come from the party row: that row is
 	// who the message is *about*, even though it is not who it is addressed to.
 	d := signmail.Data{
 		Kind:      item.Kind,
@@ -114,15 +114,15 @@ func Build(ctx context.Context, r *signmail.Renderer, res Resolver, item *signst
 		Email:     p.Email,
 	}
 	if !toDrafter(item.Kind) {
-		token := rawToken
-		if token == "" {
-			token = RawToken(item.PartyID)
-		}
-		if token == "" {
+		// The row carries its own link. Nothing outside the database is needed
+		// to render a message, which is what makes a queue row survive a
+		// restart: the process that queued it can be gone and the text is still
+		// the same text.
+		if p.TokenRaw == "" {
 			return nil, fmt.Errorf("signflow: %s: party %s: the link token is not available",
 				item.Kind, item.PartyID)
 		}
-		d.Link = LinkFor(linkBase, token)
+		d.Link = LinkFor(linkBase, p.TokenRaw)
 	}
 	if item.Kind == KindReminder {
 		d.DaysLeft = remaining(now, p.TokenExpires)
@@ -237,21 +237,11 @@ func NotifyDrafter(ctx context.Context, store *signstore.Store, envelopeID, part
 	return env.NotifyEmail, nil
 }
 
-// rawTokens holds the plaintext link of a party, in memory only, for the
-// duration of the process. A queue row stores the hash, so a send that has to
-// re-issue a token can only render a link for a party whose raw value is in
-// memory. It is not a cache: it is cleared at restart, which is why a reminder
-// sent after a restart is built from a link the API reissues.
-var rawTokens = map[string]string{}
-
-// RememberToken records the plaintext link of a party for the send step.
-func RememberToken(partyID, token string) { rawTokens[partyID] = token }
-
-// RawToken returns the recorded plaintext link, empty if it is not in memory.
-func RawToken(partyID string) string { return rawTokens[partyID] }
-
-// ClearRawTokens drops every recorded link.
-func ClearRawTokens() { rawTokens = map[string]string{} }
+// The plaintext link of a party used to live in a process-wide map here, which
+// made the database the only place a link could not be read back from: a queued
+// message outlived the process that queued it, and could no longer be rendered.
+// It is a column now, so nothing about sending an email depends on which
+// process sends it or when the server last restarted.
 
 // remaining is the whole days left of a link.
 func remaining(now time.Time, expiresAt string) int {
@@ -282,11 +272,31 @@ func Enqueue(ctx context.Context, q Queue, envelopeID, partyID, kind, sha256 str
 	return q.EnqueueMail(ctx, envelopeID, partyID, kind, sha256)
 }
 
-// Send enqueues the invites of an envelope and transitions ready -> sent.
-// A party with no token, or a token whose deadline has passed, gets a new
-// token: a link that has already expired cannot be sent to a signer. When a
-// sender is configured, the queue is drained inside the call so the send is
-// finished when the response is written.
+// Send mails the parties of an envelope who have not signed. It is the one
+// mailing action, and it is safe to click as often as you like.
+//
+// A party is mailed when their status is invited or claimed — that is, they
+// have not consented, declined, or expired. A claimed party is one who opened
+// the link and stopped short of signing; their link still works, so another
+// copy of it is a help rather than a duplicate.
+//
+// The link is reused, not reissued: the token lives in the party's row, so the
+// address already in the party's inbox is the address being mailed, and it
+// keeps working. Only a party with no token, or one whose deadline has passed,
+// gets a new one — an expired link cannot be sent to a signer. Reissue is the
+// action that changes the address, and it is the one to reach for when the
+// link itself is the problem.
+//
+// ready -> sent is the only transition this makes. On an envelope already past
+// ready there is nothing to advance, and the call is a re-send: a bounced or
+// lost invite, a mistyped address, a queue row that outlived the process that
+// wrote it. Each queue row is written as an upsert, so clicking twice cannot
+// mail the same party twice — the second click finds the first click's
+// unsent row and leaves it alone. When the first click's mail already went,
+// the row is marked sent, and the second click legitimately queues a new one.
+//
+// When a sender is configured the queue is drained inside the call, so the
+// send is finished when the response is written.
 func (d *Deps) Send(ctx context.Context, envelopeID string, actor string, now time.Time) ([]Link, error) {
 	if d.Store == nil {
 		return nil, errors.New("signflow: Send has no store")
@@ -295,7 +305,7 @@ func (d *Deps) Send(ctx context.Context, envelopeID string, actor string, now ti
 	if err != nil {
 		return nil, err
 	}
-	if env.Status != Ready {
+	if env.Status != Ready && env.Status != Sent && env.Status != Collecting {
 		return nil, ErrStateConflict
 	}
 	parties, err := d.Store.ListParties(ctx, envelopeID)
@@ -305,7 +315,13 @@ func (d *Deps) Send(ctx context.Context, envelopeID string, actor string, now ti
 	links := make([]Link, 0, len(parties))
 	for i := range parties {
 		p := &parties[i]
-		if p.Status != signstore.PartyInvited {
+		// The audience is everyone who has not finished. A consented, declined
+		// or expired party has no use for another invite; an invited or claimed
+		// one might, which is the whole reason this call is repeatable. A
+		// claimed party is one who opened the link and stopped before signing,
+		// and their link still works, so sending it again is a help.
+		if p.Status == signstore.PartyConsented || p.Status == signstore.PartyDeclined ||
+			p.Status == signstore.PartyExpired {
 			continue
 		}
 		token, err := d.ensureToken(ctx, p, env, now)
@@ -328,7 +344,22 @@ func (d *Deps) Send(ctx context.Context, envelopeID string, actor string, now ti
 	// The transition goes through the machine, so it is in the table and
 	// audited. It happens after the queue rows exist: an envelope marked sent
 	// always has its invites queued.
-	if err := d.Flow.Transition(ctx, env, Sent, actor, `{"to":"sent"}`); err != nil {
+	//
+	// Only the first send transitions. A send on an envelope that is already
+	// past ready is a re-send — a bounced or lost invite, an address that was
+	// mistyped, a queue row that outlived the process that wrote it — and the
+	// state is already correct, so there is nothing to advance. Refusing it
+	// here is what used to make the button one-click-only and push operators
+	// at the remind and reissue buttons to do what send means.
+	if env.Status == Ready {
+		if err := d.Flow.Transition(ctx, env, Sent, actor, `{"to":"sent"}`); err != nil {
+			return nil, err
+		}
+	} else if err := d.Store.AddEvent(ctx, envelopeID, actor, "send",
+		`{"to":"`+string(env.Status)+`"}`); err != nil {
+		// A re-send has no state change to record, and the audit trail is the
+		// only evidence that it happened at all. Without this line the trail
+		// shows one send no matter how many were made.
 		return nil, err
 	}
 
@@ -352,26 +383,36 @@ func (d *Deps) linkBase() string {
 	return ""
 }
 
-// ensureToken returns the party's plaintext link, re-issuing when the party has
-// no token or the stored deadline has passed. The new token is stored as its
-// SHA-256, and the raw value is kept in memory so the invite can be rendered.
+// ensureToken returns the party's plaintext link, minting a new one only when
+// the party has no token or the stored deadline has passed. A minted token is
+// stored twice: as the SHA-256 that authorises the link, and in plaintext so
+// any later message can print it. The plaintext is not a secret in transit
+// (it is in the URL of the email) and not a secret at rest — filesystem
+// encryption is the operator's concern, not this table's.
 func (d *Deps) ensureToken(ctx context.Context, p *signstore.Party, env *signstore.Envelope, now time.Time) (string, error) {
 	if p.TokenHash != "" && !expired(p.TokenExpires, now) {
-		if t := RawToken(p.ID); t != "" {
-			return t, nil
+		// The token is the party's, unexpired, and its plaintext is beside it
+		// in the row. Nothing is re-minted, so clicking send again sends the
+		// same link: the button is safe to press twice, and a restart changes
+		// nothing about what it sends.
+		if p.TokenRaw != "" {
+			return p.TokenRaw, nil
 		}
+		// A row written before the plaintext column existed. The hash still
+		// authorises the link the party already holds, but there is no way to
+		// print it again, so a fresh token is the only honest answer.
 	}
 	token, err := NewLinkToken()
 	if err != nil {
 		return "", fmt.Errorf("signflow: link token: %w", err)
 	}
 	exp := TokenExpiry(now, envExpiryDuration(env, now), envExpiryTime(env))
-	if err := d.Store.SetPartyToken(ctx, p.ID, HashLink(token), formatTime(exp)); err != nil {
+	if err := d.Store.SetPartyToken(ctx, p.ID, HashLink(token), token, formatTime(exp)); err != nil {
 		return "", fmt.Errorf("signflow: store token: %w", err)
 	}
 	p.TokenHash = HashLink(token)
+	p.TokenRaw = token
 	p.TokenExpires = formatTime(exp)
-	RememberToken(p.ID, token)
 	return token, nil
 }
 
@@ -421,7 +462,7 @@ func (d *Deps) Drain(ctx context.Context, envelopeID string, now time.Time) (int
 			return sent, err
 		}
 		msg, err := Build(ctx, d.Mail.Renderer, d.Store, item, d.Mail.From, d.Mail.LinkBase,
-			RawToken(item.PartyID), len(parties), now)
+			len(parties), now)
 		if err != nil {
 			if err := d.failMail(ctx, item, now, err.Error()); err != nil {
 				return sent, err

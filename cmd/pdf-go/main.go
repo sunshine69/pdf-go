@@ -124,10 +124,12 @@ func usage() {
 
   pdf-go envelope create --server URL --template in.pdf --spec fill.json \
       --parties parties.json [--title T] [--expires 72h] [--send]
+      [--widget NAME | --widget-page N --widget-x X --widget-y Y]
       Upload the document and the fill spec, create the envelope, and print
       each party's signing link. The server URL comes from SIGNSRV_URL, the
       client token from SIGNSRV_TOKEN (or --token). The links are written to
-      envelope-<id>.links.json, mode 0600.
+      envelope-<id>.links.json, mode 0600. The widget flags say where the
+      signatures are drawn; see SIGNATURE POSITION below.
 
   pdf-go envelope get <id> | send <id> | report <id>
       Read the envelope, drive the send transition, or fetch the verification
@@ -665,6 +667,72 @@ PAINT (text baked into the page, not a form field)
   Fonts: Helvetica (+-Bold/-Oblique), Times (+-Bold/-Italic), Courier,
   Symbol, ZapfDingbats. Colors: "#rrggbb" or black/white/red/green/blue/
   yellow/grey/orange/navy.
+SIGNATURE POSITION
+  The service draws each party's signature itself, at signing time, when the
+  batch runs. Nothing about it is auto-detected: the service does not scan the
+  document for a line that says "Sign here", and does not guess a page. Where
+  the signature lands is decided by what you send at create, and by nothing else.
+
+  The box is 220 x 80 points (about 77 x 28 mm). Successive parties are stacked
+  90 points apart on the SAME page, so the box above never overprints the one
+  below. Coordinates are PDF points, origin at the LOWER-LEFT of the page, y
+  increasing upwards - the same convention as rect everywhere else in this tool.
+
+  The box is always inside the page's crop box minus a 36 pt margin, and a
+  placement asked for outside it is CLAMPED inside rather than refused. Clamping
+  has one consequence worth knowing: a stack that runs out of room does not walk
+  off the top of the page - every remaining party is clamped to the same highest
+  legal y, so their boxes pile up on each other and one signature is legible.
+  Nothing errors. Place the base low enough for the number of parties you have
+  (90 pt each) and check the rendered page afterwards.
+
+  Choose one of these; each is complete on its own:
+
+  1. --widget NAME        anchor on the widget of a form field called NAME.
+                          Use this when the document already has a signature
+                          field. Only the FIRST party is placed on the field;
+                          the rest fall back to the default stack, because the
+                          stack offset would walk them off the field. The box
+                          inherits that field's font and colour from its /DA.
+  2. --widget-page N      the whole stack on page N, at the default corner.
+  3. --widget-x X --widget-y Y
+                          the first party's box at (X,Y), lower-left corner,
+                          page 1 (add --widget-page to move pages). Each
+                          further party sits 90 points ABOVE.
+  4. nothing at all       page 1, box at X=60 Y=60. Legal, and almost never
+                          what you meant: a signature in the bottom-left corner
+                          of page 1, on top of whatever else is down there.
+
+  Combine 1 with 2/3 only to move parties 2+ about; the field wins for party 1.
+
+  A name that is not in the document is a REFUSED create, not a warning. That
+  is deliberate: the alternative is a signature in the default corner and a
+  silent success, which is the worst kind of mistake in a signing system. A
+  page number past the end of the document is refused for the same reason, and
+  checked against the FILLED document - the fill can add or remove pages, so
+  "3" may mean a different sheet than it did on the template you uploaded.
+  Negative x or y is refused too. The name resolves the way every other name in
+  this tool does: exact match first, then unique suffix, so "Sig" may stand for
+  "form1[0].#subform[0].Sig[0]" - but only while it matches exactly one field.
+
+  Find the names and the geometry first, before creating anything:
+
+    pdf-go fields contract.pdf              field names, incl. signature fields
+    pdf-go pages  contract.pdf              page size, crop box, widget count
+    pdf-go extract contract.pdf -o s.json   names + rect of every widget
+
+  A "signature" field is NOT fillable - you cannot put a value in it the way you
+  fill a text box. It is either an anchor for the signature the service draws
+  (--widget), or decoration you stamp yourself with a logo:
+
+    pdf-go add-logo contract.pdf sign.png --field signature --opacity 0.8
+
+  Check where the signatures actually landed, after signing, before treating the
+  document as delivered:
+
+    pdf-go envelope report <id>             the verification report
+    pdftoppm -f 1 -l 1 -r 80 -png signed.pdf page
+
 
 READING THE REPORT
   applied   fields whose value was written

@@ -380,7 +380,6 @@ func TestNoticeRendersWithoutTheRawToken(t *testing.T) {
 	if _, err := NotifyDrafter(ctx, f.deps.Store, f.envID, f.partyID, KindDeclined, "no reason needed"); err != nil {
 		t.Fatal(err)
 	}
-	ClearRawTokens()
 
 	item, err := f.deps.Store.ClaimMailFor(ctx, f.envID, time.Minute)
 	if err != nil {
@@ -390,9 +389,9 @@ func TestNoticeRendersWithoutTheRawToken(t *testing.T) {
 		t.Fatalf("claimed %q, want the declined notice", item.Kind)
 	}
 	msg, err := Build(ctx, f.deps.Mail.Renderer, f.deps.Store, item,
-		"signsrv@example.test", "http://127.0.0.1:8090", "", 2, time.Now())
+		"signsrv@example.test", "http://127.0.0.1:8090", 2, time.Now())
 	if err != nil {
-		t.Fatalf("build the notice after dropping the raw tokens: %v", err)
+		t.Fatalf("build the notice with no token in hand: %v", err)
 	}
 	if msg.To != "ann@corp.test" {
 		t.Fatalf("notice addressed to %q, want the drafter", msg.To)

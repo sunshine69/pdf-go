@@ -105,7 +105,9 @@ go test ./internal/signfill ./internal/signflow ./cmd/signsrv
 
 - [x] Fill format is the CLI fill JSON, no second invented schema
 - [x] Certification happens at create; certified file has all fields read-only
-- [x] Plaintext links exist only in the create/send response
+- [x] Plaintext links are returned by the create/send response, and also kept
+      in `parties.token_raw` so a message can be printed by any later process
+      (schema v8; the hash remains the authority)
 - [x] State transitions are table-driven, transactional, audited
 - [x] All create failures leave no partial rows (asserted)
 - Reviewer: ____________  Date: ________
@@ -128,6 +130,25 @@ against the *certified* document — a page past the end, or a field name that i
 not in the template, is a 400 at create, not a signature in the wrong place
 hours later. An empty `widget` means the service chooses, and chooses the default
 column on page 1.
+
+Nothing is auto-detected — no scan for a "Sign here" rule, no inferred page. Two
+details the shape of the object does not tell you:
+
+- `x`,`y` are PDF points with the origin at the **lower-left** of the page, the
+  same convention as `rect` in the extract schema. The box is 220x80 pt; party
+  `i` is placed at `y + 90*i`, so a stack grows upward and from the default
+  column (`x=60, y=60`) a page of 842 pt holds eight.
+- A placement outside the crop box (less a 36 pt margin) is **clamped** inside,
+  not refused. For one box that is a mercy. For a stack it is a trap: parties
+  that run out of room are all clamped to the same highest legal y and pile up on
+  top of one another, so a document signs, verifies, and reads wrong. The tell
+  for a signature "disappearing" on a many-party envelope is this, and the fix is
+  to place the base lower — signing again changes nothing.
+  `TestPlacementClampsAStackThatRunsOffTheTop` pins it.
+- `field` anchors **the first party only**. The stack offset would walk party 2
+  off the field it was anchored to, so the rest fall back to the default column.
+  Anchoring one field and expecting a row of signatures underneath it is the
+  usual way to be surprised.
 
 The response is `{envelope, fill, links, request}`. `links` carries the raw
 tokens: they exist in this response and nowhere else, the database stores

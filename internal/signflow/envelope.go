@@ -386,6 +386,7 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 			Name:         p.Name,
 			Status:       signstore.PartyInvited,
 			TokenHash:    HashLink(token),
+			TokenRaw:     token,
 			TokenExpires: formatTime(TokenExpiry(now, r.ExpiresIn, envExpiry)),
 			Reason:       p.Reason,
 		}
@@ -466,14 +467,6 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 	// outside the table.
 	if err := d.Flow.Transition(ctx, envelope, Ready, r.Actor, `{"to":"ready"}`); err != nil {
 		return nil, fmt.Errorf("signflow: ready: %w", err)
-	}
-
-	// The plaintext link lives in memory only, for the duration of the
-	// process, so the mail worker can render an invite for a party whose row
-	// stores the hash. A restart drops the map, which is why a reminder sent
-	// after a restart is built from a link the API reissued.
-	for _, l := range links {
-		RememberToken(l.PartyID, l.Token)
 	}
 
 	return &Created{Envelope: envelope, Links: links, Fill: sum}, nil

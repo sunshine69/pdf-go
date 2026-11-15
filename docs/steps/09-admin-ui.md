@@ -19,8 +19,10 @@ GET  /api/v1/admin/settings         # TSA URL, link TTL, mail from, SMTP host
 POST /api/v1/admin/settings         # whitelist of keys, writes events row
 GET  /api/v1/envelopes?status=&q=   # list (envelope:read)
 GET  /api/v1/envelopes/{id}         # detail incl. consents, cert serials
-POST /api/v1/envelopes/{id}/send    #
-POST /api/v1/envelopes/{id}/remind  #
+POST /api/v1/envelopes/{id}/send    # mail the parties who have not signed;
+                                    # repeatable, reuses their existing links
+POST /api/v1/envelopes/{id}/remind  # deprecated alias of send, kept for the
+                                    # tighter per-envelope rate limit
 POST /api/v1/envelopes/{id}/cancel  # body {"reason":"..."} required
 POST /api/v1/envelopes/{id}/reissue # new tokens for outstanding parties
 GET  /api/v1/envelopes/{id}/audit.zip  # every revision + consent records + events
@@ -51,7 +53,7 @@ Admin SPA:
 - Views: dashboard (status counts + overdue list), envelope table (status,
   parties, progress, created, expires), detail page (parties with consent times,
   typed signature text, signing time + cert serial after the batch, revision
-  chain, event log; buttons: send, remind, reissue, **sign now** (visible when
+  chain, event log; buttons: mail unsigned, reissue, **sign now** (visible when
   all parties consented), cancel, download document, download audit.zip),
   settings page. The dashboard shows a `collecting` tile with
   `consented/total` per envelope.
@@ -75,7 +77,11 @@ go test ./cmd/signsrv -run Admin
 4. `audit.zip` for a completed envelope: contains 1+n revisions, `consents.json`
    with the typed signature text and ip, `manifest.json` verification report
    `valid:true`, sha256s match the store.
-5. `remind` twice in 10 minutes -> second call 429.
+5. `remind` (now an alias of `send`) twice in 10 minutes is accepted, the third
+   call in the window is 429. The per-envelope budget of two is the tightest
+   guard in the service against mailing the same signer repeatedly, and the
+   reason the alias keeps its own route rather than folding into `send`, whose
+   budget is thirty a minute.
 6. `reissue` invalidates the old token (old link 401/404) and the new link works;
    `reissue` skips parties already `consented` (assert their token is unchanged).
 9. `sign` with a party not consented -> 409; with all consented -> batch runs,

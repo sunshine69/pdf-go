@@ -298,13 +298,37 @@ command):
 | `--subject` / `--message` | recorded on the create event. Not the mail: the mail subject is `Signature requested: ` + `--title` |
 | `--expires` | link lifetime, `72h` or `3d`; capped by the envelope |
 | `--send` | send the invitations after creating |
-| `--widget` | field the form is locked to (empty means every field) |
+| `--widget` | **signature placement**: name of the form field the first signature is anchored on. Not the form lock — that is `lockForm` in the fill spec |
+| `--widget-page` | page the signature stack is placed on; default page 1 |
+| `--widget-x` / `--widget-y` | first signature box, PDF points from the lower-left of the page |
 | `--links-out` | file the signing links are written to (JSON, mode 0600; default `envelope-<id>.links.json`) |
 | `--json` | print the service's JSON answer (default true) |
 | `--username` | account whose secret signs the request (`SIGNSRV_USERNAME`) |
 | `--jwt-secret` / `--jwt-secret-env` | the account's shared secret, prefer the environment (`SIGNSRV_JWT_SECRET`) |
 | `--ttl` | requested token validity when the CLI mints; the service caps it at 15m |
 | `--timeout` | request timeout, default 60s |
+
+**Where the signatures go is your decision.** The service does not detect a
+"Sign here" line and does not pick a page. Send no widget at all and every
+signature is drawn in a 220x80 pt box at `X=60, Y=60` — the bottom-left corner of
+page 1 — which succeeds, and usually reads wrong on paper. Successive parties
+stack 90 pt apart on that one page, each box above the previous (from y=60 on an
+A4 page that is eight boxes; beyond that the stack clamps and piles up).
+
+`pdf-go fields contract.pdf` lists signature field names to anchor on;
+`pdf-go pages contract.pdf` gives the page boxes to choose coordinates in. A
+field name that is not in the document, or a page past the end of the **filled**
+document, refuses the create rather than falling back quietly — the alternative
+is a signature in the default corner reported as a success.
+
+```sh
+# anchor on a signature field the document already has
+./tmp/pdf-go envelope create contract.pdf --spec spec.json --parties parties.json \
+    --widget SigClient --send
+# or an exact spot on page 3 (points, origin at the lower-left)
+./tmp/pdf-go envelope create contract.pdf --spec spec.json --parties parties.json \
+    --widget-page 3 --widget-x 72 --widget-y 648 --send
+```
 
 `envelope send`, `get`, `links`, `report` take the envelope id and the same
 `--server`/`--token` flags. Every command prints the service's problem document

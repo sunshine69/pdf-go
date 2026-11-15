@@ -523,8 +523,18 @@ docker build -t signsrv:v0.0.2 -f deploy/Dockerfile .
 docker stop signsrv && docker rm signsrv
 docker run -d --name signsrv --network host -v signsrv-data:/var/lib/signsrv \
   --env-file /etc/signsrv/env signsrv:v0.0.2 serve
-docker exec signsrv signsrv dbstatus        # schema version 6
+docker exec signsrv signsrv dbstatus        # schema version 8
 ```
+
+`serve` applies pending migrations on start, so the new tag migrates the volume
+by itself; `signsrv migrate` exists to do it deliberately first. Schema v8 adds
+`parties.token_raw` and a unique index on the unsent mail queue. On a database
+where a mailing button has already been clicked twice it deletes the older
+duplicate queue rows before creating the index — that is deliberate, and it is
+the one migration in this store that removes rows, so it is the one worth
+checking a backup against. Nothing else about the upgrade is visible to a
+signer: existing links keep working, because the column is additive and the
+hash that authorises a link is unchanged.
 
 The image tag is the deployment record. Note the tag before the new one, so
 rollback is a `docker run` of the old tag — which is why migrations are
