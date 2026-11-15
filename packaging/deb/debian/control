@@ -1,7 +1,7 @@
 Package: signsrv
-Version: 0.0.1-1
+Version: 0.0.2-0
 Architecture: amd64
-Maintainer: kaykraft <packaging@kaykraft.org>
+Maintainer: stevekieu <msh.computing@gmail.com>
 Installed-Size: @INSTALLED_SIZE_KB@
 Depends: adduser, init-system-helpers (>= 1.54)
 Recommends: logrotate, openssl

@@ -36,13 +36,13 @@ say "building signsrv + signsrv-utils (CGO_ENABLED=0, -trimpath)"
 mkdir -p "$STAGE/usr/bin" "$STAGE/usr/lib/signsrv" \
          "$STAGE/lib/systemd/system" "$STAGE/etc/logrotate.d" \
          "$STAGE/usr/share/doc/signsrv"
-CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" \
+CGO_ENABLED=0 GOOS=linux go build -trimpath --tags "osusergo netgo" -ldflags="-X main.version=v1.0 -extldflags=-static -w -s" \
     -o "$STAGE/usr/bin/signsrv" ./cmd/signsrv
 # signsrv-utils ships in the same package on purpose: it is the only way to
 # answer questions about the database when the service refuses to start, and a
 # version skew between the two binaries is exactly when that matters. Same
 # module, same schema, same build — so an upgrade moves both together.
-CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" \
+CGO_ENABLED=0 GOOS=linux go build -trimpath --tags "osusergo netgo" -ldflags="-X main.version=v1.0 -extldflags=-static -w -s" \
     -o "$STAGE/usr/bin/signsrv-utils" ./cmd/signsrv-utils
 install -m 0755 packaging/deb/signsrv-firstboot.sh "$STAGE/usr/lib/signsrv/signsrv-firstboot.sh"
 install -m 0755 packaging/deb/signsrv-adduser.sh   "$STAGE/usr/lib/signsrv/signsrv-adduser.sh"
