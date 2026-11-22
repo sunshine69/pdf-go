@@ -60,6 +60,11 @@ func mustVersion(ctx context.Context, db *sql.DB) int {
 }
 
 // migrateCmd: bring the database to this build's schema.
+// migrateCmd is the deliberate version of what serve does at boot: open, apply
+// the pending migrations, then look at the result. The integrity check is why
+// the command exists separately from the boot path — a migration that applies
+// cleanly can still leave a schema the next release will not like, and this is
+// the one place that says so before anything is signed.
 func migrateCmd(ctx context.Context, configPath string) int {
 	_, store, err := openStore(ctx, configPath)
 	if err != nil {
@@ -69,6 +74,19 @@ func migrateCmd(ctx context.Context, configPath string) int {
 	defer store.Close()
 	v := mustVersion(ctx, store.DB())
 	fmt.Printf("schema version %d, database %s\n", v, dbLabel(ctx, store))
+
+	// The check the usage promises. A migration that ran without an error is
+	// not the same as a database that is internally consistent.
+	var ok string
+	if err := store.DB().QueryRowContext(ctx, "pragma integrity_check").Scan(&ok); err != nil {
+		fmt.Fprintf(os.Stderr, "signsrv: integrity_check: %v\n", err)
+		return 1
+	}
+	if ok != "ok" {
+		fmt.Fprintf(os.Stderr, "signsrv: integrity_check: %s\n", ok)
+		return 1
+	}
+	fmt.Println("integrity_check: ok")
 	return 0
 }
 
@@ -187,12 +205,17 @@ func dbstatusCmd(ctx context.Context, configPath string) int {
 	return 0
 }
 
+// dbLabel names the database the command actually opened. pragma
+// database_list returns (seq, name, file) for each attached database, and the
+// main one is the first row: the file, not the attachment name — printing
+// "main" would say nothing about which file the migration just touched.
 func dbLabel(ctx context.Context, store *signstore.Store) string {
-	var p string
-	if err := store.DB().QueryRowContext(ctx, "pragma database_list").Scan(new(int), &p, new(string)); err != nil {
+	var seq int
+	var name, file string
+	if err := store.DB().QueryRowContext(ctx, "pragma database_list").Scan(&seq, &name, &file); err != nil {
 		return "?"
 	}
-	return p
+	return file
 }
 
 // adminCmd: `signsrv admin add <email>` and `signsrv admin list`. The

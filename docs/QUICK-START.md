@@ -72,7 +72,7 @@ belongs in `signflow` instead.
 | `internal/signflow/state.go` | The state machine and the legal transitions. |
 | `internal/signflow/consent.go` | `ConsentInput` — what the public consent endpoint accepts. |
 | `internal/signflow/batch.go` | The batch-sign path: sign all parties, verify gates. |
-| `internal/signstore/migrations.go` + `schema*.go` | Schema is versioned v1…v6; new column = new `schema_vN.go`. |
+| `internal/signstore/migrations.go` + `schema*.go` | Schema is versioned v1…v8 (`CurrentVersion`); new column = new `schema_vN.go` plus one entry in `migrations`. |
 | `internal/signauth/middleware.go` | Scope names (bottom of file) and who is granted what. |
 | `internal/signpdf/keystore.go` | CA + key passphrase handling. **Changing this can invalidate every past signature.** |
 
@@ -146,9 +146,45 @@ without starting. Load-bearing keys:
 | --- | --- |
 | `keystore_pass` | Encrypts `ca.key`. **Cannot be rotated after the CA exists** — wrong passphrase = every past signature reads invalid. |
 | `jwt_secret_file` | Ed25519 key pair. `signsrv secrets init` creates it. |
-| `admin_password` | Password only. **In production it creates no account** (`signsrv admin add`). |
+| `admin_password` | Password only. **In production it creates an account only on the first start**, and only the one `DEFAULT_ADMIN_EMAIL` names; after that use `signsrv admin add`. |
 | `dev` | Never true in production. Loopback HTTP, mail to `outbox_dir`, and it **auto-creates `dev@localhost`** and logs the password when the DB has zero admins (`cmd/signsrv/devadmin.go`). |
 | `storage_dir` | PDFs as `<sha256>.pdf` — content-addressed, so identical bytes share a file. |
+
+---
+
+## Schema changes while developing
+
+Nothing to run, usually. Every command that opens the database migrates it
+first — `serve`, `worker`, `dbstatus`, `admin`, `client`, `user`, `sign` — so a
+schema added in `internal/signstore/` is applied the moment you start the dev
+server.
+
+To do it deliberately, on the database your config names:
+
+```sh
+signsrv -config CFG migrate       # or: DB=var/signsrv.db DEV=1 signsrv migrate
+    migrations applied: 8, schema version 8       (only when something was pending)
+    schema version 8, database /abs/path/var/signsrv.db
+    integrity_check: ok
+
+signsrv -config CFG migrate       # second run: nothing applied, same version
+signsrv -config CFG dbstatus      # schema version + a row count per table
+```
+
+A fresh dev database is the same path with the file gone: `rm var/signsrv.db`
+and start — `dev=true` then creates the schema, the CA, the token key and
+`dev@localhost`, and logs the password it generated.
+
+Adding a migration: new `internal/signstore/schema_vN.go`, one entry appended to
+`migrations` in `migrations.go`, and `CurrentVersion` bumped. Never edit a
+released entry. Each one runs in its own transaction with its version row, so a
+half-applied step is not observable, and `Migrate` refuses a database whose
+version is newer than the build (exit 1) rather than guessing — which is why
+there is no down migration and a rollback means restoring the backup.
+
+`signsrv-utils` migrates too, but it will not create a database: it refuses a
+path with no file there, so pointing it at a typo cannot leave you editing an
+empty one.
 
 ---
 

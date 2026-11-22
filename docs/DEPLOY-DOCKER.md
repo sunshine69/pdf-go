@@ -422,8 +422,21 @@ A database from an older image migrates forward automatically. There is no down
 migration: **to go back, restore the backup** (§6).
 
 To watch it happen: `docker exec signsrv signsrv dbstatus` — the first line is
-`schema version`. Before starting on a copy of production, `signsrv migrate` on
-that copy shows the same result without serving.
+`schema version`, and `GET /api/v1/admin/schema` answers the same question to an
+admin token: `{"version":8,"binary_version":8,"migration_open":false,"pending":[]}`,
+i.e. whether `migrate` has anything left to do. Before starting on a copy of production, run the migration on
+the copy instead, and the service never touches the original:
+
+```sh
+docker run --rm -v prod-copy:/var/lib/signsrv \
+  -e DB=/var/lib/signsrv/signsrv.db -e DEV=1 \
+  signsrv:v0.0.1 migrate
+```
+
+`migrate` applies what is pending, prints the version reached and the file it
+touched, then runs `integrity_check`; a second run is a no-op. `DEV=1` is there
+because the CLI commands validate the whole server config, and a bare `-e DB=`
+run has no passphrase and no `public_url`.
 
 ---
 
