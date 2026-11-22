@@ -30,7 +30,7 @@ func promptHidden(label string) (string, error) {
 		return "", err
 	}
 	if err == io.EOF && line == "" {
-		return "", fmt.Errorf("no input on stdin (set SIGNSRV_ADMIN_PASSWORD or run this on a terminal)")
+		return "", fmt.Errorf("no input on stdin (set ADMIN_PASSWORD or run this on a terminal)")
 	}
 	return trimLine(line), nil
 }

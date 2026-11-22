@@ -94,8 +94,8 @@ func cliAdminArgs(ts *httptest.Server, verb string, extra ...string) []string {
 // verifies it. Nothing was asked of the service.
 func TestAdminVerbSignsItsOwnToken(t *testing.T) {
 	ts, stub := adminStubServer(t)
-	os.Setenv("SIGNSRV_JWT_SECRET", stubSecret)
-	defer os.Unsetenv("SIGNSRV_JWT_SECRET")
+	os.Setenv("JWT_SECRET", stubSecret)
+	defer os.Unsetenv("JWT_SECRET")
 
 	code, out := runCLI(t, cliAdminArgs(ts, "dbstatus")...)
 	if code != report.OK {
@@ -148,8 +148,8 @@ func TestAdminVerbSignsItsOwnToken(t *testing.T) {
 // failure this catches, and it is invisible until someone types it.
 func TestEveryAdminVerbCallsItsRoute(t *testing.T) {
 	ts, stub := adminStubServer(t)
-	defer os.Unsetenv("SIGNSRV_JWT_SECRET")
-	os.Setenv("SIGNSRV_JWT_SECRET", stubSecret)
+	defer os.Unsetenv("JWT_SECRET")
+	os.Setenv("JWT_SECRET", stubSecret)
 
 	cases := []struct {
 		verb   string
@@ -196,8 +196,8 @@ func TestEveryAdminVerbCallsItsRoute(t *testing.T) {
 // code. A 403 that exits 0 would be a script that reports success on a refusal.
 func TestAdminVerbReportsTheAnswerAndTheStatus(t *testing.T) {
 	ts, stub := adminStubServer(t)
-	os.Setenv("SIGNSRV_JWT_SECRET", stubSecret)
-	defer os.Unsetenv("SIGNSRV_JWT_SECRET")
+	os.Setenv("JWT_SECRET", stubSecret)
+	defer os.Unsetenv("JWT_SECRET")
 
 	body := `{"ok":false,"problems":["audit_dir is not writable"],"warnings":[]}`
 	stub.reply = func(*http.Request) (int, string) { return http.StatusOK, body }
@@ -229,8 +229,8 @@ func TestAdminVerbReportsTheAnswerAndTheStatus(t *testing.T) {
 // bucket of an endpoint is finite; spending it on a typo is rude.
 func TestAdminVerbsCheckTheirArgumentsFirst(t *testing.T) {
 	ts, stub := adminStubServer(t)
-	os.Setenv("SIGNSRV_JWT_SECRET", stubSecret)
-	defer os.Unsetenv("SIGNSRV_JWT_SECRET")
+	os.Setenv("JWT_SECRET", stubSecret)
+	defer os.Unsetenv("JWT_SECRET")
 
 	for _, args := range [][]string{
 		{"admin", "mail-test", "--server", ts.URL, "-insecure", "--username", "dispatch", "--jwt-secret", stubSecret},
@@ -255,13 +255,13 @@ func TestAdminVerbsCheckTheirArgumentsFirst(t *testing.T) {
 // variable by default, so a shell can hand it over without a command line.
 func TestAdminVerbReadsTheSecretFromTheEnvironment(t *testing.T) {
 	ts, stub := adminStubServer(t)
-	os.Setenv("SIGNSRV_JWT_SECRET", stubSecret)
-	os.Setenv("SIGNSRV_USERNAME", "dispatch")
-	os.Setenv("SIGNSRV_URL", ts.URL)
+	os.Setenv("JWT_SECRET", stubSecret)
+	os.Setenv("USERNAME", "dispatch")
+	os.Setenv("URL", ts.URL)
 	defer func() {
-		os.Unsetenv("SIGNSRV_JWT_SECRET")
-		os.Unsetenv("SIGNSRV_USERNAME")
-		os.Unsetenv("SIGNSRV_URL")
+		os.Unsetenv("JWT_SECRET")
+		os.Unsetenv("USERNAME")
+		os.Unsetenv("URL")
 	}()
 
 	code, out := runCLI(t, "admin", "users", "-insecure")

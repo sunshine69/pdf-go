@@ -50,13 +50,13 @@
 #   and none of that belongs baked into an image.
 #
 #   Secrets: the unit has EnvironmentFile=. There is no shell equivalent that is both
-#   automatic and unreadable by the service user, so with SIGNSRV_ENV_FILE=1 this script
+#   automatic and unreadable by the service user, so with ENV_FILE=1 this script
 #   reads the files itself and exports them to the child — what PID 1 does for the unit.
 #   Default is off: the server reads its own config, which is the smaller blast radius.
 #
 #   Logs go to stdout/stderr for `run` — a container's log driver captures those, and a
 #   log file cannot even be opened inside a --read-only container. `start` redirects to
-#   SIGNSRV_LOG because there is no terminal there.
+#   LOG because there is no terminal there.
 #
 #   Reload: the unit's ExecReload sends SIGHUP. signsrv handles SIGINT and SIGTERM only,
 #   so SIGHUP would be swallowed; `reload` here is a restart, and says so, rather than
@@ -67,29 +67,29 @@
 #
 # Settings:
 #
-#   SIGNSRV_USER          service account,   default signsrv
-#   SIGNSRV_BIN           server binary,     default /usr/bin/signsrv
-#   SIGNSRV_CONF          config file,       default /etc/signsrv/signsrv.env
-#   SIGNSRV_SECRETS       secrets file,      default /etc/signsrv/secrets.env
-#   SIGNSRV_STATE         state directory,   default /var/lib/signsrv
-#   SIGNSRV_FIRSTBOOT     setup script,      default /usr/lib/signsrv/signsrv-firstboot.sh
-#   SIGNSRV_LOG           `start` log file,  default /var/lib/signsrv/signsrv.log
-#   SIGNSRV_PIDFILE       pidfile,           default /run/signsrv.pid
-#   SIGNSRV_WAIT          seconds to wait for a stop, default 120
-#   SIGNSRV_ENV_FILE=1    also load CONF and SECRETS into this shell before exec'ing
-#   SIGNSRV_SKIP_FIRSTBOOT=1   skip the setup script (an entrypoint that ran it already)
+#   USER          service account,   default signsrv
+#   BIN           server binary,     default /usr/bin/signsrv
+#   CONF          config file,       default /etc/signsrv/signsrv.env
+#   SECRETS       secrets file,      default /etc/signsrv/secrets.env
+#   STATE         state directory,   default /var/lib/signsrv
+#   FIRSTBOOT     setup script,      default /usr/lib/signsrv/signsrv-firstboot.sh
+#   LOG           `start` log file,  default /var/lib/signsrv/signsrv.log
+#   PIDFILE       pidfile,           default /run/signsrv.pid
+#   WAIT          seconds to wait for a stop, default 120
+#   ENV_FILE=1    also load CONF and SECRETS into this shell before exec'ing
+#   SKIP_FIRSTBOOT=1   skip the setup script (an entrypoint that ran it already)
 
 set -eu
 
-USER_NAME=${SIGNSRV_USER:-signsrv}
-BIN=${SIGNSRV_BIN:-/usr/bin/signsrv}
-CONF=${SIGNSRV_CONF:-/etc/signsrv/signsrv.env}
-SECRETS=${SIGNSRV_SECRETS:-/etc/signsrv/secrets.env}
-STATE=${SIGNSRV_STATE:-/var/lib/signsrv}
-FIRSTBOOT=${SIGNSRV_FIRSTBOOT:-/usr/lib/signsrv/signsrv-firstboot.sh}
-LOGF=${SIGNSRV_LOG:-$STATE/signsrv.log}
-PIDF=${SIGNSRV_PIDFILE:-/run/signsrv.pid}
-WAIT=${SIGNSRV_WAIT:-120}
+USER_NAME=${USER:-signsrv}
+BIN=${BIN:-/usr/bin/signsrv}
+CONF=${CONF:-/etc/signsrv/signsrv.env}
+SECRETS=${SECRETS:-/etc/signsrv/secrets.env}
+STATE=${STATE:-/var/lib/signsrv}
+FIRSTBOOT=${FIRSTBOOT:-/usr/lib/signsrv/signsrv-firstboot.sh}
+LOGF=${LOG:-$STATE/signsrv.log}
+PIDF=${PIDFILE:-/run/signsrv.pid}
+WAIT=${WAIT:-120}
 
 CMD=${1:-}
 [ -n "$CMD" ] || {
@@ -214,7 +214,7 @@ exec_as_server() {
 
 # ------------------------------------------------------------------ first boot ----
 do_firstboot() {
-    [ "${SIGNSRV_SKIP_FIRSTBOOT:-0}" = 1 ] && return 0
+    [ "${SKIP_FIRSTBOOT:-0}" = 1 ] && return 0
     [ -x "$FIRSTBOOT" ] || return 0
     # As root, like the unit's "+=" prefix: it creates and chowns /var/lib/signsrv and
     # /etc/signsrv, which the service user cannot do.
@@ -304,7 +304,7 @@ start_server() {
 }
 
 load_settings() {
-    [ "${SIGNSRV_ENV_FILE:-0}" = 1 ] || return 0
+    [ "${ENV_FILE:-0}" = 1 ] || return 0
     for f in "$CONF" "$SECRETS"; do
         [ -r "$f" ] || continue
         set -a; . "$f"; set +a

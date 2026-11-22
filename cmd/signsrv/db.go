@@ -16,26 +16,39 @@ import (
 
 // openStore loads the configuration, opens the database and applies pending
 // migrations, so every database command runs against a schema this build
-// understands.
+// understands. The CLI prints what it applied; `serve` says the same thing on
+// the structured log instead (openMigrated, initStore in init.go).
 func openStore(ctx context.Context, configPath string) (*Config, *signstore.Store, error) {
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		return nil, nil, err
 	}
-	db, err := signstore.Open(ctx, cfg.DBPath)
+	store, applied, err := openMigrated(ctx, cfg)
 	if err != nil {
-		return nil, nil, err
-	}
-	applied, err := signstore.Migrate(ctx, db)
-	if err != nil {
-		db.Close()
 		return nil, nil, err
 	}
 	if applied > 0 {
 		fmt.Printf("migrations applied: %d, schema version %d\n",
-			applied, mustVersion(ctx, db))
+			applied, mustVersion(ctx, store.DB()))
 	}
-	return cfg, signstore.NewStore(db, cfg.StorageDir), nil
+	return cfg, store, nil
+}
+
+// openMigrated is openStore without the printing: it takes a loaded Config
+// rather than a config path, so a caller that has already loaded and validated
+// the configuration does not load it a second time, and the migrations it runs
+// are the migrations that configuration names.
+func openMigrated(ctx context.Context, cfg *Config) (*signstore.Store, int, error) {
+	db, err := signstore.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return nil, 0, err
+	}
+	applied, err := signstore.Migrate(ctx, db)
+	if err != nil {
+		db.Close()
+		return nil, 0, err
+	}
+	return signstore.NewStore(db, cfg.StorageDir), applied, nil
 }
 
 func mustVersion(ctx context.Context, db *sql.DB) int {
@@ -183,7 +196,7 @@ func dbLabel(ctx context.Context, store *signstore.Store) string {
 }
 
 // adminCmd: `signsrv admin add <email>` and `signsrv admin list`. The
-// password is read from SIGNSRV_ADMIN_PASSWORD or from the terminal, never
+// password is read from ADMIN_PASSWORD or from the terminal, never
 // from the command line where it would land in shell history.
 func adminCmd(ctx context.Context, configPath string, args []string) int {
 	if len(args) == 0 {
@@ -223,7 +236,7 @@ func adminCmd(ctx context.Context, configPath string, args []string) int {
 			fmt.Fprintf(os.Stderr, "signsrv admin add: %q is not an email address\n", email)
 			return 2
 		}
-		pw, err := readPassword("admin password", "SIGNSRV_ADMIN_PASSWORD")
+		pw, err := readPassword("admin password", "ADMIN_PASSWORD")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "signsrv:", err)
 			return 1
@@ -272,7 +285,7 @@ func adminCmd(ctx context.Context, configPath string, args []string) int {
 			fmt.Fprintln(os.Stderr, "signsrv:", err)
 			return 1
 		}
-		pw, err := readPassword("new admin password", "SIGNSRV_ADMIN_PASSWORD")
+		pw, err := readPassword("new admin password", "ADMIN_PASSWORD")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "signsrv:", err)
 			return 1

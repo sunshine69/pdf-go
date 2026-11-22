@@ -49,7 +49,7 @@ echo "  malformed file exit=$code  (2 = unparseable)"
 echo "== serve =="
 pkill -x signsrv >/dev/null 2>&1 || true
 sleep 0.5
-SIGNSRV_ADMIN_PASSWORD=devpass-long-enough nohup "$D/signsrv" serve -config "$D/dev.conf" \
+ADMIN_PASSWORD=devpass-long-enough nohup "$D/signsrv" serve -config "$D/dev.conf" \
   > "$D/stdout.log" 2>&1 &
 sleep 1.5
 B=http://127.0.0.1:8090

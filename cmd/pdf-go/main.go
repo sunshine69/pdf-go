@@ -126,8 +126,8 @@ func usage() {
       --parties parties.json [--title T] [--expires 72h] [--send]
       [--widget NAME | --widget-page N --widget-x X --widget-y Y]
       Upload the document and the fill spec, create the envelope, and print
-      each party's signing link. The server URL comes from SIGNSRV_URL, the
-      client token from SIGNSRV_TOKEN (or --token). The links are written to
+      each party's signing link. The server URL comes from URL, the
+      client token from TOKEN (or --token). The links are written to
       envelope-<id>.links.json, mode 0600. The widget flags say where the
       signatures are drawn; see SIGNATURE POSITION below.
 

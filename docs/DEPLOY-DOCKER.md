@@ -50,34 +50,34 @@ document store, the keystore, the JWT key, the audit files and the mail outbox.
 docker volume create signsrv-data
 
 # Secrets come from the environment, never from a file baked into the image.
-export SIGNSRV_KEYSTORE_PASS="$(openssl rand -hex 32)"   # write this down NOW
-export SIGNSRV_ADMIN_PASSWORD="$(openssl rand -base64 24)"
+export KEYSTORE_PASS="$(openssl rand -hex 32)"   # write this down NOW
+export ADMIN_PASSWORD="$(openssl rand -base64 24)"
 
 # CA identity: first start only. Read *The signing CA* below before running this.
-export SIGNSRV_CA_COMMON_NAME="Example.org Document Signing CA"
-export SIGNSRV_CA_ORG="Example Ltd"
-export SIGNSRV_CA_UNIT="Trust Services"
-export SIGNSRV_CA_EMAIL="signing@example.org"
-export SIGNSRV_CA_STREET="1 Example Street"
-export SIGNSRV_CA_LOCALITY="Example City"
-export SIGNSRV_CA_PROVINCE="Example County"
-export SIGNSRV_CA_POSTAL="EX1 2AB"
-export SIGNSRV_CA_COUNTRY=GB
+export CA_COMMON_NAME="Example.org Document Signing CA"
+export CA_ORG="Example Ltd"
+export CA_UNIT="Trust Services"
+export CA_EMAIL="signing@example.org"
+export CA_STREET="1 Example Street"
+export CA_LOCALITY="Example City"
+export CA_PROVINCE="Example County"
+export CA_POSTAL="EX1 2AB"
+export CA_COUNTRY=GB
 
 docker run -d --name signsrv \
   --network host \
   -v signsrv-data:/var/lib/signsrv \
-  -e SIGNSRV_LISTEN=127.0.0.1:8080 \
-  -e SIGNSRV_PUBLIC_URL=https://pdfsign.example.org \
-  -e SIGNSRV_TRUST_PROXY=1 \
-  -e SIGNSRV_MAIL_FROM=signer@example.org \
-  -e SIGNSRV_SMTP_HOST=smtp.example.org \
-  -e SIGNSRV_SMTP_PORT=587 \
-  -e SIGNSRV_KEYSTORE_PASS \
-  -e SIGNSRV_ADMIN_PASSWORD \
-  -e SIGNSRV_CA_COMMON_NAME -e SIGNSRV_CA_ORG -e SIGNSRV_CA_UNIT \
-  -e SIGNSRV_CA_EMAIL -e SIGNSRV_CA_STREET -e SIGNSRV_CA_LOCALITY \
-  -e SIGNSRV_CA_PROVINCE -e SIGNSRV_CA_POSTAL -e SIGNSRV_CA_COUNTRY \
+  -e LISTEN=127.0.0.1:8080 \
+  -e PUBLIC_URL=https://pdfsign.example.org \
+  -e TRUST_PROXY=1 \
+  -e MAIL_FROM=signer@example.org \
+  -e SMTP_HOST=smtp.example.org \
+  -e SMTP_PORT=587 \
+  -e KEYSTORE_PASS \
+  -e ADMIN_PASSWORD \
+  -e CA_COMMON_NAME -e CA_ORG -e CA_UNIT \
+  -e CA_EMAIL -e CA_STREET -e CA_LOCALITY \
+  -e CA_PROVINCE -e CA_POSTAL -e CA_COUNTRY \
   signsrv:v0.0.1 serve
 ```
 
@@ -94,9 +94,9 @@ it, which invalidates them.
 Set them before that first start, or the CA is named `signsrv CA / O=signsrv` and
 every signer you issue inherits `O=signsrv`. All nine are optional; unset ones are
 left out of the distinguished name entirely rather than appearing as empty
-fields. They can go in the config file instead, under the same names without the
-`SIGNSRV_` prefix — but then they must be in it before the volume is first
-written. An env var that is not passed with `-e` does not reach the container.
+fields. They can go in the config file instead, under the same names — but then
+they must be in it before the volume is first written. An env var that is not
+passed with `-e` does not reach the container.
 
 The values are **self-asserted**. A self-signed certificate attests nothing about
 the party named in it, so a fuller subject makes the certificate legible to
@@ -134,10 +134,10 @@ Before it starts serving for real, ask it what it thinks the configuration is:
 
 ```sh
 docker run --rm -v signsrv-data:/var/lib/signsrv \
-  -e SIGNSRV_PUBLIC_URL=https://pdfsign.example.org \
-  -e SIGNSRV_MAIL_FROM=signer@example.org \
-  -e SIGNSRV_SMTP_HOST=smtp.example.org \
-  -e SIGNSRV_KEYSTORE_PASS -e SIGNSRV_ADMIN_PASSWORD \
+  -e PUBLIC_URL=https://pdfsign.example.org \
+  -e MAIL_FROM=signer@example.org \
+  -e SMTP_HOST=smtp.example.org \
+  -e KEYSTORE_PASS -e ADMIN_PASSWORD \
   signsrv:v0.0.1 checkconfig
 ```
 
@@ -156,33 +156,36 @@ only when someone asks.
 
 ### Accounts, after the first start
 
-**There is no default admin account, and no environment variable creates one.**
-This is the most common point of confusion after an install, so read this before
-looking for a lost password.
+**An account appears on the first start only, and only from `DEFAULT_ADMIN_EMAIL`.**
+Everything after that is a command you run. This is the most common point of
+confusion after an install, so read this before looking for a lost password.
 
 | What | Where it is set | Creates an account? |
 | --- | --- | --- |
-| `SIGNSRV_ADMIN_PASSWORD` / `admin_password=` | env, or the config file | **No.** It is only the password the *seeding step* uses |
+| `DEFAULT_ADMIN_EMAIL` | env only | **Yes, on a first start** — the address seeded with `ADMIN_PASSWORD`. Unset falls back to `admin@pdfsign.com`, and the log says so. A restart of an instance that already exists never adds one |
+| `ADMIN_PASSWORD` / `admin_password=` | env, or the config file | **No.** It is only the password the *seeding step* uses |
 | `SIGNSETUP_ADMIN_EMAIL` | env, to `signsrv-firstboot` only | Yes, but only on a **deb** install (see below) |
 | `signsrv admin add EMAIL` | a command you run | **Yes** — this is the real way |
 | `signsrv-utils admin add EMAIL` | a command you run, same result | **Yes** — and it resolves the database from the service's own config without needing its secrets |
 | `dev=true` | env, or the config file | **Yes**, `dev@localhost`, only when the database has no admins. Never in production |
 
-`admin_password` is read at start-up to satisfy config validation and, on a deb
-install, to seed the one account named by `SIGNSETUP_ADMIN_EMAIL`. The Docker image
-never runs `signsrv-firstboot`, so inside a container `SIGNSRV_ADMIN_PASSWORD` seeds
-**nothing on its own**: the service starts green, `/healthz` answers 200, and
-`/admin/` refuses every login. If you set a password but no account, that generated
-or configured password belongs to nobody.
+`admin_password` is read at start-up to satisfy config validation, and it is the
+password the first start hashes — into the account named by `DEFAULT_ADMIN_EMAIL`
+in a container or under systemd, into the account named by `SIGNSETUP_ADMIN_EMAIL`
+on a deb install, which runs `signsrv-firstboot` before the service ever starts.
+Set a password but name no address, and on a first start the seed uses
+`admin@pdfsign.com`; set neither, and the service starts green, `/healthz` answers
+200, `/admin/` refuses every login, and the log says which command fixes it. If you
+generate a password and no account follows it, that password belongs to nobody.
 
 The one exception is `dev=true`: a dev instance with no admins seeds
 `dev@localhost` with its own admin password and logs the address, so `docker run`
-with `SIGNSRV_DEV=true` gives you a usable login immediately. That convenience is
+with `DEV=true` gives you a usable login immediately. That convenience is
 switched off in production by the same flag that turns off the other dev
 behaviours, and it will not add the account if any admin already exists.
 
 Create the account explicitly. `admin add` takes the password from
-`SIGNSRV_ADMIN_PASSWORD`, which the container already has when it comes from the
+`ADMIN_PASSWORD`, which the container already has when it comes from the
 `env_file`, so no extra flag is needed; minimum 12 characters:
 
 ```sh
@@ -192,7 +195,7 @@ docker exec signsrv signsrv admin list        # confirm it exists before you try
 
 If the password is not in the container environment, `admin add` prompts for it
 twice instead — which fails under `docker exec` without `-it`, so add `-it` in that
-case or pass `-e SIGNSRV_ADMIN_PASSWORD=...` explicitly.
+case or pass `-e ADMIN_PASSWORD=...` explicitly.
 
 `admin add` is not idempotent: a second call for an address that already exists is
 an error, not a password reset. Use `admin passwd EMAIL` for that; it stamps the
@@ -237,7 +240,7 @@ The service will not decide that for you, and will not stop you.
 To publish the port on a host-network container, change one variable:
 
 ```sh
-  -e SIGNSRV_LISTEN=0.0.0.0:8080 \
+  -e LISTEN=0.0.0.0:8080 \
 ```
 
 `--publish`/`-p` is ignored under `network_mode: host`, and there is nothing for
@@ -281,8 +284,11 @@ TLS is terminated in front of the service in both cases. See `deploy/Caddyfile`.
 
 ## 3. Settings
 
-Every key has an `SIGNSRV_`-prefixed environment variable; with `-config FILE`
-the same names work un-prefixed in the file, and **the environment wins**.
+Every key has an environment variable named for it — the key uppercased, so
+`public_url` is `PUBLIC_URL` and `keystore_pass` is `KEYSTORE_PASS`; with
+`-config FILE` the same names work in the file, and **the environment wins**.
+A `SIGNSRV_`-prefixed name is still read, as a legacy spelling, but the
+unprefixed one wins when both are present.
 The compose file and the systemd unit set the same values by different means,
 which is deliberate — the behaviour must not depend on which you chose.
 
@@ -302,7 +308,7 @@ which is deliberate — the behaviour must not depend on which you chose.
 | `admin_password` | — | **required** at first start, seeds the admin. After that the DB hash is the truth |
 | `smtp_host` | — | required when `dev=0` |
 | `smtp_port` / `smtp_starttls` | `587` / `true` | |
-| `smtp_user` / `smtp_pass` | — | leave unset for an unauthenticated relay. `SIGNSRV_SMTP_PASS` for the password |
+| `smtp_user` / `smtp_pass` | — | leave unset for an unauthenticated relay. `SMTP_PASS` for the password |
 | `mail_from` | — | the From address |
 | `jwt_secret_file` | `var/jwt.ed25519.key` | API tokens. Created on first start, 0600. Replacing it drops every API session; signing links are unaffected |
 | `link_ttl` | `168h` | signing link lifetime |
@@ -371,7 +377,7 @@ selftest reports `keystore passphrase is wrong` against a perfectly healthy
 instance. Pass the same value the server has:
 
 ```sh
-docker exec -e SIGNSRV_KEYSTORE_PASS="$SIGNSRV_KEYSTORE_PASS" \
+docker exec -e KEYSTORE_PASS="$KEYSTORE_PASS" \
   signsrv signsrv sign-selftest /testdata/sample1.pdf /tmp/out.pdf
 ```
 
@@ -572,7 +578,7 @@ idempotent. Use it before pointing an alias at a new image.
 
 ```sh
 docker run --rm --network host -v "$PWD/var":/var/lib/signsrv \
-  -e SIGNSRV_DEV=1 -e SIGNSRV_PUBLIC_URL=http://127.0.0.1:8080 \
+  -e DEV=1 -e PUBLIC_URL=http://127.0.0.1:8080 \
   signsrv:v0.0.1 serve
 ```
 
@@ -582,7 +588,7 @@ longer restricts the listener — dev mode binds whatever address you name, whic
 is the combination to avoid, because in dev `serve` generates the keystore
 passphrase and the admin password at start and prints them to the log. A
 listener that reaches the network plus a readable log is enough to sign. Keep
-`SIGNSRV_LISTEN` at `127.0.0.1:8080` here; the published shapes belong to §2.
+`LISTEN` at `127.0.0.1:8080` here; the published shapes belong to §2.
 Open `http://127.0.0.1:8080/healthz`, and read the invitation out of
 `var/outbox`. Never start a container with `dev=1` on a machine that answers for
 a real host name: the credentials it prints are the credentials that work.

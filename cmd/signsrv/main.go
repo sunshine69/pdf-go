@@ -189,7 +189,7 @@ func usage() {
 
   signsrv admin add EMAIL [-config FILE]
   signsrv admin list [-config FILE]
-      Create an admin (the password is read from SIGNSRV_ADMIN_PASSWORD, or
+      Create an admin (the password is read from ADMIN_PASSWORD, or
       from the terminal with the echo silenced) and list the admins.
 
   signsrv admin passwd EMAIL [-config FILE]
@@ -236,6 +236,7 @@ func usage() {
 
   signsrv version
 
-Configuration comes from the environment (SIGNSRV_ prefix) and, with
--config, from a file. The environment wins. See config.example.env.`)
+Configuration comes from the environment (the config key uppercased:
+PUBLIC_URL, KEYSTORE_PASS, ADMIN_PASSWORD) and, with -config, from a file.
+The environment wins. See config.example.env.`)
 }

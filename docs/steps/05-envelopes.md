@@ -33,7 +33,7 @@ spec            JSON, required: {"fill":{...}, "widget":{...}, "subject":"...", 
 parties         JSON array, required, 1..20:
                 {"email","name","order":1,"reason":"I agree to the terms"}
 title           string, required, <= 200
-expires_in      duration, optional, default SIGNSRV_LINK_TTL, max 720h
+expires_in      duration, optional, default LINK_TTL, max 720h
 send            "true" -> create and send in one call
 ```
 

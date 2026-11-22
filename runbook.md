@@ -217,5 +217,5 @@ above the environment.
 
 Keep the passphrase where you keep the key file, offline, and not in the
 config file. `signsrv secrets init` will write it into the config file if you
-let it; prefer `SIGNSRV_KEYSTORE_PASS` in the environment, or a
+let it; prefer `KEYSTORE_PASS` in the environment, or a
 `LoadCredential` line in the systemd unit.

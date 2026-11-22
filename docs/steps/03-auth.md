@@ -57,7 +57,7 @@ in the same shape as a JWT (`aud=api`, role `client`), minted by
 access token. This keeps one verification path.
 
 **Rate limiting.** In-memory sliding window keyed `(route, ip)`; default buckets
-from the overview. `X-Forwarded-For` trusted only when `SIGNSRV_TRUST_PROXY=1`.
+from the overview. `X-Forwarded-For` trusted only when `TRUST_PROXY=1`.
 
 ## Acceptance
 

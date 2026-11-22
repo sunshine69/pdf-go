@@ -131,9 +131,9 @@ rand_hex() { # rand_hex <bytes> — openssl is a Recommends, so fall back rather
     fi
 }
 
-KS_PASS=$(read_secret SIGNSRV_KEYSTORE_PASS "$SECRETS")
-ADMIN_PW=$(read_secret SIGNSRV_ADMIN_PASSWORD "$SECRETS")
-SMTP_PASS_CFG=$(read_secret SIGNSRV_SMTP_PASS "$SECRETS")
+KS_PASS=$(read_secret KEYSTORE_PASS "$SECRETS")
+ADMIN_PW=$(read_secret ADMIN_PASSWORD "$SECRETS")
+SMTP_PASS_CFG=$(read_secret SMTP_PASS "$SECRETS")
 [ -n "$SMTP_PASS_CFG" ] || SMTP_PASS_CFG=${SIGNSETUP_SMTP_PASS:-}
 
 # ------------------------------------------------------------------- keystore ----
@@ -142,7 +142,7 @@ SMTP_PASS_CFG=$(read_secret SIGNSRV_SMTP_PASS "$SECRETS")
 if [ -z "$KS_PASS" ] && [ -f "$STATE_PATH/keystore/ca.key" ]; then
     die "$STATE_PATH/keystore/ca.key exists, but its passphrase is not in $SECRETS.
        Restoring it is the only option that keeps your signatures valid. Put it back:
-         echo 'SIGNSRV_KEYSTORE_PASS=<the passphrase>' >> $SECRETS
+         echo 'KEYSTORE_PASS=<the passphrase>' >> $SECRETS
          chmod 600 $SECRETS
        If the passphrase is truly gone and you accept that every document signed by
        this CA can no longer be re-issued against it, start over deliberately:
@@ -152,8 +152,8 @@ if [ -z "$KS_PASS" ] && [ -f "$STATE_PATH/keystore/ca.key" ]; then
 fi
 if [ -z "$KS_PASS" ]; then
     KS_PASS=$(rand_hex 32)
-    sed -i "/^SIGNSRV_KEYSTORE_PASS=/d" "$SECRETS" 2>/dev/null || true
-    printf 'SIGNSRV_KEYSTORE_PASS=%s\n' "$KS_PASS" >> "$SECRETS"
+    sed -i "/^KEYSTORE_PASS=/d" "$SECRETS" 2>/dev/null || true
+    printf 'KEYSTORE_PASS=%s\n' "$KS_PASS" >> "$SECRETS"
     chmod 0600 "$SECRETS" 2>/dev/null || true
     if [ "$(id -u)" = 0 ]; then chown root:root "$SECRETS"; fi
     note "secrets: generated a keystore passphrase (the CA is created with it on first start)"
@@ -249,8 +249,8 @@ if [ "$(id -u)" = 0 ]; then
 fi
 chmod 0640 "$CONF" 2>/dev/null || true
 
-if [ -n "$SMTP_PASS_CFG" ] && ! grep -q '^SIGNSRV_SMTP_PASS=' "$SECRETS" 2>/dev/null; then
-    printf 'SIGNSRV_SMTP_PASS=%s\n' "$SMTP_PASS_CFG" >> "$SECRETS"
+if [ -n "$SMTP_PASS_CFG" ] && ! grep -q '^SMTP_PASS=' "$SECRETS" 2>/dev/null; then
+    printf 'SMTP_PASS=%s\n' "$SMTP_PASS_CFG" >> "$SECRETS"
     chmod 0600 "$SECRETS" 2>/dev/null || true
     if [ "$(id -u)" = 0 ]; then chown root:root "$SECRETS"; fi
 fi
@@ -266,8 +266,8 @@ fi
 if [ -z "$ADMIN_PW" ] && [ "$MODE" != local ]; then
     ADMIN_PW=$(rand_hex 12)
 fi
-if [ -n "$ADMIN_PW" ] && ! grep -q '^SIGNSRV_ADMIN_PASSWORD=' "$SECRETS" 2>/dev/null; then
-    printf 'SIGNSRV_ADMIN_PASSWORD=%s\n' "$ADMIN_PW" >> "$SECRETS"
+if [ -n "$ADMIN_PW" ] && ! grep -q '^ADMIN_PASSWORD=' "$SECRETS" 2>/dev/null; then
+    printf 'ADMIN_PASSWORD=%s\n' "$ADMIN_PW" >> "$SECRETS"
     chmod 0600 "$SECRETS" 2>/dev/null || true
     if [ "$(id -u)" = 0 ]; then chown root:root "$SECRETS"; fi
 fi
@@ -280,8 +280,8 @@ fi
 redact() { sed -E 's/(pass|secret|password|token)[^ ]*=[^ ]*/\1...=<redacted>/gI'; }
 
 if ! ( . "$SECRETS" 2>/dev/null || true
-       export SIGNSRV_KEYSTORE_PASS="${SIGNSRV_KEYSTORE_PASS:-$KS_PASS}"
-       export SIGNSRV_ADMIN_PASSWORD="${SIGNSRV_ADMIN_PASSWORD:-$ADMIN_PW}"
+       export KEYSTORE_PASS="${KEYSTORE_PASS:-$KS_PASS}"
+       export ADMIN_PASSWORD="${ADMIN_PASSWORD:-$ADMIN_PW}"
        "$BIN" -config "$CONF" checkconfig >"$ETC/.firstboot-checkconfig.out" 2>&1 ); then
     redact < "$ETC/.firstboot-checkconfig.out" >&2 || true
     rm -f "$ETC/.firstboot-checkconfig.out"
@@ -290,7 +290,7 @@ fi
 rm -f "$ETC/.firstboot-checkconfig.out"
 note "config: $CONF verified (checkconfig ok)"
 
-# SIGNSRV_ADMIN_PASSWORD is now in the secrets file whenever dev=false needs it, so the
+# ADMIN_PASSWORD is now in the secrets file whenever dev=false needs it, so the
 # subshell can just load the file. Explicit exports are what the service's EnvironmentFile
 # would do; a plain load leaves the values as shell variables that the child never sees.
 
@@ -308,7 +308,7 @@ run_as() { # run_as <cmd...> — as the service user when root, as self otherwis
     fi
 }
 
-if ! run_as env SIGNSRV_KEYSTORE_PASS="$KS_PASS" ${ADMIN_PW:+SIGNSRV_ADMIN_PASSWORD="$ADMIN_PW"} \
+if ! run_as env KEYSTORE_PASS="$KS_PASS" ${ADMIN_PW:+ADMIN_PASSWORD="$ADMIN_PW"} \
         "$BIN" -config "$CONF" migrate >"$ETC/.firstboot-migrate.out" 2>&1; then
     redact < "$ETC/.firstboot-migrate.out" >&2 || true
     rm -f "$ETC/.firstboot-migrate.out"
@@ -328,13 +328,13 @@ note "database: $STATE_PATH/signsrv.db at the current schema"
 # start retries; the service itself still boots, because dev=false plus a password it
 # can read is a valid configuration.
 admin_list() {
-    run_as env SIGNSRV_KEYSTORE_PASS="$KS_PASS" SIGNSRV_ADMIN_PASSWORD="${ADMIN_PW:-x}" \
+    run_as env KEYSTORE_PASS="$KS_PASS" ADMIN_PASSWORD="${ADMIN_PW:-x}" \
         "$BIN" -config "$CONF" admin list 2>/dev/null || true
 }
 
 persist_admin_pw() {
-    sed -i "/^SIGNSRV_ADMIN_PASSWORD=/d" "$SECRETS" 2>/dev/null || true
-    printf 'SIGNSRV_ADMIN_PASSWORD=%s\n' "$1" >> "$SECRETS"
+    sed -i "/^ADMIN_PASSWORD=/d" "$SECRETS" 2>/dev/null || true
+    printf 'ADMIN_PASSWORD=%s\n' "$1" >> "$SECRETS"
     chmod 0600 "$SECRETS" 2>/dev/null || true
     if [ "$(id -u)" = 0 ]; then chown root:root "$SECRETS"; fi
 }
@@ -345,7 +345,7 @@ if [ -n "$ADMIN_EMAIL" ]; then
     else
         ADMIN_PW=${SIGNSETUP_ADMIN_PASSWORD:-$ADMIN_PW}
         [ -n "$ADMIN_PW" ] || ADMIN_PW=$(rand_hex 12)
-        if run_as env SIGNSRV_KEYSTORE_PASS="$KS_PASS" SIGNSRV_ADMIN_PASSWORD="$ADMIN_PW" \
+        if run_as env KEYSTORE_PASS="$KS_PASS" ADMIN_PASSWORD="$ADMIN_PW" \
                 "$BIN" -config "$CONF" admin add "$ADMIN_EMAIL" \
                 >"$ETC/.firstboot-admin.out" 2>&1; then
             persist_admin_pw "$ADMIN_PW"
@@ -354,7 +354,7 @@ if [ -n "$ADMIN_EMAIL" ]; then
                 note "       password: the SIGNSETUP_ADMIN_PASSWORD you supplied"
             else
                 note "       a password was generated for it and stored in $SECRETS"
-                note "       as SIGNSRV_ADMIN_PASSWORD. Rotate it to something you know:"
+                note "       as ADMIN_PASSWORD. Rotate it to something you know:"
             fi
             note "         signsrv -config $CONF admin passwd $ADMIN_EMAIL"
         else
@@ -394,7 +394,7 @@ if [ "$MODE" = local ]; then
     note "      dev=false"
     note "      public_url=https://your.host"
     note "      smtp_host=your.relay    smtp_port=587    mail_from=you@your.host"
-    note "  put the relay password in $SECRETS as SIGNSRV_SMTP_PASS,"
+    note "  put the relay password in $SECRETS as SMTP_PASS,"
     note "  create an admin, then: systemctl restart signsrv"
 fi
 exit 0

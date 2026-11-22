@@ -11,7 +11,7 @@ Depends: 01..10.
 ## Design
 
 **Transport.** TLS termination is external (Caddy/nginx) — documented as the
-default, `SIGNSRV_LISTEN=127.0.0.1:8080`, `SIGNSRV_TRUST_PROXY=1` required when
+default, `LISTEN=127.0.0.1:8080`, `TRUST_PROXY=1` required when
 behind a proxy, otherwise `X-Forwarded-For` is ignored (rate limits bind to the
 socket peer). `deploy/Caddyfile` is the reference config with `automatic_https`
 and `header` directives, HSTS `max-age=31536000; includeSubDomains`.
@@ -72,7 +72,7 @@ sessions drop), CA (new CA, old signatures keep verifying via embedded certs).
 ## Acceptance
 
 ```
-signsrv checkconfig -config config.example.env   # SIGNSRV_DEV=1 -> exit 0
+signsrv checkconfig -config config.example.env   # DEV=1 -> exit 0
 signsrv checkconfig                              # PUBLIC_URL http + DEV=0 -> exit 1 with reason
 go test ./internal/signauth -run Log             # redaction test
 go test ./cmd/signsrv -run Header                # every route emits CSP/nosniff/no-store

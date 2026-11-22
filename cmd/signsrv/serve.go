@@ -38,16 +38,25 @@ func serve(ctx context.Context, configPath string) int {
 		return 1
 	}
 	logConfigWarnings(log, cfg)
-	// The server needs the database open: the auth layer resolves every
-	// credential against it, and the worker drains the queues from it.
-	_, store, err := openStore(ctx, configPath)
+
+	// First-start initialization, in the order the state depends on it: the
+	// schema before anything that writes to it, the CA before anything that
+	// signs with it, the admin account last because it is the only step an
+	// operator may want to make by hand instead. On an instance that has run
+	// before, every step is the same work `serve` already did, and the run is
+	// three log lines that say so.
+	signer, store, err := firstStartInit(ctx, cfg, log)
 	if err != nil {
-		log.Error("database", "error", err)
+		log.Error("initialization", "error", err)
 		return 1
 	}
 	defer store.Close()
 
-	s := newServer(cfg, log, store)
+	// The CA this run described is the CA the process signs with: the service
+	// built above is handed to the server rather than loaded again there, so
+	// the fingerprint in the log is the fingerprint of the key that signs the
+	// next envelope, and the keystore is opened once per start.
+	s := newServerWithSigner(cfg, log, store, signer)
 	if s == nil {
 		log.Error("server", "error", "the signing key could not be loaded")
 		return 1

@@ -59,8 +59,8 @@ SystemCallArchitectures=native
 # $CREDENTIALS_DIRECTORY.
 LoadCredential=keystore-pass /etc/signsrv/keystore.pass
 LoadCredential=admin-password /etc/signsrv/admin.pass
-Environment=SIGNSRV_KEYSTORE_PASS=%kkeystore-pass
-Environment=SIGNSRV_ADMIN_PASSWORD=%kadmin-password
+Environment=KEYSTORE_PASS=%kkeystore-pass
+Environment=ADMIN_PASSWORD=%kadmin-password
 
 # The listener comes from /etc/signsrv/signsrv.env; this unit does not set one.
 # Keep it loopback here: the service speaks plain HTTP, and TLS is terminated by

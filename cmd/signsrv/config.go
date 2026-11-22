@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -97,7 +99,7 @@ func (c *Config) DBFile() string {
 // method: the value never appears in the struct, in a log line, or in a JSON
 // dump of the configuration.
 //
-// The value may come from the environment (SIGNSRV_*) or from the config
+// The value may come from the environment (*) or from the config
 // file; the environment wins.
 func (c *Config) secret(key string) string {
 	if v := c.env[key]; v != "" {
@@ -133,10 +135,32 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		file = v
 	}
+	// The environment names are the config keys, uppercased: PUBLIC_URL,
+	// KEYSTORE_PASS, ADMIN_PASSWORD. The service is scoped by how it is
+	// launched — a systemd unit with EnvironmentFile, a container with an
+	// env_file — so the names do not need a product prefix to be unambiguous.
+	// A SIGNSRV_-prefixed name is still read, as a legacy spelling, and the
+	// unprefixed one wins when both are present.
 	env := map[string]string{}
+	legacy := map[string]string{}
 	for _, kv := range os.Environ() {
-		if k, v, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "SIGNSRV_") {
-			env[strings.ToLower(strings.TrimPrefix(k, "SIGNSRV_"))] = v
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || v == "" {
+			continue
+		}
+		name := strings.ToLower(k)
+		switch {
+		case configKeys[name]:
+			env[name] = v
+		case strings.HasPrefix(name, "signsrv_"):
+			if base := strings.TrimPrefix(name, "signsrv_"); configKeys[base] {
+				legacy[base] = v
+			}
+		}
+	}
+	for k, v := range legacy {
+		if env[k] == "" {
+			env[k] = v
 		}
 	}
 	get := func(key, def string) string {
@@ -264,7 +288,7 @@ func (c *Config) validate() {
 		cproblems(c, "link_ttl must be between 1ns and 720h")
 	}
 	if c.SMTPHost == "" {
-		cproblems(c, "smtp_host is required when dev mode is off (set SIGNSRV_DEV=1 to write mail to var/outbox)")
+		cproblems(c, "smtp_host is required when dev mode is off (set DEV=1 to write mail to var/outbox)")
 	}
 	if c.MailFrom == "" {
 		cproblems(c, "mail_from is required")
@@ -282,11 +306,29 @@ func (c *Config) validate() {
 	// named is not there, the service starts and fails at the first
 	// signature. The default path is a relative one, used in dev, so it is
 	// not checked: it is created at first use.
+	//
+	// A directory that does not exist yet is not the same finding as a
+	// directory that cannot be read: a fresh instance is exactly the case
+	// first-start initialization is for, and it creates this one (see
+	// firstStartInit). So a missing path whose parent is there and is a
+	// directory is a warning about what is about to happen; a missing path
+	// under a parent that is not there is still the typo this check was
+	// written to catch.
 	if c.keystoreSet {
-		if f, err := os.Stat(c.Keystore); err != nil {
+		switch f, err := os.Stat(c.Keystore); {
+		case err == nil:
+			if !f.IsDir() {
+				cproblems(c, "keystore_dir is not a directory: "+c.Keystore)
+			}
+		case errors.Is(err, os.ErrNotExist):
+			parent := filepath.Dir(c.Keystore)
+			if pf, perr := os.Stat(parent); perr == nil && pf.IsDir() {
+				cwarnings(c, "keystore_dir does not exist yet: "+c.Keystore+", the signing CA is issued at first start")
+			} else {
+				cproblems(c, "keystore_dir is not readable, and its parent directory is not there to create it: "+c.Keystore)
+			}
+		default:
 			cproblems(c, "keystore_dir is not readable: "+c.Keystore)
-		} else if !f.IsDir() {
-			cproblems(c, "keystore_dir is not a directory: "+c.Keystore)
 		}
 	}
 
@@ -389,8 +431,13 @@ func readConfigFile(path string) (map[string]string, error) {
 	return out, sc.Err()
 }
 
-// configKeys is the set of recognised configuration keys, so a typo in a
-// config file fails at startup instead of being silently ignored.
+// configKeys is the set of recognised configuration keys. It does two jobs:
+// a typo in a config file fails at startup instead of being silently ignored,
+// and it is the whitelist for the environment — the env name for a key is the
+// key uppercased (public_url and PUBLIC_URL), and an environment variable that
+// is not one of these is ignored rather than becoming a setting. Unprefixed
+// names are short, and some of them (DB, DEV, CONFIG) are words a shell or a
+// build tool already has in the environment.
 var configKeys = map[string]bool{
 	"listen": true, "public_url": true, "db": true, "db_path": true,
 	"storage_dir": true, "keystore_dir": true, "outbox_dir": true,

@@ -214,8 +214,8 @@ func TestConfigValidates(t *testing.T) {
 	})
 
 	t.Run("environment wins over the file", func(t *testing.T) {
-		t.Setenv("SIGNSRV_LISTEN", "127.0.0.1:9999")
-		t.Setenv("SIGNSRV_ADMIN_PASSWORD", "from-env")
+		t.Setenv("LISTEN", "127.0.0.1:9999")
+		t.Setenv("ADMIN_PASSWORD", "from-env")
 		cfg, err := LoadConfig(write(base + "listen=127.0.0.1:1234\n"))
 		if err != nil {
 			t.Fatal(err)

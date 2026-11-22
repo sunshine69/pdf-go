@@ -132,16 +132,16 @@ type envelopeFlags struct {
 }
 
 func (f *envelopeFlags) register(fs *flag.FlagSet) {
-	fs.StringVar(&f.server, "server", envDefault("SIGNSRV_URL", ""), "service base URL")
+	fs.StringVar(&f.server, "server", envDefault("URL", ""), "service base URL")
 	fs.StringVar(&f.token, "token", "", "client token (prefer --token-env)")
-	fs.StringVar(&f.tokenEnv, "token-env", "SIGNSRV_TOKEN", "environment variable holding the client token")
+	fs.StringVar(&f.tokenEnv, "token-env", "TOKEN", "environment variable holding the client token")
 	fs.BoolVar(&f.insecure, "insecure", false, "allow http:// (development only)")
 	fs.BoolVar(&f.jsonOut, "json", true, "print the service's JSON answer")
 	fs.DurationVar(&f.timeout, "timeout", 60*time.Second, "request timeout")
 	fs.StringVar(&f.linksOut, "links-out", "", "file the signing links are written to")
-	fs.StringVar(&f.username, "username", envDefault("SIGNSRV_USERNAME", ""), "username whose secret signs the request")
+	fs.StringVar(&f.username, "username", envDefault("USERNAME", ""), "username whose secret signs the request")
 	fs.StringVar(&f.secret, "jwt-secret", "", "shared secret of that username (prefer --jwt-secret-env)")
-	fs.StringVar(&f.secretEnv, "jwt-secret-env", "SIGNSRV_JWT_SECRET", "environment variable holding the shared secret")
+	fs.StringVar(&f.secretEnv, "jwt-secret-env", "JWT_SECRET", "environment variable holding the shared secret")
 	fs.DurationVar(&f.ttl, "ttl", 0, "requested token validity, capped by the service at 15m")
 }
 
@@ -157,7 +157,7 @@ func envDefault(name, def string) string {
 // the machine, so the environment is the documented way to pass it.
 func (f *envelopeFlags) resolve() error {
 	if f.server == "" {
-		return fmt.Errorf("needs --server (or SIGNSRV_URL)")
+		return fmt.Errorf("needs --server (or URL)")
 	}
 	if !strings.HasPrefix(f.server, "http://") && !strings.HasPrefix(f.server, "https://") {
 		return fmt.Errorf("--server must start with http:// or https://")
@@ -170,7 +170,7 @@ func (f *envelopeFlags) resolve() error {
 	// round trip, so the CLI works against a service whose token endpoint is
 	// firewalled, and the secret never travels.
 	// Read the secret from the environment whenever the flag is empty. The
-	// username may have arrived from SIGNSRV_USERNAME, and a credential split
+	// username may have arrived from USERNAME, and a credential split
 	// across two variables is the shape an operator actually writes in a unit
 	// file: username in the environment, secret in a Credentials= line.
 	if f.secret == "" {

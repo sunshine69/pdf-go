@@ -19,11 +19,11 @@
 #
 #   A. host networking, loopback listener (below) — the proxy and the service
 #      share the host namespace, and nothing is reachable from outside.
-#   B. host networking, published listener — set SIGNSRV_LISTEN=0.0.0.0:8080
+#   B. host networking, published listener — set LISTEN=0.0.0.0:8080
 #      and let the firewall or the network policy hold the line. `serve` prints
 #      a warning (not a refusal) that it speaks plain HTTP, so TLS, a proxy, or
 #      network policy has to terminate encryption in front of it. With nothing
-#      in front of it, also set SIGNSRV_TRUST_PROXY=0 below: Caddy sets
+#      in front of it, also set TRUST_PROXY=0 below: Caddy sets
 #      X-Forwarded-For, and trusting that header from direct clients lets a
 #      party choose the address the rate limits are keyed to.
 #   C. a user-defined bridge, no network_mode, with `ports:` publishing 8080 and
@@ -34,13 +34,13 @@
 #          networks: [signsrv]
 #          ports: ["127.0.0.1:8080:8080"]      # bind publish to loopback only
 #          environment:
-#            SIGNSRV_LISTEN: 0.0.0.0:8080
+#            LISTEN: 0.0.0.0:8080
 #
 #      Shape C is the one to pick when something on the host already owns the
 #      ports — but it means the container network is the boundary, so publish on
 #      127.0.0.1 rather than on 0.0.0.0 unless the proxy needs the outside.
 #
-# SIGNSRV_PUBLIC_URL must match the address the browser is sent to. The signing
+# PUBLIC_URL must match the address the browser is sent to. The signing
 # links are built from it, so a mismatch produces links that look real and go
 # nowhere, and no check can catch it.
 
@@ -65,21 +65,21 @@ services:
     environment:
       # Shape A. For B set 0.0.0.0:8080; for C set 0.0.0.0:8080, drop
       # network_mode, and use the networks/ports block at the bottom.
-      SIGNSRV_LISTEN: 127.0.0.1:8080
-      SIGNSRV_PUBLIC_URL: https://pdfsign.example.org
+      LISTEN: 127.0.0.1:8080
+      PUBLIC_URL: https://pdfsign.example.org
       # Caddy sets X-Forwarded-For. Without this the rate limits bind to the
       # socket peer, which is Caddy, so every party on the internet would share
       # one bucket.
-      SIGNSRV_TRUST_PROXY: "1"
-      SIGNSRV_DEV: "0"
-      SIGNSRV_MAIL_FROM: signer@example.org
-      SIGNSRV_SMTP_HOST: smtp.example.org
-      SIGNSRV_SMTP_PORT: "587"
-      SIGNSRV_TSA_URL: https://freetsa.org/tsr
+      TRUST_PROXY: "1"
+      DEV: "0"
+      MAIL_FROM: signer@example.org
+      SMTP_HOST: smtp.example.org
+      SMTP_PORT: "587"
+      TSA_URL: https://freetsa.org/tsr
     env_file:
       - path: .env
-        required: true   # SIGNSRV_KEYSTORE_PASS, SIGNSRV_ADMIN_PASSWORD,
-                         # and SIGNSRV_SMTP_USER / SIGNSRV_SMTP_PASS when the
+        required: true   # KEYSTORE_PASS, ADMIN_PASSWORD,
+                         # and SMTP_USER / SMTP_PASS when the
                          # relay needs authentication
     volumes:
       - signsrv-data:/var/lib/signsrv
@@ -100,7 +100,7 @@ services:
 #     ports:
 #       - "127.0.0.1:8080:8080"
 #     environment:
-#       SIGNSRV_LISTEN: 0.0.0.0:8080
+#       LISTEN: 0.0.0.0:8080
 
 volumes:
   signsrv-data:

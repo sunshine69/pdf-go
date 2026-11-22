@@ -442,7 +442,7 @@ func startService() error {
 	}
 	// The admin account is created by the operator, with the password in the
 	// environment rather than on a terminal.
-	out, err := runEnv(map[string]string{"SIGNSRV_ADMIN_PASSWORD": adminPass}, root,
+	out, err := runEnv(map[string]string{"ADMIN_PASSWORD": adminPass}, root,
 		bin("signsrv"), "admin", "add", adminEmail, "-config", cfgPath)
 	if err != nil && !strings.Contains(string(out), "already exists") {
 		return fmt.Errorf("admin add: %v\n%s", err, out)

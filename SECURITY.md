@@ -9,7 +9,7 @@ when a machine is compromised.
    the service. Nothing in the service is above that: a signature made with the
    CA key is trusted by every verifier that has the CA certificate.
    - It is not stored in the config file. It is read from the environment
-     (`SIGNSRV_KEYSTORE_PASS`) or from a systemd credential (`LoadCredential`).
+     (`KEYSTORE_PASS`) or from a systemd credential (`LoadCredential`).
    - `var/keystore/` is mode 0750, owned by the service user. The key file is
      mode 0600.
    - It cannot be recovered. A lost passphrase means the CA is dead: every

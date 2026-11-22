@@ -15,7 +15,7 @@ off, kept for the reasoning, not authoritative on behaviour).
 | --- | --- |
 | [`QUICK-START.md`](QUICK-START.md) | orientation: architecture, packages, flow, where to change X |
 | [`skills/prepare-and-dispatch-signing.md`](skills/prepare-and-dispatch-signing.md) | the fill-and-dispatch procedure, API-first. The runnable recipe an agent should follow. |
-| [`CONFIG.md`](CONFIG.md) | every setting: file key, `SIGNSRV_*` env var, default, and what refuses to start without it |
+| [`CONFIG.md`](CONFIG.md) | every setting: file key, `*` env var, default, and what refuses to start without it |
 | [`DEPLOY-DOCKER.md`](DEPLOY-DOCKER.md) | the Docker image: build, first run, process, settings, state and backups, upgrade and rollback |
 | [`DEB-PACKAGE.md`](DEB-PACKAGE.md) | the Debian package: building it, what an install sets up, first-boot modes, upgrade and purge semantics |
 | [`security-endpoint-audit.md`](security-endpoint-audit.md) | the endpoint audit: every probe and its answer, the findings and fixes, the residual risks accepted |

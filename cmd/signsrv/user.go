@@ -169,8 +169,8 @@ func userAdd(ctx context.Context, store *signstore.Store, args []string) int {
 	fmt.Println("(`signsrv user rotate`) stops every token signed with the old value.")
 	fmt.Println()
 	fmt.Println("With it, the CLI mints its own token and needs no token round trip:")
-	fmt.Printf("  export SIGNSRV_USERNAME=%s\n", name)
-	fmt.Printf("  export SIGNSRV_JWT_SECRET='%s'\n", secret)
+	fmt.Printf("  export USERNAME=%s\n", name)
+	fmt.Printf("  export JWT_SECRET='%s'\n", secret)
 	fmt.Println("  pdf-go envelope create --server https://sign.example --spec fill.json --parties parties.json")
 	return 0
 }
@@ -219,7 +219,7 @@ func userRevoke(ctx context.Context, store *signstore.Store, args []string) int 
 // credential that matters for the API is the shared secret; the password is the
 // future web-login door.
 func readPasswordArg(args []string) (string, error) {
-	if v, ok := os.LookupEnv("SIGNSRV_USER_PASSWORD"); ok {
+	if v, ok := os.LookupEnv("USER_PASSWORD"); ok {
 		return strings.TrimSpace(v), nil
 	}
 	for _, a := range args {

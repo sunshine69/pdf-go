@@ -16,31 +16,31 @@ Depends: overview signed off.
 ## Design
 
 - Binary name `signsrv`. Existing CLI `cmd/pdf-go` is untouched.
-- Config from environment with a `SIGNSRV_` prefix, overridable by a
+- Config from environment with a `` prefix, overridable by a
   `KEY=value` file given as `-config` (the same file works as a systemd
   `EnvironmentFile`; unknown keys are refused so a typo fails at startup).
   Env wins over file. Never log secret values.
 - Minimum config keys:
 
 ```
-SIGNSRV_LISTEN=:8080
-SIGNSRV_PUBLIC_URL=https://sign.example.org      # used in email links
-SIGNSRV_DB_PATH=var/signsrv.db
-SIGNSRV_STORAGE_DIR=var/storage
-SIGNSRV_KEYSTORE_DIR=var/keystore
-SIGNSRV_KEYSTORE_PASS=                           # required, from env only
-SIGNSRV_JWT_SECRET_FILE=var/jwt.ed25519.key      # generated on first start
-SIGNSRV_TSA_URL=https://freetsa.org/tsr
-SIGNSRV_SMTP_HOST= SIGNSRV_SMTP_PORT=587 SIGNSRV_SMTP_STARTTLS=1
-SIGNSRV_SMTP_USER= SIGNSRV_SMTP_PASS= SIGNSRV_MAIL_FROM=sign@example.org
-SIGNSRV_LINK_TTL=168h
-SIGNSRV_DEV=0                                     # 1 = http, verbose, no SMTP
+LISTEN=:8080
+PUBLIC_URL=https://sign.example.org      # used in email links
+DB_PATH=var/signsrv.db
+STORAGE_DIR=var/storage
+KEYSTORE_DIR=var/keystore
+KEYSTORE_PASS=                           # required, from env only
+JWT_SECRET_FILE=var/jwt.ed25519.key      # generated on first start
+TSA_URL=https://freetsa.org/tsr
+SMTP_HOST= SMTP_PORT=587 SMTP_STARTTLS=1
+SMTP_USER= SMTP_PASS= MAIL_FROM=sign@example.org
+LINK_TTL=168h
+DEV=0                                     # 1 = http, verbose, no SMTP
 ```
 
-- `SIGNSRV_DEV=1` is the only way to run without SMTP/keystore passphrase: it
+- `DEV=1` is the only way to run without SMTP/keystore passphrase: it
   writes emails to `var/outbox/` as `.eml` files. Used by tests. Dev mode
   generates the keystore passphrase and the admin password at start and prints
-  them to the log, so `SIGNSRV_DEV=1` on a listener that reaches the network is
+  them to the log, so `DEV=1` on a listener that reaches the network is
   the combination to avoid — the log alone is then enough to sign. It is warned
   about, not refused: where the listener sits is the operator's infrastructure
   decision.

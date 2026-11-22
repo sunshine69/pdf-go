@@ -125,15 +125,15 @@ func resolveDB(dbFlag, cfgFlag string) (path, source string, err error) {
 	if dbFlag != "" {
 		return dbFlag, "-db", nil
 	}
-	if v := os.Getenv("SIGNSRV_DB"); v != "" {
-		return v, "$SIGNSRV_DB", nil
+	if v := os.Getenv("DB"); v != "" {
+		return v, "$DB", nil
 	}
 
 	cfg := cfgFlag
 	if cfg == "" {
 		cfg = defaultConfig
 	}
-	if v := os.Getenv("SIGNSRV_CONFIG"); v != "" && cfgFlag == "" {
+	if v := os.Getenv("CONFIG"); v != "" && cfgFlag == "" {
 		cfg = v
 	}
 
@@ -169,10 +169,10 @@ func resolveDB(dbFlag, cfgFlag string) (path, source string, err error) {
 // is rescuing you from fails. So an unrecognised key here is ignored, and the
 // only errors are "cannot read the file".
 //
-// The server writes this file in two shapes — bare keys (listen=...) and
-// SIGNSRV_-prefixed (SIGNSRV_KEYSTORE_PASS=...) — because systemd's
-// EnvironmentFile and the service's own reader use different conventions.
-// Both are accepted here, and the prefix is optional either way.
+// The server writes this file with bare lowercase keys (listen=...), but a
+// hand-written one is usually uppercase (LISTEN=...) because that is how an
+// EnvironmentFile reads. Both shapes are accepted here, and so is a leading
+// SIGNSRV_ on any of them.
 func readDotEnv(path string) (map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -233,11 +233,11 @@ Flags (before the command):
   -config FILE   read db= from FILE      (default ` + defaultConfig + `)
   -db PATH       open this database, read no config at all
 
-The database is found by, in order: -db, then $SIGNSRV_DB, then db= in the
+The database is found by, in order: -db, then $DB, then db= in the
 config file. Nothing else about the config is read, and nothing in it is
 validated — this tool works while the service is refusing to start.
 
-Passwords are read from $SIGNSRV_ADMIN_PASSWORD, or prompted twice with the
+Passwords are read from $ADMIN_PASSWORD, or prompted twice with the
 echo off. They are never given on the command line.`)
 }
 

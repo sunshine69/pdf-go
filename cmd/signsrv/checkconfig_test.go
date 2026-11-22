@@ -114,19 +114,40 @@ func TestCheckConfigRefusesLooseJWTKeyMode(t *testing.T) {
 	}
 }
 
-// The keystore holds the CA private key. A missing directory is caught here,
-// not at the first signature.
-func TestCheckConfigRefusesMissingKeystore(t *testing.T) {
+// A keystore directory under a parent that is not there is a path nobody
+// typed on purpose: first start creates one directory, not a whole tree, and
+// a typo under a missing parent would leave the instance writing its CA
+// somewhere the operator never meant. That is still a refusal.
+func TestCheckConfigRefusesKeystoreUnderMissingParent(t *testing.T) {
 	body := strings.ReplaceAll(goodBase, "keystore_dir=$DIR/keystore",
-		"keystore_dir=$DIR/no-keystore")
+		"keystore_dir=$DIR/no-such-parent/keystore")
 	p := checkConfigServer(t, body, 0o600)
 	cfg, err := LoadConfig(p)
 	if err == nil {
-		t.Fatal("want an error for a missing keystore")
+		t.Fatal("want an error for a keystore path whose parent is not there")
 	}
 	problems := strings.Join(cfg.Problems(), "\n")
 	if !strings.Contains(problems, "keystore_dir") {
 		t.Fatalf("the problem does not name keystore_dir:\n%s", problems)
+	}
+}
+
+// A keystore directory that is simply not there yet is the shape of a fresh
+// instance: first-start initialization issues the CA into it (see
+// firstStartInit). Refusing it would make the very first run of a new
+// deployment fail on the one directory that run exists to create, so it is a
+// warning about what is about to happen.
+func TestCheckConfigWarnsOnKeystoreDirectoryNotCreatedYet(t *testing.T) {
+	body := strings.ReplaceAll(goodBase, "keystore_dir=$DIR/keystore",
+		"keystore_dir=$DIR/no-keystore")
+	p := checkConfigServer(t, body, 0o600)
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("a keystore directory first start can create should not refuse the run: %v", err)
+	}
+	warnings := strings.Join(cfg.Warnings(), "\n")
+	if !strings.Contains(warnings, "keystore_dir") {
+		t.Fatalf("the run is silent about the CA it is about to issue:\n%s", warnings)
 	}
 }
 
@@ -170,5 +191,44 @@ func TestCheckConfigReportHasNoSecrets(t *testing.T) {
 	}
 	if !strings.Contains(report, "admin_password=sha256:") {
 		t.Fatalf("the admin password is not shown as a digest:\n%s", report)
+	}
+}
+
+// The environment name is the config key uppercased, no product prefix: the
+// service is scoped by how it is launched. A SIGNSRV_-prefixed name is still
+// read, because existing units and compose files use it, but the plain name
+// wins when both are present.
+func TestConfigEnvironmentNamesAreTheKeysUppercased(t *testing.T) {
+	p := checkConfigServer(t, goodBase, 0o600)
+
+	t.Setenv("PUBLIC_URL", "https://plain.example.org")
+	t.Setenv("SIGNSRV_PUBLIC_URL", "https://legacy.example.org")
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PublicURL != "https://plain.example.org" {
+		t.Errorf("public_url = %q, want the unprefixed name to win", cfg.PublicURL)
+	}
+
+	os.Unsetenv("PUBLIC_URL")
+	cfg, err = LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PublicURL != "https://legacy.example.org" {
+		t.Errorf("public_url = %q, want the SIGNSRV_-prefixed name still read", cfg.PublicURL)
+	}
+
+	// A setting is read from the name for that setting only: an unrelated
+	// variable in the environment has no effect on it.
+	t.Setenv("SIGNSRV_PUBLIC_URL", "")
+	t.Setenv("SMTP_HOST", "smtp.plain.example.org")
+	cfg, err = LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SMTPHost != "smtp.plain.example.org" {
+		t.Errorf("smtp_host = %q", cfg.SMTPHost)
 	}
 }

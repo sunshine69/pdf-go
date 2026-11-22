@@ -61,7 +61,7 @@ func TestAdminAddListAndPasswd(t *testing.T) {
 	store, _ := testStore(t)
 	ctx := context.Background()
 
-	t.Setenv("SIGNSRV_ADMIN_PASSWORD", "a-long-enough-pass-1")
+	t.Setenv("ADMIN_PASSWORD", "a-long-enough-pass-1")
 
 	out, code := capture(t, func() int {
 		return adminCmd(ctx, store, []string{"add", "Ops@Example.ORG"})
@@ -112,7 +112,7 @@ func TestAdminPasswordFloor(t *testing.T) {
 	// The 12-character floor is the server's, and this tool writes the same
 	// column. If it accepted shorter, an operator would set a password the
 	// service then refuses to let them log in with — the worst kind of surprise.
-	t.Setenv("SIGNSRV_ADMIN_PASSWORD", "short")
+	t.Setenv("ADMIN_PASSWORD", "short")
 	out, code := capture(t, func() int { return adminCmd(ctx, store, []string{"add", "weak@example.org"}) })
 	if code == 0 || !strings.Contains(out, "12") {
 		t.Fatalf("short password must be refused with the floor stated: rc=%d %s", code, out)

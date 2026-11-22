@@ -73,14 +73,28 @@ func (randSource) NewRequestID() string {
 // newServer loads the signing key and wires the auth layer. The key file is
 // created with 0600 on first start. A store is optional: the health and static
 // routes work without a database, which is what the shell tests exercise.
+//
+// The signing service is loaded here, from the keystore, unless the caller
+// already has one — which is what `serve` does, so that the CA described by the
+// first-start log line is the CA the process signs with and the keystore is
+// opened once, not twice (newServerWithSigner).
 func newServer(cfg *Config, log *slog.Logger, store *signstore.Store) *server {
+	return newServerWithSigner(cfg, log, store, nil)
+}
+
+// newServerWithSigner is newServer with a signing service the caller loaded
+// first. A nil signer means load it here, as before.
+func newServerWithSigner(cfg *Config, log *slog.Logger, store *signstore.Store, signer *signpdf.Service) *server {
 	keys, err := signauth.LoadKeyring(cfg.JWTFile())
 	if err != nil {
 		log.Error("jwt key", "error", err, "file", cfg.JWTFile())
 		return nil
 	}
+	if signer == nil {
+		signer = signService(cfg, log)
+	}
 	s := &server{cfg: cfg, log: log, mux: http.NewServeMux(), tokens: randSource{}, clock: time.Now,
-		keys: keys, store: store, signer: signService(cfg, log), mail: newMailer(cfg, log)}
+		keys: keys, store: store, signer: signer, mail: newMailer(cfg, log)}
 	if store != nil {
 		s.sessions = &signauth.Sessions{Keys: keys, Store: store}
 		s.auth = &signauth.Auth{
@@ -266,7 +280,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 // newMailer builds the mailer from the config. The renderer is parsed once:
 // a template that does not parse is a startup error, not a failure at send
-// time. The sender is the file sender in dev mode, so SIGNSRV_DEV=1 writes
+// time. The sender is the file sender in dev mode, so DEV=1 writes
 // .eml files into var/outbox; in production it is SMTP. A config with no SMTP
 // host and dev mode off has no sender, and the send endpoint enqueues without
 // delivering.

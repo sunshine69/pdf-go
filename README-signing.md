@@ -60,9 +60,9 @@ Run it, in order:
 ```sh
 tmp/signsrv checkconfig -config tmp/signsrv-dev.conf   # must end with "config ok"
 tmp/signsrv migrate     -config tmp/signsrv-dev.conf   # schema version, integrity_check
-SIGNSRV_ADMIN_PASSWORD=dev-admin-password-change-me \
+ADMIN_PASSWORD=dev-admin-password-change-me \
     tmp/signsrv admin add admin@dev.local -config tmp/signsrv-dev.conf
-SIGNSRV_ADMIN_PASSWORD=dev-admin-password-change-me \
+ADMIN_PASSWORD=dev-admin-password-change-me \
     tmp/signsrv serve -config tmp/signsrv-dev.conf &
 curl -s localhost:8090/healthz
 ```
@@ -74,7 +74,7 @@ admin 1 created for admin@dev.local
 ```
 
 **The admin account is created by `signsrv admin add`, not by the service at
-startup.** `admin_password` (or `SIGNSRV_ADMIN_PASSWORD`) is the password that
+startup.** `admin_password` (or `ADMIN_PASSWORD`) is the password that
 account is created with, and the password `signsrv admin passwd` reads. It is
 never used to sign in, and it seeds nothing on its own: a fresh database has no
 admin row, and `/admin/` answers `the email address and password do not match`.
@@ -88,7 +88,7 @@ change-password page — use `signsrv admin passwd EMAIL`.
 
 ## Configuration
 
-`config.example.env` documents every key. A key is read from `SIGNSRV_<KEY>` in
+`config.example.env` documents every key. A key is read from `<KEY>` in
 the environment first, then from the file given with `-config`; the environment
 wins. Secrets (`keystore_pass`, `admin_password`, `smtp_pass`) are never logged
 and never appear in `checkconfig` output: they print as `sha256:6577c212c163`
@@ -115,7 +115,7 @@ config NOT usable
 
 - Run behind TLS (Caddy/nginx; reference `deploy/Caddyfile`, committed with
   `Strict-Transport-Security`). `public_url` must match what signers see.
-- `SIGNSRV_KEYSTORE_PASS`, `SIGNSRV_ADMIN_PASSWORD` and `SIGNSRV_SMTP_PASS`
+- `KEYSTORE_PASS`, `ADMIN_PASSWORD` and `SMTP_PASS`
   come from the environment, not from the file: the file then holds no secret.
   The systemd unit mounts them with `LoadCredential`, so they are not in the
   unit file and not in the shell history.
@@ -154,11 +154,11 @@ exchanges it for a short-lived bearer token. Pass it through the environment,
 never on the command line:
 
 ```sh
-export SIGNSRV_TOKEN=key_0b286cf9ad6d7fe3c44a95e083369e1cba1b9a681f47b10a192b5d3179eb6635
+export TOKEN=key_0b286cf9ad6d7fe3c44a95e083369e1cba1b9a681f47b10a192b5d3179eb6635
 ```
 
-`--token-env` names the variable (`SIGNSRV_TOKEN` by default), `--server`
-(`SIGNSRV_URL` by default). Plain `http://` is refused unless you pass
+`--token-env` names the variable (`TOKEN` by default), `--server`
+(`URL` by default). Plain `http://` is refused unless you pass
 `--insecure`, because a client token would travel in the clear.
 
 A fill spec: `pdf-go extract in.pdf -o fill.json` writes the schema; put the
@@ -263,7 +263,7 @@ command):
 | `audit-write` | append a heartbeat event, which opens the day's file |
 | `sweep` | run the sweeps by hand: expire, prune revocations, requeue crashed leases |
 | `dbstatus` | schema version, integrity check, row counts |
-| `user add NAME [SCOPES…]` | creates an API **account**: the JWT secret is printed once, and `--password-stdin` (or `SIGNSRV_USER_PASSWORD`) optionally sets a web password. `admin:read` is refused here — no account can be an administrator |
+| `user add NAME [SCOPES…]` | creates an API **account**: the JWT secret is printed once, and `--password-stdin` (or `USER_PASSWORD`) optionally sets a web password. `admin:read` is refused here — no account can be an administrator |
 | `user list` | every account: username, `secret=set`, `pw=set|-`, scopes, created, revoked. The secret is never reprinted |
 | `user rotate ID` | a new secret, printed once. Every token signed with the old one stops verifying at the next request |
 | `user revoke ID` | closes the account; its tokens stop working at the next request, and the row stays for the audit trail |
@@ -289,7 +289,7 @@ command):
 
 | flag | meaning |
 |---|---|
-| `--server` | service base URL (`SIGNSRV_URL`) |
+| `--server` | service base URL (`URL`) |
 | `--token` / `--token-env` | client key, prefer the environment |
 | `--insecure` | allow `http://` (development only) |
 | `--spec` | fill spec JSON |
@@ -303,8 +303,8 @@ command):
 | `--widget-x` / `--widget-y` | first signature box, PDF points from the lower-left of the page |
 | `--links-out` | file the signing links are written to (JSON, mode 0600; default `envelope-<id>.links.json`) |
 | `--json` | print the service's JSON answer (default true) |
-| `--username` | account whose secret signs the request (`SIGNSRV_USERNAME`) |
-| `--jwt-secret` / `--jwt-secret-env` | the account's shared secret, prefer the environment (`SIGNSRV_JWT_SECRET`) |
+| `--username` | account whose secret signs the request (`USERNAME`) |
+| `--jwt-secret` / `--jwt-secret-env` | the account's shared secret, prefer the environment (`JWT_SECRET`) |
 | `--ttl` | requested token validity when the CLI mints; the service caps it at 15m |
 | `--timeout` | request timeout, default 60s |
 
@@ -346,11 +346,11 @@ two kinds of bearer token. Keeping them straight is the whole design:
 
 | credential | who holds it | what it does |
 |---|---|---|
-| `jwt_secret` (base64url, 32 bytes) | the operator's laptop, a CI runner, a systemd unit | lets the holder **sign** its own access token. The CLI does it with `--username` + `SIGNSRV_JWT_SECRET`; the secret itself never travels, and there is no token request |
+| `jwt_secret` (base64url, 32 bytes) | the operator's laptop, a CI runner, a systemd unit | lets the holder **sign** its own access token. The CLI does it with `--username` + `JWT_SECRET`; the secret itself never travels, and there is no token request |
 | client key (`key_…`) | an API integration | is **exchanged** at `POST /api/v1/auth/token` for a short access token; the key never rides on a call |
 | `password` (argon2id) | a human, at the web desk | signs in to the SPA. Today that desk is the admin portal; the account table is the table it will read |
 
-`SIGNSRV_TOKEN` holds whichever of the two shapes you have: a `key_…` value is
+`TOKEN` holds whichever of the two shapes you have: a `key_…` value is
 exchanged, and a three-part `a.b.c` value — an access token minted by login, by
 refresh, or by the token endpoint — is sent as it is, which is what a chore
 script wants: mint once, spend one request per verb.
@@ -373,8 +373,8 @@ Both leave the row in place, stamped `revoked_at`: the audit trail of what its
 secret signed stays verifiable, and `pdf-go admin dbstatus` counts it under
 `users_revoked` so you can tell "revoked" from "never existed".
 
-Every variable a credential lives in — `SIGNSRV_URL`, `SIGNSRV_TOKEN`,
-`SIGNSRV_USERNAME`, `SIGNSRV_JWT_SECRET`, `SIGNSRV_USER_PASSWORD` — is read from the
+Every variable a credential lives in — `URL`, `TOKEN`,
+`USERNAME`, `JWT_SECRET`, `USER_PASSWORD` — is read from the
 environment, never from argv, so none of them appears in a process list.
 
 
@@ -384,7 +384,7 @@ environment, never from argv, so none of them appears in a process list.
   a public `listen`. Remove `dev` or bind to `127.0.0.1`.
 - `/admin/` says `the email address and password do not match` — there is no
   admin row. Run `signsrv admin add EMAIL` with the password in
-  `SIGNSRV_ADMIN_PASSWORD` (at least 12 characters).
+  `ADMIN_PASSWORD` (at least 12 characters).
 - `the credential behind this token was replaced; sign in again` — the admin
   password was changed with `signsrv admin passwd`, which stamps the credential
   epoch and ends every token minted under the old password. This is the action

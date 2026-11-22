@@ -9,9 +9,9 @@ For each key there is exactly one config-file name and one environment variable,
 related by a single mechanical rule:
 
 ```
-config key      SIGNSRV_ + UPPER(key)
-smtp_starttls -> SIGNSRV_SMTP_STARTTLS
-keystore_pass -> SIGNSRV_KEYSTORE_PASS
+config key       + UPPER(key)
+smtp_starttls -> SMTP_STARTTLS
+keystore_pass -> KEYSTORE_PASS
 ```
 
 The environment wins over the file. Nothing else transforms a name, and there are
@@ -21,7 +21,7 @@ env var is always derived, never remembered.
 ```sh
 # Both of these are the same setting.
 echo 'log_level=debug' >> /etc/signsrv/signsrv.env
-export SIGNSRV_LOG_LEVEL=debug
+export LOG_LEVEL=debug
 ```
 
 ## The file
@@ -31,8 +31,9 @@ export SIGNSRV_LOG_LEVEL=debug
 - `#` starts a comment; blank lines are skipped.
 - A line with no `=` is a hard error (`expected KEY=value`).
 - Keys are lower-cased, and a leading `signsrv_` is **stripped**, so
-  `SIGNSRV_LOG_LEVEL=debug` in the file works the same as `log_level=debug`. The
-  env var needs the prefix; the file does not care.
+  `LOG_LEVEL=debug` in the file works the same as `log_level=debug`. The
+  environment name is the key uppercased, with no prefix needed; a
+  `SIGNSRV_`-prefixed env var is still read as a legacy spelling.
 - Surrounding single or double quotes on a value are trimmed. A value is otherwise
   taken literally to the end of the line, so **do not quote secrets that contain
   spaces or `#`** — a `#` mid-value is not a comment here, but leading/trailing
@@ -64,9 +65,9 @@ generated at start.
 
 | Key | Env var | Default | Required | Meaning |
 | --- | --- | --- | --- | --- |
-| `listen` | `SIGNSRV_LISTEN` | `127.0.0.1:8080` | no | Bind address. Plain HTTP — a public site needs a TLS proxy in front. Binding outside loopback prints a warning. |
-| `public_url` | `SIGNSRV_PUBLIC_URL` | — | **yes** | The external `https://` origin. It builds every signing link, so an invitation is unusable if this is wrong. Must start with `https://` when `dev=false`. |
-| `trust_proxy` | `SIGNSRV_TRUST_PROXY` | `false` | no | Trust `X-Forwarded-For` for the client address. **Set to `true` behind any proxy**, or every rate limit binds to the proxy and all your users share one bucket. |
+| `listen` | `LISTEN` | `127.0.0.1:8080` | no | Bind address. Plain HTTP — a public site needs a TLS proxy in front. Binding outside loopback prints a warning. |
+| `public_url` | `PUBLIC_URL` | — | **yes** | The external `https://` origin. It builds every signing link, so an invitation is unusable if this is wrong. Must start with `https://` when `dev=false`. |
+| `trust_proxy` | `TRUST_PROXY` | `false` | no | Trust `X-Forwarded-For` for the client address. **Set to `true` behind any proxy**, or every rate limit binds to the proxy and all your users share one bucket. |
 
 ### State on disk
 
@@ -76,40 +77,40 @@ whatever `WorkingDirectory` was. Prefer absolute paths.
 
 | Key | Env var | Default | Required | Meaning |
 | --- | --- | --- | --- | --- |
-| `db` | `SIGNSRV_DB` | `var/signsrv.db` | no | SQLite file, or a `postgres://` / `postgresql://` URL. Also accepted as `db_path` (deprecated alias; `db` wins if both are set). |
-| `storage_dir` | `SIGNSRV_STORAGE_DIR` | `var/storage` | no | Signed PDFs and their delivery receipts. |
-| `keystore_dir` | `SIGNSRV_KEYSTORE_DIR` | `var/keystore` | no | The CA: `ca.key` (encrypted with `keystore_pass`) and `ca.pem`. If you set this, the directory must already exist — the service will not create a path you named. |
-| `outbox_dir` | `SIGNSRV_OUTBOX_DIR` | `var/outbox` | no | Where `.eml` files are written when `dev=true` instead of being mailed. |
-| `audit_dir` | `SIGNSRV_AUDIT_DIR` | `var/audit` | no | The append-only hash log backing `audit-verify`. |
-| `downloads_dir` | `SIGNSRV_DOWNLOADS_DIR` | `""` | no | Optional. Set to keep a copy of each document a party downloaded. |
-| `jwt_secret_file` | `SIGNSRV_JWT_SECRET_FILE` | `var/jwt.ed25519.key` | no | Ed25519 key signing access tokens. **Created on first start** if absent — do not generate it yourself, the loader expects its own encoding and refuses a PEM. Must be `0600`. Losing it invalidates every signed-in session. |
+| `db` | `DB` | `var/signsrv.db` | no | SQLite file, or a `postgres://` / `postgresql://` URL. Also accepted as `db_path` (deprecated alias; `db` wins if both are set). |
+| `storage_dir` | `STORAGE_DIR` | `var/storage` | no | Signed PDFs and their delivery receipts. |
+| `keystore_dir` | `KEYSTORE_DIR` | `var/keystore` | no | The CA: `ca.key` (encrypted with `keystore_pass`) and `ca.pem`. If you set this, the directory must already exist — the service will not create a path you named. |
+| `outbox_dir` | `OUTBOX_DIR` | `var/outbox` | no | Where `.eml` files are written when `dev=true` instead of being mailed. |
+| `audit_dir` | `AUDIT_DIR` | `var/audit` | no | The append-only hash log backing `audit-verify`. |
+| `downloads_dir` | `DOWNLOADS_DIR` | `""` | no | Optional. Set to keep a copy of each document a party downloaded. |
+| `jwt_secret_file` | `JWT_SECRET_FILE` | `var/jwt.ed25519.key` | no | Ed25519 key signing access tokens. **Created on first start** if absent — do not generate it yourself, the loader expects its own encoding and refuses a PEM. Must be `0600`. Losing it invalidates every signed-in session. |
 
 ### Secrets
 
 | Key | Env var | Default | Required | Meaning |
 | --- | --- | --- | --- | --- |
-| `keystore_pass` | `SIGNSRV_KEYSTORE_PASS` | — | **yes** | Encrypts `ca.key`. **Cannot be changed or regenerated after the CA exists** — a wrong passphrase means the service starts and every signature issued so far reads as invalid. Back this up with the keystore. |
-| `admin_password` | `SIGNSRV_ADMIN_PASSWORD` | — | **yes** | Only the password the *seeding step* uses. **It does not create an account** — the one exception is `dev=true`, which seeds `dev@localhost` into an otherwise empty database. See `docs/DEPLOY-DOCKER.md` → *Accounts*. |
-| `smtp_pass` | `SIGNSRV_SMTP_PASS` | `""` | no | Relay password. Empty means an unauthenticated relay. |
+| `keystore_pass` | `KEYSTORE_PASS` | — | **yes** | Encrypts `ca.key`. **Cannot be changed or regenerated after the CA exists** — a wrong passphrase means the service starts and every signature issued so far reads as invalid. Back this up with the keystore. |
+| `admin_password` | `ADMIN_PASSWORD` | — | **yes** | Only the password the *seeding step* uses. **It does not create an account** — the one exception is `dev=true`, which seeds `dev@localhost` into an otherwise empty database. See `docs/DEPLOY-DOCKER.md` → *Accounts*. |
+| `smtp_pass` | `SMTP_PASS` | `""` | no | Relay password. Empty means an unauthenticated relay. |
 
 ### Mail
 
 | Key | Env var | Default | Required | Meaning |
 | --- | --- | --- | --- | --- |
-| `smtp_host` | `SIGNSRV_SMTP_HOST` | — | **yes** | Relay host. Unset with `dev=false` is fatal; with `dev=true` mail is written to `outbox_dir`. |
-| `smtp_port` | `SIGNSRV_SMTP_PORT` | `587` | no | Relay port. |
-| `smtp_user` | `SIGNSRV_SMTP_USER` | `""` | no | Relay username. |
-| `smtp_starttls` | `SIGNSRV_SMTP_STARTTLS` | **`true`** | no | Note the default: a relay that does not advertise STARTTLS needs `false`, or every invitation fails with something that reads like a network fault. |
-| `mail_from` | `SIGNSRV_MAIL_FROM` | — | **yes** | Envelope sender on every invitation. |
+| `smtp_host` | `SMTP_HOST` | — | **yes** | Relay host. Unset with `dev=false` is fatal; with `dev=true` mail is written to `outbox_dir`. |
+| `smtp_port` | `SMTP_PORT` | `587` | no | Relay port. |
+| `smtp_user` | `SMTP_USER` | `""` | no | Relay username. |
+| `smtp_starttls` | `SMTP_STARTTLS` | **`true`** | no | Note the default: a relay that does not advertise STARTTLS needs `false`, or every invitation fails with something that reads like a network fault. |
+| `mail_from` | `MAIL_FROM` | — | **yes** | Envelope sender on every invitation. |
 
 ### Signing policy
 
 | Key | Env var | Default | Required | Meaning |
 | --- | --- | --- | --- | --- |
-| `link_ttl` | `SIGNSRV_LINK_TTL` | `168h` | no | Signing-link lifetime. Go duration, max `720h`. |
-| `max_pdf_mb` | `SIGNSRV_MAX_PDF_MB` | `25` | no | Upload ceiling. 1–200. |
-| `tsa_url` | `SIGNSRV_TSA_URL` | `https://freetsa.org/tsr` | no | RFC 3161 timestamp authority. Empty uses the default. Over `http://` warns: the timestamp is the one field a forged document needs, and it would be unauthenticated. |
-| `worker_interval` | `SIGNSRV_WORKER_INTERVAL` | `15s` | no | How often the queue is drained. |
+| `link_ttl` | `LINK_TTL` | `168h` | no | Signing-link lifetime. Go duration, max `720h`. |
+| `max_pdf_mb` | `MAX_PDF_MB` | `25` | no | Upload ceiling. 1–200. |
+| `tsa_url` | `TSA_URL` | `https://freetsa.org/tsr` | no | RFC 3161 timestamp authority. Empty uses the default. Over `http://` warns: the timestamp is the one field a forged document needs, and it would be unauthenticated. |
+| `worker_interval` | `WORKER_INTERVAL` | `15s` | no | How often the queue is drained. |
 
 ### CA subject (only matters at first CA creation)
 
@@ -119,15 +120,15 @@ the existing certificate.
 
 | Key | Env var |
 | --- | --- |
-| `ca_common_name` | `SIGNSRV_CA_COMMON_NAME` |
-| `ca_org` | `SIGNSRV_CA_ORG` |
-| `ca_unit` | `SIGNSRV_CA_UNIT` |
-| `ca_locality` | `SIGNSRV_CA_LOCALITY` |
-| `ca_province` | `SIGNSRV_CA_PROVINCE` |
-| `ca_street` | `SIGNSRV_CA_STREET` |
-| `ca_postal` | `SIGNSRV_CA_POSTAL` |
-| `ca_country` | `SIGNSRV_CA_COUNTRY` |
-| `ca_email` | `SIGNSRV_CA_EMAIL` |
+| `ca_common_name` | `CA_COMMON_NAME` |
+| `ca_org` | `CA_ORG` |
+| `ca_unit` | `CA_UNIT` |
+| `ca_locality` | `CA_LOCALITY` |
+| `ca_province` | `CA_PROVINCE` |
+| `ca_street` | `CA_STREET` |
+| `ca_postal` | `CA_POSTAL` |
+| `ca_country` | `CA_COUNTRY` |
+| `ca_email` | `CA_EMAIL` |
 
 
 **Filling in the CA subject.** These keys apply only when the keystore is created
@@ -175,9 +176,9 @@ What actually matters in that command, and what does not:
 
 | Key | Env var | Default | Required | Meaning |
 | --- | --- | --- | --- | --- |
-| `log_level` | `SIGNSRV_LOG_LEVEL` | `info` | no | `debug`, `info`, `warn`/`warning`, `error`. |
-| `log_path` | `SIGNSRV_LOG_PATH` | `var/log/signsrv.jsonl` | no | JSON-lines log file. |
-| `dev` | `SIGNSRV_DEV` | `false` | no | Off the ground: skips validation, generates missing secrets, writes mail to `outbox_dir`, and seeds `dev@localhost` with the admin password (ephemeral, printed to the log, when the config has none). **Never `true` in production** — it is the one mode that creates an account by itself. |
+| `log_level` | `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn`/`warning`, `error`. |
+| `log_path` | `LOG_PATH` | `var/log/signsrv.jsonl` | no | JSON-lines log file. |
+| `dev` | `DEV` | `false` | no | Off the ground: skips validation, generates missing secrets, writes mail to `outbox_dir`, and seeds `dev@localhost` with the admin password (ephemeral, printed to the log, when the config has none). **Never `true` in production** — it is the one mode that creates an account by itself. |
 
 ## Environment variables that are not settings
 
@@ -186,10 +187,10 @@ look like settings and are not, which is the main trap in this scheme:
 
 | Variable | Read by | Purpose |
 | --- | --- | --- |
-| `SIGNSRV_ADMIN_PASSWORD` | `admin add`, `admin passwd` | The password for the account being created or rotated. Falls back to a terminal prompt if unset. Also a config key (above). |
-| `SIGNSRV_USER_PASSWORD` | `user add` | Password/secret for an SPA user account. **Not a config key** — setting it in the file does nothing. |
-| `SIGNSRV_KEYSTORE_PASS` | `firstboot`, `checkconfig` | Seed value for the passphrase. Also a config key. |
-| `SIGNSRV_SMTP_PASS` | `firstboot` | Seed value for the relay password. Also a config key. |
+| `ADMIN_PASSWORD` | `admin add`, `admin passwd` | The password for the account being created or rotated. Falls back to a terminal prompt if unset. Also a config key (above). |
+| `USER_PASSWORD` | `user add` | Password/secret for an SPA user account. **Not a config key** — setting it in the file does nothing. |
+| `KEYSTORE_PASS` | `firstboot`, `checkconfig` | Seed value for the passphrase. Also a config key. |
+| `SMTP_PASS` | `firstboot` | Seed value for the relay password. Also a config key. |
 
 ## Two things that will bite you
 

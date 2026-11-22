@@ -27,8 +27,8 @@ func TestReadDotEnv(t *testing.T) {
 			want: map[string]string{"listen": "127.0.0.1:8080", "db": "/var/lib/signsrv/signsrv.db"},
 		},
 		{
-			name: "SIGNSRV_ prefix stripped, as systemd's EnvironmentFile uses",
-			body: "SIGNSRV_DB=/var/lib/signsrv/signsrv.db\nSIGNSRV_KEYSTORE_PASS=hunter2\n",
+			name: " prefix stripped, as systemd's EnvironmentFile uses",
+			body: "DB=/var/lib/signsrv/signsrv.db\nKEYSTORE_PASS=hunter2\n",
 			want: map[string]string{"db": "/var/lib/signsrv/signsrv.db", "keystore_pass": "hunter2"},
 		},
 		{
@@ -112,14 +112,14 @@ func TestResolveDB(t *testing.T) {
 		}
 	})
 
-	t.Run("$SIGNSRV_DB wins over the config file", func(t *testing.T) {
+	t.Run("$DB wins over the config file", func(t *testing.T) {
 		cfg := write(t, "c.env", "db=/from/config.db\n")
-		t.Setenv("SIGNSRV_DB", dbPath)
+		t.Setenv("DB", dbPath)
 		got, src, err := resolveDB("", cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != dbPath || src != "$SIGNSRV_DB" {
+		if got != dbPath || src != "$DB" {
 			t.Fatalf("got %q from %q", got, src)
 		}
 	})
@@ -143,8 +143,8 @@ func TestResolveDB(t *testing.T) {
 		}
 	})
 
-	t.Run("SIGNSRV_-prefixed db key is accepted", func(t *testing.T) {
-		cfg := write(t, "c.env", "SIGNSRV_DB="+dbPath+"\n")
+	t.Run("-prefixed db key is accepted", func(t *testing.T) {
+		cfg := write(t, "c.env", "DB="+dbPath+"\n")
 		got, _, err := resolveDB("", cfg)
 		if err != nil || got != dbPath {
 			t.Fatalf("got %q, err %v", got, err)
@@ -169,9 +169,9 @@ func TestResolveDB(t *testing.T) {
 		}
 	})
 
-	t.Run("SIGNSRV_CONFIG points at the file", func(t *testing.T) {
+	t.Run("CONFIG points at the file", func(t *testing.T) {
 		cfg := write(t, "c.env", "db="+dbPath+"\n")
-		t.Setenv("SIGNSRV_CONFIG", cfg)
+		t.Setenv("CONFIG", cfg)
 		got, src, err := resolveDB("", "")
 		if err != nil {
 			t.Fatal(err)
@@ -182,11 +182,11 @@ func TestResolveDB(t *testing.T) {
 	})
 
 	// An explicit -config must beat the environment, or a script cannot override
-	// a container's inherited SIGNSRV_CONFIG.
-	t.Run("-flag beats $SIGNSRV_CONFIG", func(t *testing.T) {
+	// a container's inherited CONFIG.
+	t.Run("-flag beats $CONFIG", func(t *testing.T) {
 		flagged := write(t, "flagged.env", "db="+dbPath+"\n")
 		write(t, "ignored.env", "db=/ignored.db\n")
-		t.Setenv("SIGNSRV_CONFIG", filepath.Join(filepath.Dir(flagged), "ignored.env"))
+		t.Setenv("CONFIG", filepath.Join(filepath.Dir(flagged), "ignored.env"))
 		got, _, err := resolveDB("", flagged)
 		if err != nil || got != dbPath {
 			t.Fatalf("got %q, err %v", got, err)

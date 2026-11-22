@@ -126,7 +126,7 @@ echo "== an operator can create an admin and log in (the /admin/ path works)"
 docker exec "$C" bash -c '
   set -e
   PASS="operator-test-password-1"
-  SIGNSRV_ADMIN_PASSWORD="$PASS" signsrv -config /etc/signsrv/signsrv.env \
+  ADMIN_PASSWORD="$PASS" signsrv -config /etc/signsrv/signsrv.env \
       admin add operator@example.org | sed "s/^/  /"
   TOK=$(curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login \
         -H "content-type: application/json" \

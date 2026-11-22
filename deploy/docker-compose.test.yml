@@ -1,0 +1,100 @@
+# docker-compose.test.yml — the test instance behind test-pdfsign.kaykraft.org.
+#
+#   docker compose -f deploy/docker-compose.test.yml up -d
+#   docker compose -f deploy/docker-compose.test.yml logs -f signsrv
+#   docker compose -f deploy/docker-compose.test.yml down          (keeps the data)
+#   docker compose -f deploy/docker-compose.test.yml down -v       (wipes the data)
+#   docker compose -f deploy/docker-compose.test.yml exec signsrv signsrv dbstatus
+#
+# This is a bridge network with a published port, NOT the host-network shape of
+# deploy/docker-compose.yml. The difference is the whole point of this file.
+#
+#   deploy/docker-compose.yml: caddy and signsrv share the host's network
+#   namespace, so the socket peer is 127.0.0.1 and the only way to learn the
+#   client's address is X-Forwarded-For.
+#
+#   this file: the container has its own namespace, so the socket peer is the
+#   docker bridge gateway (172.18.0.1), because docker SNATs the source address
+#   on a published port. The client's real address is therefore ONLY reachable
+#   through X-Forwarded-For. That is exactly the thing the IP regression is
+#   about, and it is the reason this shape is used for the test rather than the
+#   host-network shape: a host-network container would still record a plausible
+#   address even if the proxy passed no header at all, and the test would pass
+#   for the wrong reason.
+#
+# So, for a correct IP on a signature, all three of these must hold:
+#
+#   1. the front proxy sets X-Forwarded-For to the client address, and OVERWRITES
+#      it rather than appending (deploy/signsrv.nginx.conf explains why);
+#   2. TRUST_PROXY=1, or the header is ignored and the peer is used;
+#   3. nothing can reach 7000 without going through that proxy, or a client
+#      chooses the address that ends up recorded on its own signature.
+#
+# 3 is a firewall obligation, not something this file can enforce: 0.0.0.0:7000
+# is published, so on a host whose 7000 is reachable from the internet the
+# header is forgeable. Test instance only.
+#
+# DEV=1: mail is written to the outbox directory instead of being sent
+# through the relay, and the link is printed in the log. A test run must not mail
+# real parties from a throwaway instance, and the IP question does not depend on
+# the transport. The outbox is a named volume, so the invitation survives a
+# container restart and is readable with the exec command in the regression doc.
+#
+# PUBLIC_URL must be the address the browser is sent to, because the
+# signing links are built from it. Wrong value here and the link looks real and
+# goes nowhere - which no health check will catch.
+
+# The settings below and the secrets in .env.test are the same names the service
+# reads in any other deployment; where the two overlap, this block wins.
+
+# The instance initializes itself, in the server process, before it binds.
+#
+# First start against an empty volume: the schema and its migrations
+# (internal/signstore.Migrate), the signing CA, the token key, and the admin
+# login named by DEFAULT_ADMIN_EMAIL. An instance that already exists: pending
+# migrations only, and nothing is created — in particular no account appears
+# behind an operator's back on a restart. All of it is Go, in cmd/signsrv/init.go;
+# there is no init container and no `docker exec` step to remember.
+#
+# DEFAULT_ADMIN_EMAIL unset falls back to admin@pdfsign.com and the log says so.
+# The password seeded is ADMIN_PASSWORD from .env.test, 12 characters minimum:
+# too short and the seed refuses and says so, rather than creating a login
+# nobody can use. To wipe the instance and run the first start again:
+#   docker compose -f deploy/docker-compose.test.yml down -v
+services:
+  signsrv:
+    image: signsrv:test
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: signsrv-test
+    restart: unless-stopped
+    ports:
+      - "7000:7000"        # the front proxy for test-pdfsign.kaykraft.org targets 7000
+    environment:
+      # 0.0.0.0 is required, not stylistic: the published mapping only works if
+      # the process listens on an address reachable from outside the container's
+      # own namespace. A 127.0.0.1:7000 bind would answer on localhost inside
+      # the container and nothing outside it, and the health check would time
+      # out rather than refuse.
+      LISTEN: 0.0.0.0:7000
+      PUBLIC_URL: https://test-pdfsign.kaykraft.org
+      TRUST_PROXY: "1"
+      DEV: "1"
+      MAIL_FROM: signer@kaykraft.org
+      TSA_URL: https://freetsa.org/tsr
+      # The login the first start of an empty volume creates, seeded with the
+      # ADMIN_PASSWORD from .env.test. Environment only, never a config key, and
+      # honoured on a first start only: a restart of an instance that already
+      # exists never adds an account.
+      DEFAULT_ADMIN_EMAIL: test-admin@example.com
+      # The access log is JSON lines, always: there is no pretty-print switch to
+      # set. Pipe `docker compose logs` through jq if you want it readable.
+    env_file:
+      - path: .env.test
+        required: true     # KEYSTORE_PASS, ADMIN_PASSWORD
+    volumes:
+      - signsrv-test-data:/var/lib/signsrv
+
+volumes:
+  signsrv-test-data:

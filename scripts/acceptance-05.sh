@@ -49,7 +49,7 @@ grep -q 'insert into events' internal/signflow/state.go && echo "  the audit eve
 
 echo "== migrate, admin, client =="
 "$D/signsrv" migrate -config "$D/dev.conf" | tail -1
-SIGNSRV_ADMIN_PASSWORD=dev-admin-password-change-me \
+ADMIN_PASSWORD=dev-admin-password-change-me \
   "$D/signsrv" admin add admin@example.test -config "$D/dev.conf"
 KEY=$("$D/signsrv" client add api -config "$D/dev.conf" | sed -n 's/^key: //p')
 test -n "$KEY" && echo "  client key issued: $(echo "$KEY" | cut -c1-6)..."

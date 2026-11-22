@@ -44,7 +44,7 @@
 
 	# The rate bucket signsrv maintains is per address, and it reads the
 	# address from X-Forwarded-For. That header is only trusted when
-	# SIGNSRV_TRUST_PROXY=1, and only when this proxy is the one in front.
+	# TRUST_PROXY=1, and only when this proxy is the one in front.
 	# Do not expose signsrv on a socket that is reachable without going
 	# through this proxy: the header can be forged, and the rate limit
 	# becomes a limit on an address the attacker chose.

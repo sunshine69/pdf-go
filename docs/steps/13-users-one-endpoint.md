@@ -12,7 +12,7 @@ scopes and the role from the **row**, re-read per request, and refuses every
 `admin:*` route by kind. `signsrv user add|list|rotate|revoke` is the bootstrap
 and runs where the database is; `pdf-go admin <verb>` is the same question over
 the API, for a machine that has no shell on the server. The CLI mints its own
-token from `SIGNSRV_JWT_SECRET` and sends no secret.
+token from `JWT_SECRET` and sends no secret.
 
 ## 1. What is being asked (restated so we agree)
 
@@ -37,7 +37,7 @@ token from `SIGNSRV_JWT_SECRET` and sends no secret.
 | Admin rows with **argon2id** password | `admins(id, email, password_hash, role, epoch, …)`, `schema.sql:7` |
 | Revocation: `revoked_jtis(jti, expires_at)` checked every request | `middleware.go:121` |
 | Rate limit, login-denied uniformity, timing-attack dummy hash | `ratelimit.go`, `sessions.go:35` |
-| CLI speaks HTTP only — never opens the database | `cmd/pdf-go/envelope.go` (`--server`, `SIGNSRV_TOKEN`) |
+| CLI speaks HTTP only — never opens the database | `cmd/pdf-go/envelope.go` (`--server`, `TOKEN`) |
 | Client create/revoke **already an API** | `POST /api/v1/admin/clients`, `DELETE /api/v1/admin/clients/{id}` (`admin.go:603`) |
 
 So "one consistent endpoint" is already true for documents. The local-only verbs are
@@ -144,8 +144,8 @@ keys on the box that holds them), `worker` (it needs the DB file, not an API), a
    existing CLI runs are unaffected.
 3. Ship the chore routes. Update `README-signing.md`, `runbook.md`, `docs/skills/*`
    to call them; keep the local verbs documented as bootstrap.
-4. Add `pdf-go admin <verb>` so one `SIGNSRV_URL` + one user's secret drives both
-   machines. Add `SIGNSRV_JWT_SECRET` (CLI mints) alongside `SIGNSRV_TOKEN` (server mints).
+4. Add `pdf-go admin <verb>` so one `URL` + one user's secret drives both
+   machines. Add `JWT_SECRET` (CLI mints) alongside `TOKEN` (server mints).
 5. **v6 (later, separate step)** drops `clients` once every caller has a `users` row,
    and `admins` once the portal logs in through `users`. Deletion is its own step so a
    bad migration can be rolled back without touching v5.
@@ -154,7 +154,7 @@ keys on the box that holds them), `worker` (it needs the DB file, not an API), a
 
 ```sh
 # 1. one username works for both doors
-SIGNSRV_JWT_SECRET=$SECRET pdf-go admin dbstatus --server https://…   # 200, JSON
+JWT_SECRET=$SECRET pdf-go admin dbstatus --server https://…   # 200, JSON
 # 2. a token minted with user A's secret cannot read user B's client row
 # 3. a token whose users row has revoked_at set is refused 401 token_revoked on the next call
 # 4. alg=HS256 minted against an EdDSA public key is refused 401
@@ -182,9 +182,9 @@ environment file and nothing else:
 
 ```ini
 # /etc/systemd/system/signsrv-chores.service
-Environment=SIGNSRV_URL=https://srv.example
-Environment=SIGNSRV_USERNAME=chores
-EnvironmentFile=/etc/signsrv/chores.env     # SIGNSRV_JWT_SECRET=…, mode 0400
+Environment=URL=https://srv.example
+Environment=USERNAME=chores
+EnvironmentFile=/etc/signsrv/chores.env     # JWT_SECRET=…, mode 0400
 ExecStart=/usr/local/bin/pdf-go admin dbstatus
 ```
 
@@ -192,8 +192,8 @@ The one line that answers "is this deployment healthy", on a machine with no
 shell access to the server:
 
 ```sh
-SIGNSRV_URL=https://srv.example SIGNSRV_USERNAME=chores \
-SIGNSRV_JWT_SECRET=$(cat /etc/signsrv/chores.secret) pdf-go admin dbstatus
+URL=https://srv.example USERNAME=chores \
+JWT_SECRET=$(cat /etc/signsrv/chores.secret) pdf-go admin dbstatus
 ```
 
 Deliberate properties, each with a test behind it:
@@ -208,11 +208,11 @@ Deliberate properties, each with a test behind it:
   token expiry. The row survives, stamped `revoked_at`, so the audit trail of
   what its secret signed stays verifiable and `admin dbstatus` counts it under
   `users_revoked` — "revoked" stays tellable apart from "never existed";
-- `SIGNSRV_TOKEN` holds a client key (`key_…`, exchanged at the token endpoint)
+- `TOKEN` holds a client key (`key_…`, exchanged at the token endpoint)
   **or** an already-minted access token (`a.b.c`, sent as it is). A script that
   mints once spends one request per verb, which is what keeps a chore run inside
   the token endpoint's rate bucket;
-- no credential is read from argv, ever. `SIGNSRV_URL`, `SIGNSRV_TOKEN`,
-  `SIGNSRV_USERNAME`, `SIGNSRV_JWT_SECRET` and `SIGNSRV_USER_PASSWORD` are environment
+- no credential is read from argv, ever. `URL`, `TOKEN`,
+  `USERNAME`, `JWT_SECRET` and `USER_PASSWORD` are environment
   names only, and the run's log-redaction phase proves none of them reaches the
   journal.

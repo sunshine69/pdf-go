@@ -66,7 +66,7 @@ belongs in `signflow` instead.
 | File | Why it matters |
 | --- | --- |
 | `cmd/signsrv/routes.go` | Every endpoint, its scope, its rate-limit bucket. **Start here for any API change.** |
-| `cmd/signsrv/config.go` | Every setting: file key, `SIGNSRV_*` env, default, validation. |
+| `cmd/signsrv/config.go` | Every setting: file key, `*` env, default, validation. |
 | `cmd/signsrv/envelopes.go` | Create (multipart!), send, get, document. |
 | `cmd/signsrv/worker.go` | The background loop: mail, batches, sweeps. |
 | `internal/signflow/state.go` | The state machine and the legal transitions. |
@@ -139,7 +139,7 @@ A route with no scope listed is **not granted** — default deny.
 
 ## Config
 
-`-config FILE`, or env `SIGNSRV_*` (env wins). `signsrv checkconfig` validates
+`-config FILE`, or env `*` (env wins). `signsrv checkconfig` validates
 without starting. Load-bearing keys:
 
 | Key | Notes |

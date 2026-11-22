@@ -136,7 +136,7 @@ go test -count=1 -run 'TestLogin|TestPassword|TestRefresh|TestLogout|TestClient|
 ```
 Manual:
 ```sh
-SIGNSRV_ADMIN_PASSWORD='…' signsrv -config CFG admin add ADMIN@OPS.EXAMPLE
+ADMIN_PASSWORD='…' signsrv -config CFG admin add ADMIN@OPS.EXAMPLE
 signsrv -config CFG admin list
 signsrv -config CFG admin passwd ADMIN@OPS.EXAMPLE   # stamps the credential epoch
 signsrv -config CFG client add ops-tool envelope:write envelope:read
@@ -366,7 +366,7 @@ field asked about, and `admin users` never carries a secret.
 > **Verification status:** [x] §7 items 1, 3, 6, 8, 9, 10 run in the acceptance
 > run · [x] items 2, 4, 5, 7 run in the unit suites · [x] no credential read
 > from argv · [x] `admin:read` ungrantable to an account · [x] the run's
-> log-redaction phase covers `SIGNSRV_JWT_SECRET` and the minted token.
+> log-redaction phase covers `JWT_SECRET` and the minted token.
 
 ## 4. TODO ledger — the checks that do not exist yet
 

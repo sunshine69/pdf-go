@@ -31,11 +31,20 @@ import (
 // signService builds the signing service from the config. It is called at
 // startup, so a keystore that cannot be opened is reported at startup, not on
 // the first create.
+//
+// The subject passed is firstStartCASubject, not cfg.CASubject: signpdf only
+// consults a subject when it CREATES a keystore (internal/signpdf, LoadCAWith),
+// so this changes nothing for an instance that has one and decides the name for
+// an instance that does not. Passing the derived name here as well as in the
+// first-start run means a CA created by `signsrv sign` on a fresh state
+// directory carries the same identity as one created by `signsrv serve` — the
+// subject is written once and for all, so the first command to touch an empty
+// keystore must not be the one that fixes a worse name.
 func signService(cfg *Config, log *slog.Logger) *signpdf.Service {
 	fontData, fontName := selftestFont(cfg)
 	s, err := signpdf.NewService(signpdf.Config{
 		KeystoreDir: cfg.Keystore,
-		CASubject:   cfg.CASubject,
+		CASubject:   firstStartCASubject(cfg),
 		Passphrase:  cfg.KeystorePassphrase(),
 		TSAURL:      cfg.TSAURL,
 		FontData:    fontData,

@@ -259,12 +259,12 @@ type cliCredential struct {
 func cliAs(username, secret string) *cliCredential {
 	return &cliCredential{
 		env: map[string]string{
-			"SIGNSRV_USERNAME":   username,
-			"SIGNSRV_JWT_SECRET": secret,
+			"USERNAME":   username,
+			"JWT_SECRET": secret,
 			// The client key must not be visible: the CLI prefers a
 			// self-minted token, and the run proves that by leaving the
 			// exchange credential unset.
-			"SIGNSRV_TOKEN": "",
+			"TOKEN": "",
 		},
 	}
 }
@@ -273,16 +273,16 @@ func cliAs(username, secret string) *cliCredential {
 // chore routes accept.
 // cliAsAdmin is the CLI carrying the run's admin access token, which is the
 // shape a chore script uses: a token in the environment, no secret on disk. The
-// token is sent as it is — the CLI reads SIGNSRV_TOKEN as a bearer token, not
+// token is sent as it is — the CLI reads TOKEN as a bearer token, not
 // as a client key, and so one verb costs one request. That matters here: the
 // run's rate buckets are shared, and a verb that exchanged a key each time would
 // spend the budget of the phases that follow.
 func cliAsAdmin() *cliCredential {
 	return &cliCredential{
 		env: map[string]string{
-			"SIGNSRV_TOKEN":      adminTok,
-			"SIGNSRV_USERNAME":   "",
-			"SIGNSRV_JWT_SECRET": "",
+			"TOKEN":      adminTok,
+			"USERNAME":   "",
+			"JWT_SECRET": "",
 		},
 	}
 }

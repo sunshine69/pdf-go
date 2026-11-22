@@ -11,7 +11,7 @@
 #
 #   docker build -t signsrv:v0.0.1 -f deploy/Dockerfile .
 #   docker run --rm -v signsrv-data:/var/lib/signsrv \
-#       -e SIGNSRV_KEYSTORE_PASS=... -e SIGNSRV_ADMIN_PASSWORD=... \
+#       -e KEYSTORE_PASS=... -e ADMIN_PASSWORD=... \
 #       signsrv:v0.0.1 checkconfig
 #
 # State: the container writes to /var/lib/signsrv (the database, the document
@@ -37,6 +37,8 @@ COPY web/ web/
 # is static and the runtime image needs no libc.
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags "-s -w" -o /signsrv ./cmd/signsrv
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-s -w" -o /signsrv-utils ./cmd/signsrv-utils
 
 FROM alpine:3.21
 
@@ -46,7 +48,8 @@ FROM alpine:3.21
 # convenience: a container without it cannot read the state volume.
 RUN apk add --no-cache ca-certificates sqlite && adduser -D -H -u 10001 signsrv
 
-COPY --from=build /signsrv /usr/local/bin/signsrv
+COPY --from=build /signsrv /usr/bin/signsrv
+COPY --from=build /signsrv-utils /usr/bin/signsrv-utils
 
 # The state directory. It is owned by the service user, and the keystore is
 # mode 0750: readable by the service, not by anything else in the image.
@@ -62,7 +65,7 @@ EXPOSE 8080
 
 VOLUME /var/lib/signsrv
 
-# SIGNSRV_LISTEN is loopback by default: the common shape is a proxy in front
+# LISTEN is loopback by default: the common shape is a proxy in front
 # with TLS terminated there. It is a default, not a ceiling — set it to
 # 0.0.0.0:8080 to publish the port, or to a specific interface address, and the
 # service binds it. It then prints, at every start, a warning that it serves
@@ -70,23 +73,23 @@ VOLUME /var/lib/signsrv
 # not refuse the bind, because the surrounding network is not visible to the
 # container and the decision is the operator's.
 #
-# SIGNSRV_TRUST_PROXY=1 is right when a proxy you control sets X-Forwarded-For:
+# TRUST_PROXY=1 is right when a proxy you control sets X-Forwarded-For:
 # without it the rate limits bind to the socket peer, which is the proxy, and
 # every visitor shares one bucket. It is wrong when clients reach the listener
 # directly — including on a published bind with nothing in front — because then
 # a client chooses the address the limits are keyed to.
 #
-# SIGNSRV_PUBLIC_URL is not defaulted here on purpose: it is the address the
+# PUBLIC_URL is not defaulted here on purpose: it is the address the
 # signing links are built from, so a guessed default would produce links that
 # look real and go nowhere. checkconfig refuses a serve without it.
-ENV SIGNSRV_LISTEN=127.0.0.1:8080 \
-    SIGNSRV_DB=/var/lib/signsrv/signsrv.db \
-    SIGNSRV_STORAGE_DIR=/var/lib/signsrv/storage \
-    SIGNSRV_KEYSTORE_DIR=/var/lib/signsrv/keystore \
-    SIGNSRV_OUTBOX_DIR=/var/lib/signsrv/outbox \
-    SIGNSRV_LOG_PATH=/var/lib/signsrv/log/signsrv.jsonl \
-    SIGNSRV_AUDIT_DIR=/var/lib/signsrv/audit \
-    SIGNSRV_JWT_SECRET_FILE=/var/lib/signsrv/jwt.ed25519.key
+ENV LISTEN=127.0.0.1:8080 \
+    DB=/var/lib/signsrv/signsrv.db \
+    STORAGE_DIR=/var/lib/signsrv/storage \
+    KEYSTORE_DIR=/var/lib/signsrv/keystore \
+    OUTBOX_DIR=/var/lib/signsrv/outbox \
+    LOG_PATH=/var/lib/signsrv/log/signsrv.jsonl \
+    AUDIT_DIR=/var/lib/signsrv/audit \
+    JWT_SECRET_FILE=/var/lib/signsrv/jwt.ed25519.key
 
-ENTRYPOINT ["/usr/local/bin/signsrv"]
+ENTRYPOINT ["/usr/bin/signsrv"]
 CMD ["serve"]

@@ -243,7 +243,7 @@ const jsonContentType = "application/json"
 // cannot drift from the routes.
 func adminUsage() {
 	fmt.Fprintln(os.Stderr, "usage: pdf-go admin <verb> [--server URL] [--username NAME --jwt-secret-env VAR]")
-	fmt.Fprintln(os.Stderr, "       pdf-go admin <verb> [--server URL] --token-env SIGNSRV_TOKEN")
+	fmt.Fprintln(os.Stderr, "       pdf-go admin <verb> [--server URL] --token-env TOKEN")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Every verb calls the service; none of them reads a local file.")
 	fmt.Fprintln(os.Stderr, "Each needs the admin scope on the account in hand.")
@@ -252,6 +252,6 @@ func adminUsage() {
 		fmt.Fprintf(os.Stderr, "  %-14s %s\n", rt.verb, rt.help)
 	}
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Credential: --username plus the secret in SIGNSRV_JWT_SECRET (the CLI signs")
-	fmt.Fprintln(os.Stderr, "the token, nothing leaves the machine), or a client token in SIGNSRV_TOKEN.")
+	fmt.Fprintln(os.Stderr, "Credential: --username plus the secret in JWT_SECRET (the CLI signs")
+	fmt.Fprintln(os.Stderr, "the token, nothing leaves the machine), or a client token in TOKEN.")
 }

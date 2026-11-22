@@ -63,7 +63,7 @@ Installed signsrv in local mode: invitations are written to
 | `/usr/lib/signsrv/signsrv-{adduser,firstboot}.sh` | setup helpers, both idempotent |
 | `/lib/systemd/system/signsrv.service` | unit, hardened, `StateDirectory=signsrv` |
 | `/etc/signsrv/signsrv.env` | config, 0640 `root:signsrv` so the service can read it |
-| `/etc/signsrv/secrets.env` | `SIGNSRV_KEYSTORE_PASS`, 0600 `root:root` |
+| `/etc/signsrv/secrets.env` | `KEYSTORE_PASS`, 0600 `root:root` |
 | `/var/lib/signsrv/` | `signsrv:signsrv` 0750 — keystore, db, documents, outbox |
 | `/etc/logrotate.d/signsrv` | ships with the `logrotate` recommendation |
 | `/usr/share/doc/signsrv/` | README, runbook, security notes, this document |
@@ -75,8 +75,8 @@ provisioner, supply it instead — and note that a value in the process environm
 not a secret, so this is for CI, not for a shared machine:
 
 ```sh
-echo 'SIGNSRV_KEYSTORE_PASS=correct horse' | \
-  env SIGNSRV_SECRETS_FILE=- SIGNSRV_KEYSTORE_PASS=correct horse \
+echo 'KEYSTORE_PASS=correct horse' | \
+  env SECRETS_FILE=- KEYSTORE_PASS=correct horse \
       DEBIAN_FRONTEND=noninteractive \
       apt install -y ./dist/signsrv_0.0.1-1_amd64.deb
 ```
@@ -109,11 +109,11 @@ Switching to a relay:
 ```sh
 sed -i 's/^dev=.*/dev=false/' /etc/signsrv/signsrv.env   # or delete the line
 # set public_url, smtp_host, smtp_port, smtp_username, mail_from
-echo 'SIGNSRV_SMTP_PASS=...' >> /etc/signsrv/secrets.env
+echo 'SMTP_PASS=...' >> /etc/signsrv/secrets.env
 systemctl restart signsrv
 ```
 
-`SIGNSRV_SMTP_PASS` is the one supported setting that has no plain
+`SMTP_PASS` is the one supported setting that has no plain
 `signsrv.env` counterpart: `EnvironmentFile` is read before the service's own config,
 so a key set there can never be lowered by the config file, and the one value that
 must be secret stays secret by construction.
@@ -160,7 +160,7 @@ while the service is refusing to start, which is precisely when you need to know
 accounts exist. Pass `-config FILE` for a config elsewhere, or `-db PATH` to name the
 database directly and read no config at all.
 
-The password comes from `SIGNSRV_ADMIN_PASSWORD` if it is set, otherwise it is
+The password comes from `ADMIN_PASSWORD` if it is set, otherwise it is
 prompted for twice on the terminal with echo off; it is never an argument, so it does
 not land in `ps` or in shell history. Minimum 12 characters.
 

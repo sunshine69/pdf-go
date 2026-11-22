@@ -55,7 +55,7 @@ case "$1" in
             echo "      rm -f /var/lib/dpkg/info/signsrv.*"
             echo "  If instead you mean to keep signing, restore the passphrase into"
             echo "  /etc/signsrv/secrets.env before installing again:"
-            echo "      SIGNSRV_KEYSTORE_PASS=<the old passphrase>"
+            echo "      KEYSTORE_PASS=<the old passphrase>"
         fi
 
         # The account is ours to remove, but only if it still is what we created: a

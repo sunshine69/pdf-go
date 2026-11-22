@@ -224,13 +224,13 @@ func noSuchTable(err error) string {
 // prompts twice. The environment path exists for scripts and containers; the
 // prompt exists so a password never has to appear in a shell history line.
 //
-// Unlike the server, an empty SIGNSRV_ADMIN_PASSWORD falls through to the
+// Unlike the server, an empty ADMIN_PASSWORD falls through to the
 // prompt rather than erroring — the operator may have an unset variable left
 // over from a sourced file, and "type it" is a better outcome than "it is blank".
 func readPassword(label string) (string, error) {
-	if v := os.Getenv("SIGNSRV_ADMIN_PASSWORD"); v != "" {
+	if v := os.Getenv("ADMIN_PASSWORD"); v != "" {
 		if len(v) < 12 {
-			return "", fmt.Errorf("SIGNSRV_ADMIN_PASSWORD is only %d characters; 12 is the minimum", len(v))
+			return "", fmt.Errorf("ADMIN_PASSWORD is only %d characters; 12 is the minimum", len(v))
 		}
 		return v, nil
 	}

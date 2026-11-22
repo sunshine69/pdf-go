@@ -10,7 +10,7 @@ import (
 
 // devAdminEmail is the account dev mode bootstraps. It exists so that a fresh
 // clone with an empty database has a way in: dev mode already derives an
-// admin password (from SIGNSRV_ADMIN_PASSWORD, or an ephemeral one it logs),
+// admin password (from ADMIN_PASSWORD, or an ephemeral one it logs),
 // and a password with no account behind it is a credential that cannot be
 // used. Production never reaches this path — it is gated on cfg.Dev — and
 // production's account comes from `signsrv admin add` or the package's
@@ -72,7 +72,7 @@ func (s *server) ensureDevAdmin(ctx context.Context) {
 // on. When the config supplies the password there is nothing to fix.
 func devAdminNote(s *server) string {
 	if strings.HasPrefix(s.cfg.AdminPassword(), "dev-") {
-		return "dev mode only; set SIGNSRV_ADMIN_PASSWORD to fix it"
+		return "dev mode only; set ADMIN_PASSWORD to fix it"
 	}
 	return "dev mode only; created because the database had no admins"
 }

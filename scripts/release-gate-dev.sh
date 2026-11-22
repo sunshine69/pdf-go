@@ -99,7 +99,7 @@ grep -q "address already in use" "$D/serve.out" \
 say "   listening: $(tr -d '\n ' < "$D/health.json")"
 
 say "== seed (the gate needs an operator and a machine client)"
-SIGNSRV_ADMIN_PASSWORD="$ADMIN_PW" "$D/signsrv" admin add "$ADMIN_EMAIL" \
+ADMIN_PASSWORD="$ADMIN_PW" "$D/signsrv" admin add "$ADMIN_EMAIL" \
     -config "$D/dev.conf" > "$D/admin.out" 2>&1 || die "admin add: $(cat "$D/admin.out")"
 say "   $(tail -1 "$D/admin.out")"
 

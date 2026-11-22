@@ -35,20 +35,65 @@
 #
 # Secrets are never printed and never written to the log. The signing link is the
 # whole capability, so it goes to the terminal once and to no file.
+#
+# Two servers are supported, and which one you are testing changes what the run
+# can see:
+#
+#   CONTAINER=1 (the default, the regression stack)
+#     The server is the test container: deploy/docker-compose.test.yml, published
+#     on 7000, reached through https://test-pdfsign.kaykraft.org. TLS is terminated
+#     by nginx on this box, which forwards to 127.0.0.1:7000. The API is spoken to
+#     over the public URL, so the token travels TLS. Anything the run needs out of
+#     the database, the outbox, the audit chain or the access log is read with
+#     `docker compose exec`, because those files live inside the container.
+#
+#   CONTAINER=0 (a server on this box, started by this script)
+#     The original behaviour: build, wipe, start on 127.0.0.1:8090, speak plain HTTP
+#     with -insecure, read the files under tmp/real directly.
+#
+# Why CONTAINER=1 is the default for the IP question. A published container port is
+# SNATed by docker, so the socket peer the container sees is the bridge gateway
+# (172.18.0.1), never the client. The client address therefore reaches a signature
+# ONLY through X-Forwarded-For. In the local shape the peer is a real, plausible
+# address, so a run can record an address that looks right while the header was
+# ignored entirely — the test passes for the wrong reason. The container shape cannot
+# do that: a missing header shows up as 172.18.0.1 on the signature.
+#
+# One limit worth stating before anyone reads a result as proof. Running this script
+# from this box reaches the domain through its public address, which hairpins back to
+# nginx on the same machine, so nginx sees this box's own address as the client. A
+# request issued here cannot produce a true remote IP, however the proxy is configured.
+# To test the IP that lands on a signature, sign from a device on a different network —
+# a phone on 4G. The script prints the link; the phone supplies the address.
 
 set -eu
-
 cd "$(dirname "$0")/.."   # the repo root, whatever directory this was started from
 
 CONF=${CONF:-tmp/prod.conf}
 WORK=${WORK:-tmp/prod-run}
 BIN=${BIN_DIR:-tmp/bin}
 DOC=${DOC:-testdata/sample2.pdf}
+
+# The server under test. CONTAINER=1 talks to the test container through its
+# public URL; CONTAINER=0 builds and starts a server on this box.
+CONTAINER=${CONTAINER:-1}
+COMPOSE=${COMPOSE:-deploy/docker-compose.test.yml}
+CONTAINER_NAME=${CONTAINER_NAME:-signsrv-test}
+SERVICE=${SERVICE:-signsrv}   # the compose service name: exec and logs take that, cp takes the container name
+DOMAIN=${DOMAIN:-test-pdfsign.kaykraft.org}
+HOST_PORT=${HOST_PORT:-7000}
+
 PORT=${PORT:-8090}
-BASE=http://127.0.0.1:${PORT}
-PUBLIC=${PUBLIC:-https://pdfsign.kaykraft.org}
+if [ "$CONTAINER" = 1 ]; then
+    BASE=${BASE:-https://${DOMAIN}}
+else
+    BASE=${BASE:-http://127.0.0.1:${PORT}}
+fi
+PUBLIC=${PUBLIC:-$BASE}
 PARTY=${PARTY:-msh.computing@gmail.com}
 PARTY_NAME=${PARTY_NAME:-Steve Kieu}
+# In the container shape the invitation is not mailed at all (DEV=1 in
+# the compose file writes it to the outbox), so there is no relay to name.
 SMTP_HOST=${SMTP_HOST:-192.168.20.18}
 SMTP_PORT=${SMTP_PORT:-25}
 TRUST_PROXY=${TRUST_PROXY:-true}
@@ -71,29 +116,169 @@ say()  { printf '\n== %s\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
 fail() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
 
+# ---------------------------------------------------- container access ----
+# In the container shape the database, the outbox, the audit directory and the
+# access log are inside signsrv-test, so anything read from them goes through
+# `docker compose exec`. The exec runs the binary that is already in the image,
+# against the environment the service itself runs with, so the config the CLI
+# reads is the config the server read — no second copy of the secrets to keep in
+# step, and no risk of auditing the wrong keystore.
+dc() { docker compose -f "$COMPOSE" "$@"; }
+
+# dexec runs a signsrv verb inside the container and writes the output to a host
+# file, so the same grep/jq logic downstream does not care where it came from.
+dexec() { # dexec <output-file> <verb...>
+    out=$1; shift
+    dc exec -T "$SERVICE" signsrv "$@" > "$out" 2>&1
+}
+
+# Same as dexec but appends, so two verbs can land in one report file the way the
+# local branch writes them.
+dexec_append() { # dexec_append <output-file> <verb...>
+    out=$1; shift
+    dc exec -T "$SERVICE" signsrv "$@" >> "$out" 2>&1
+}
+
+# dsh runs a shell command inside the container.
+dsh() { # dsh <output-file> <shell-command>
+    out=$1; shift
+    dc exec -T "$SERVICE" sh -c "$1" > "$out" 2>&1
+}
+
+# In the container the paths live in the volume. In the local shape they are the
+# tmp/real tree the config names. Everything below reads these variables instead
+# of hard-coding a path, which is the only way one script can serve both.
+if [ "$CONTAINER" = 1 ]; then
+    C_DB=/var/lib/signsrv/signsrv.db
+    C_STORAGE=/var/lib/signsrv/storage
+    C_OUTBOX=/var/lib/signsrv/outbox
+    C_AUDIT=/var/lib/signsrv/audit
+    C_LOG=/var/lib/signsrv/log/signsrv.jsonl
+else
+    C_DB=tmp/real/signsrv.db
+    C_STORAGE=tmp/real/storage
+    C_OUTBOX=tmp/real/outbox
+    C_AUDIT=tmp/real/audit
+    C_LOG=tmp/real/signsrv.jsonl
+fi
+
+# The -insecure flag is about the transport: pdf-go refuses a plain-HTTP server
+# because a client token would cross the network in the clear. Over the https
+# public URL it must NOT be passed, and over local http it must be. Getting this
+# backwards either fails every call ("--server is plain HTTP") or silently sends
+# the token unencrypted.
+if [ "$CONTAINER" = 1 ]; then
+    case "$BASE" in
+        https://*) CLI_TLS="" ;;
+        *) fail "CONTAINER=1 but BASE=$BASE is not https:// - the client token would travel in the clear" ;;
+    esac
+else
+    CLI_TLS="-insecure"
+fi
+
+# One bearer token per run, exchanged once and reused. The login endpoint is rate
+# limited per source address (5/min), and in the container shape every call in this
+# run arrives from the same address because nginx fronts it, so a helper that
+# re-exchanged on every read would burn the bucket and report a 429 that looks like
+# a service fault. The token is not printed and not written to any file: it is a
+# capability, and a token in a log is a token anyone with the log can use.
+access_token() {
+    [ -n "${RUN_TOKEN:-}" ] && { printf '%s' "$RUN_TOKEN"; return 0; }
+    [ -s "$WORK/client.key" ] || return 1
+    RUN_TOKEN=$(curl -sS --max-time 15 -X POST -H 'Content-Type: application/json' \
+        -d "{\"key\":\"$(cat "$WORK/client.key")\"}" \
+        "${BASE}/api/v1/auth/token" 2>/dev/null | jq -r '.access // empty')
+    [ -n "$RUN_TOKEN" ] || return 1
+    export RUN_TOKEN
+    printf '%s' "$RUN_TOKEN"
+}
+
+# The address the service recorded for each party, read over the API.
+#
+# No database access is needed for this. GET /api/v1/envelopes/{id} returns the
+# envelope's audit events, and three of them carry the caller's address in their
+# payload: "claimed" (the link was opened), "consent" (the box was ticked and the
+# signature submitted) and "declined". That endpoint needs only envelope:read,
+# which the client key this run issues already holds — so the address can be read
+# with the same token as everything else, and it can be read from anywhere, not
+# only from the machine holding the volume.
+#
+# "claimed" and "consent" normally agree. When they differ the link was opened on
+# one address and submitted from another. Both are printed rather than only the
+# last one, because that difference is the interesting case.
+consent_ips() { # <indent> <envelope-id>
+    ind=$1; env=$2
+    tok=$(access_token) || { note "${ind}no access token - cannot read the envelope"; return 0; }
+    curl -sS --max-time 20 -H "Authorization: Bearer $tok" \
+        "${BASE}/api/v1/envelopes/${env}" > "$WORK/ips.json" 2>"$WORK/ips.err" || {
+            note "${ind}the read failed: $(head -c 140 "$WORK/ips.err" 2>/dev/null)"
+            return 0
+        }
+    # events[].payload is a STRING holding JSON, not a nested object — the store keeps
+    # the payload as text. `.payload.ip` on it is always null, and a null silently
+    # filters every row out, so the read has to be decoded before it can be queried.
+    jq -r '(.events // [])[]
+           | (.payload | if type == "string" then (fromjson? // {}) else . end) as $p
+           | select(($p.ip // "") != "")
+           | "  \(.kind)\t\($p.ip)\t\(.created_at)"' "$WORK/ips.json" 2>/dev/null | sed "s/^/$ind/"
+    n=$(jq -r '[(.events // [])[]
+               | (.payload | if type == "string" then (fromjson? // {}) else . end)
+               | select((.ip // "") != "")] | length' "$WORK/ips.json" 2>/dev/null || echo 0)
+    [ "${n:-0}" = 0 ] && { note "${ind}no event carries an address yet - nobody has opened the link"; return 0; }
+    note "${ind}^ the address the service recorded for each request, read over HTTPS"
+    # Two addresses that mean the header did not do its job.
+    if jq -e '[(.events // [])[]
+              | (.payload | if type == "string" then (fromjson? // {}) else . end)
+              | select(.ip == "172.18.0.1")] | length > 0' "$WORK/ips.json" > /dev/null 2>&1; then
+        note "${ind}!! 172.18.0.1 is the docker bridge gateway, not a client address."
+        note "${ind}   For that request X-Forwarded-For never reached the service."
+    fi
+    if jq -e '[(.events // [])[]
+              | (.payload | if type == "string" then (fromjson? // {}) else . end)
+              | select(.ip == "127.0.0.1" or .ip == "::1")] | length > 0' "$WORK/ips.json" > /dev/null 2>&1; then
+        note "${ind}!! a loopback address: that request did not arrive through the proxy."
+    fi
+}
+
 # The chain is the claim the archive rests on, and it is the one thing the API does not
 # show. The log is appended only by an explicit call — this CLI verb, or the admin POST —
 # so writing first is not optional: verify alone reports "the log ends at 0 (events
 # missing)" on a perfectly healthy database, which reads exactly like tampering.
 audit_chain() { # <indent> — append the events table to the hash log, then verify it
     ind=$1
-    [ -x "$BIN/signsrv" ] || { note "no $BIN/signsrv yet - run the full path once first"; return 0; }
-    "$BIN/signsrv" -config "$CONF" audit-write > "$WORK/audit.out" 2>&1 \
-        || note "audit-write failed: see $WORK/audit.out"
-    "$BIN/signsrv" -config "$CONF" audit-verify >> "$WORK/audit.out" 2>&1 || true
+    if [ "$CONTAINER" = 1 ]; then
+        # Run the verbs inside the container, against the volume the service itself
+        # uses. There is no config file to point at: the image's environment IS the
+        # configuration, so the audit directory and the keystore resolved here are
+        # exactly the ones the signatures were written with.
+        dexec "$WORK/audit.out" audit-write || note "audit-write failed in the container: see $WORK/audit.out"
+        dexec_append "$WORK/audit.out" audit-verify
+    else
+        [ -x "$BIN/signsrv" ] || { note "no $BIN/signsrv yet - run the full path once first"; return 0; }
+        "$BIN/signsrv" -config "$CONF" audit-write > "$WORK/audit.out" 2>&1 \
+            || note "audit-write failed: see $WORK/audit.out"
+        "$BIN/signsrv" -config "$CONF" audit-verify >> "$WORK/audit.out" 2>&1 || true
+    fi
     tail -2 "$WORK/audit.out" | sed "s/^/$ind/"
     if grep -q 'INVALID' "$WORK/audit.out"; then
         note "!! the hash log does not match the events table"
     else
         note "chain valid"
     fi
+}
+
 # Pull a 64-hex value out of a receipt file without needing a JSON parser. Tolerant of
 # the space a pretty-printer inserts after the colon: a receipt read from a log or an
 # email is often re-indented, and a matcher that only accepts Go's compact form would
 # report "not recorded" for a value that is plainly there.
+#
+# This sat inside audit_chain, which made final_pdf_check depend on a helper that only
+# came into existence once audit_chain had run. The report subcommand calls
+# final_pdf_check FIRST, so on a shell that had not run audit_chain yet the lookup died
+# on "receipt_hex: not found", and under set -e that aborted the report instead of
+# reporting anything. Defined at top level so both callers can see it.
 receipt_hex() { # receipt_hex <file> <key>
     sed -n -E 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"([0-9a-f]{64})".*/\1/p' "$1" 2>/dev/null | head -1
-}
 }
 
 umask 077
@@ -103,14 +288,23 @@ mkdir -p "$WORK" "$BIN"
 # redaction marker reports 23 leaks on a perfectly clean log, and a scan that cries
 # wolf gets ignored — so the pattern demands credential-shaped bytes *after* the word.
 log_leak_scan() {
-    [ -f tmp/real/signsrv.jsonl ] || { note "no log file at tmp/real/signsrv.jsonl"; return 0; }
-    LEAK=$(tail -400 tmp/real/signsrv.jsonl \
-        | grep -Ec 'key_[a-f0-9]{64}|Bearer [A-Za-z0-9._-]{10,}|-----BEGIN [A-Z ]*KEY' || true)
+    # Read the log from wherever this shape keeps it. In the container the file is
+    # in the volume, so it is copied out to $WORK rather than grepped through a
+    # pipe: the same pattern then runs once, on a real file, instead of being
+    # re-quoted inside a shell inside a container.
+    if [ "$CONTAINER" = 1 ]; then
+        dc exec -T "$SERVICE" tail -400 "$C_LOG" > "$WORK/leak.log" 2>/dev/null \
+            || { note "no log file at $C_LOG in the container"; return 0; }
+    else
+        [ -f "$C_LOG" ] || { note "no log file at $C_LOG"; return 0; }
+        tail -400 "$C_LOG" > "$WORK/leak.log"
+    fi
+    LEAK=$(grep -Ec 'key_[a-f0-9]{64}|Bearer [A-Za-z0-9._-]{10,}|-----BEGIN [A-Z ]*KEY' \
+        "$WORK/leak.log" || true)
     [ "${LEAK:-0}" = "0" ] \
         && note "clean - no key, bearer token, or PEM in the last 400 records" \
         || { note "!! $LEAK line(s) carry a credential-shaped value - investigate";
-             tail -400 tmp/real/signsrv.jsonl \
-                 | grep -Eo 'key_[a-f0-9]{6,}|Bearer [^ ]{0,12}|-----BEGIN [A-Z ]*KEY' \
+             grep -Eo 'key_[a-f0-9]{6,}|Bearer [^ ]{0,12}|-----BEGIN [A-Z ]*KEY' "$WORK/leak.log" \
                  | sort -u | sed 's/^/     /' | head -5; }
 }
 
@@ -131,9 +325,22 @@ final_pdf_check() { # <indent> <envelope-id> <sha from the report, may be empty>
     # a setting, and a check that silently reads the wrong directory reports the archive
     # missing on a box where it is present. Inlined rather than calling conf_get
     # because the report subcommand reaches this before that helper is defined.
-    sd=$STORAGE_DIR
-    [ -n "$sd" ] || sd=$(sed -n -E 's/^[[:space:]]*storage_dir[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | head -1)
-    [ -n "$sd" ] || sd=tmp/real/storage
+    if [ "$CONTAINER" = 1 ]; then
+        # Copy the archive out and run the same logic here. The container's image
+        # carries sha256sum but not find or grep, so hashing inside it would mean
+        # rewriting this check around a smaller toolset; copying the files keeps one
+        # implementation for both shapes. compose cp nests the source directory under
+        # itself, hence the second path element.
+        sd=$WORK/storage-copy/storage
+        rm -rf "$WORK/storage-copy"
+        dc cp "$CONTAINER_NAME" "$C_STORAGE" "$WORK/storage-copy" >/dev/null 2>&1 \
+            || note "${ind}!! could not copy $C_STORAGE out of the container"
+        [ -d "$sd" ] || sd=$WORK/storage-copy        # older compose does not nest
+    else
+        sd=$STORAGE_DIR
+        [ -n "$sd" ] || sd=$(sed -n -E 's/^[[:space:]]*storage_dir[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | head -1)
+        [ -n "$sd" ] || sd=tmp/real/storage
+    fi
     sha=$rep_sha
     if [ -z "$sha" ] || [ "$sha" = null ]; then
         # Pick the receipt for *this* envelope. Taking the last file in the directory
@@ -176,6 +383,14 @@ final_pdf_check() { # <indent> <envelope-id> <sha from the report, may be empty>
 # ----------------------------------------------------- cancel / report ----
 # Subcommands that come back without building or restarting anything.
 #
+# They still need the pdf-go binary, and in the container shape nothing here
+# builds it, so a first-ever `report` on a clean checkout would die on a missing
+# file rather than report anything. Build it if it is not there.
+if [ "${1:-}" = report ] || [ "${1:-}" = cancel ]; then
+    [ -x "$BIN/pdf-go" ] || go build -trimpath -o "$BIN/pdf-go" ./cmd/pdf-go \
+        || fail "pdf-go did not build"
+fi
+#
 # cancel <envelope-id> — close an envelope the run left open. A test link is live on
 # the public URL until it expires (link_ttl, 336h here), and anyone who has the mail
 # can still claim it, so a run you are not going to finish should be cancelled rather
@@ -207,11 +422,11 @@ fi
 if [ "${1:-}" = "report" ]; then
     [ $# -eq 2 ] || fail "usage: $0 report <envelope-id>"
     [ -s "$WORK/client.key" ] || fail "no client key at $WORK/client.key"
-    SIGNSRV_TOKEN=$(cat "$WORK/client.key"); export SIGNSRV_TOKEN
+    TOKEN=$(cat "$WORK/client.key"); export TOKEN
     # Flags before the positional: Go's flag parser stops at the first non-flag word,
     # so "report <id> -server ..." reads the id, then treats the flags as arguments
     # and answers "needs --server".
-    "$BIN/pdf-go" envelope report -server "$BASE" -token-env SIGNSRV_TOKEN -insecure "$2" \
+    "$BIN/pdf-go" envelope report -server "$BASE" -token-env TOKEN $CLI_TLS "$2" \
         > "$WORK/report.json" 2>"$WORK/report.err" \
         || { cat "$WORK/report.err"; fail "report failed"; }
     jq -c "$report_jq" "$WORK/report.json" | sed 's/^/   /'
@@ -228,6 +443,67 @@ say "build (production: -trimpath, from the module cache)"
 go build -trimpath -o "$BIN/signsrv" ./cmd/signsrv || fail "signsrv did not build"
 go build -trimpath -o "$BIN/pdf-go"  ./cmd/pdf-go  || fail "pdf-go did not build"
 note "$("$BIN/signsrv" version)  $("$BIN/pdf-go" version)"
+
+# ------------------------------------------------------- container prepare ----
+# In the container shape none of the local stages below apply: the server is not
+# started here, there is no local config to write, no local state to wipe, and no
+# local port to hold. What this run needs from the container is reached through
+# `docker compose exec` and through the public URL.
+if [ "$CONTAINER" = 1 ]; then
+    command -v docker > /dev/null 2>&1 || fail "CONTAINER=1 but docker is not on PATH"
+    [ -f "$COMPOSE" ] || fail "no compose file at $COMPOSE"
+
+    say "container: $COMPOSE"
+    # RESET=1 recreates the instance from an empty volume: a fresh CA, a fresh
+    # client key, nothing carried forward. In the local shape the default is to
+    # reset; here the default is to keep, because the volume also holds every
+    # document signed in earlier runs, and wiping it orphans their signatures.
+    if [ "${RESET:-0}" = 1 ]; then
+        note "RESET=1 — the data volume is destroyed, so documents signed by earlier"
+        note "runs of this instance stop being resolvable from the volume (the API"
+        note "still answers for them only if the rows survive; they do not)."
+        sh scripts/test-stack.sh reset 2>&1 | sed 's/^/   /'
+    else
+        sh scripts/test-stack.sh up 2>&1 | sed 's/^/   /'
+    fi
+
+    say "client key (issued inside the container)"
+    KEYFILE=$WORK/client.key
+    # A key on disk is not necessarily a key the service still accepts. The data
+    # volume can be wiped (test-stack.sh reset, or a rebuild) while tmp/prod-run/
+    # survives, and then the run dies on "the key is not valid" at the first call.
+    # Ask the token endpoint before trusting the file, because that is the same
+    # check create will make, and it costs one request.
+    if [ -s "$KEYFILE" ]; then
+        kcheck=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' \
+            -d "{\"key\":\"$(cat "$KEYFILE")\"}" "${BASE}/api/v1/auth/token" 2>/dev/null)
+        if [ "$kcheck" != 200 ]; then
+            note "the stored key is not accepted (HTTP ${kcheck:-no answer}) — issuing a new one"
+            rm -f "$KEYFILE"
+        fi
+    fi
+    if [ ! -s "$KEYFILE" ]; then
+        dc exec -T "$SERVICE" signsrv client add prod-regression \
+            envelope:write envelope:read > "$WORK/client.out" 2>&1 \
+            || { cat "$WORK/client.out"; fail "client add failed in the container"; }
+        grep -o 'key_[a-f0-9]\{64\}' "$WORK/client.out" | head -1 > "$KEYFILE"
+        rm -f "$WORK/client.out"
+        chmod 600 "$KEYFILE"
+        note "issued a new key (revoke old ones from ${PUBLIC}/admin/)"
+    else
+        note "reusing $KEYFILE"
+    fi
+    TOKEN=$(cat "$KEYFILE"); export TOKEN
+
+    say "admin console"
+    note "sign in at ${PUBLIC}/admin/ — dev mode seeds dev@localhost with the"
+    note "ADMIN_PASSWORD from deploy/.env.test (printed once in"
+    note "'docker compose logs $CONTAINER_NAME' on the first boot)."
+fi
+
+# The stages below belong to the local shape only.
+if [ "$CONTAINER" != 1 ]; then
 
 # -------------------------------------------------------------------- stop ----
 say "stop every running server"
@@ -423,7 +699,7 @@ fi
 chmod 600 "$CONF"
 note "$(cut -d= -f1 "$CONF" | grep -v '^#' | grep -v '^$' | tr '\n' ' ')"
 # Nothing above may reach a log line or a shell trace.
-[ -n "$SMTP_PASS" ] && export SIGNSRV_SMTP_PASS="$SMTP_PASS"
+[ -n "$SMTP_PASS" ] && export SMTP_PASS="$SMTP_PASS"
 
 "$BIN/signsrv" -config "$CONF" checkconfig > "$WORK/checkconfig.out" 2>&1 || {
     sed -E 's/(pass|secret)[^ ]*=.*/\1...=<redacted>/' "$WORK/checkconfig.out"
@@ -474,8 +750,8 @@ if [ ! -s "$KEYFILE" ]; then
 else
     note "reusing $KEYFILE"
 fi
-export SIGNSRV_TOKEN
-SIGNSRV_TOKEN=$(cat "$KEYFILE")
+export TOKEN
+TOKEN=$(cat "$KEYFILE")
 
 # ------------------------------------------------------------- admin account ----
 # The client key above is what drives the API, so a run works without any admin
@@ -487,7 +763,7 @@ if [ -n "${ADMIN_EMAIL:-}" ]; then
     if "$BIN/signsrv" -config "$CONF" admin list 2>/dev/null | grep -qi -- "$ADMIN_EMAIL"; then
         note "admin $ADMIN_EMAIL already exists"
     else
-        SIGNSRV_ADMIN_PASSWORD="$ADMIN_PW" "$BIN/signsrv" -config "$CONF" admin add "$ADMIN_EMAIL" \
+        ADMIN_PASSWORD="$ADMIN_PW" "$BIN/signsrv" -config "$CONF" admin add "$ADMIN_EMAIL" \
             > "$WORK/admin.out" 2>&1 \
             || { cat "$WORK/admin.out"; fail "admin add failed"; }
         sed 's/^/   /' "$WORK/admin.out"
@@ -495,8 +771,16 @@ if [ -n "${ADMIN_EMAIL:-}" ]; then
     fi
 else
     note "no ADMIN_EMAIL set: the API works, /admin/ has no account to sign in with."
-    note "  later: SIGNSRV_ADMIN_PASSWORD=... $BIN/signsrv -config $CONF admin add you@example.org"
+    note "  later: ADMIN_PASSWORD=... $BIN/signsrv -config $CONF admin add you@example.org"
 fi
+
+fi   # end of the local-server-only stages (CONTAINER != 1)
+# ------------------------------------------------------------- shared path ----
+# Everything below is the same in both shapes: the document is read and filled
+# here, the envelope is created and sent over the API, and the answers are read
+# back over the API. The only difference is the transport - https through the
+# public URL in the container shape, plain http on loopback in the local one -
+# and that is carried in $BASE and $CLI_TLS.
 
 # --------------------------------------------------------------- document ----
 # Read the form. Never guess a field name: a name that is not in the document is a
@@ -549,7 +833,7 @@ jq -n --arg e "$PARTY" --arg n "$PARTY_NAME" \
 # non-flag word, so putting the path first makes every flag after it a positional
 # and the CLI answers "needs --server".
 "$BIN/pdf-go" envelope create \
-    -server "$BASE" -token-env SIGNSRV_TOKEN -insecure \
+    -server "$BASE" -token-env TOKEN $CLI_TLS \
     -title "${TITLE:-Production regression - one real signature}" \
     -subject "One document is waiting for your signature" \
     -message "Please review and sign. The link expires in 72 hours." \
@@ -574,7 +858,35 @@ case "$ENVID" in ""|null) fail "the service answered without an envelope id" ;; 
 # so the envelope status cannot tell you the invitation left. The queue is the truth.
 # The worker drains on its own interval, so this polls briefly instead of reading a
 # row that has not been attempted yet and calling that a pass.
-if command -v sqlite3 > /dev/null 2>&1; then
+# In the container shape the database is inside the container and sqlite3 is not
+# on the host, so the same query runs there.
+if [ "$CONTAINER" = 1 ]; then
+    # Over the API there is no per-envelope queue row to read: the send answer
+    # reports what was QUEUED (send is synchronous, so that is the queue truth),
+    # and GET /api/v1/admin/dbstatus reports how many queued mails are still
+    # undelivered across the whole instance. On this test instance the run is the
+    # only traffic, so a queue that drains to zero is this envelope's mail having
+    # left. A shared instance would need the events endpoint instead.
+    tok=$(access_token) || { note "   no access token - cannot check the mail queue"; }
+    if [ -n "${tok:-}" ]; then
+        QUEUED=$(lastc '.[-1].notified // [] | length')
+        note "${QUEUED:-0} invitation(s) queued by the send"
+        i=0; LEFT=""
+        while [ "$i" -lt 30 ]; do
+            LEFT=$(curl -sS --max-time 15 -H "Authorization: Bearer $tok" \
+                "${BASE}/api/v1/admin/dbstatus" 2>/dev/null | jq -r '.mail_queued // empty')
+            [ "$LEFT" = 0 ] && break
+            i=$((i + 1)); sleep 2
+        done
+        case "$LEFT" in
+            0)   note "mail queue empty - the invitation left the container" ;;
+            '')  note "!! dbstatus did not answer - check the worker in the container log" ;;
+            *)   note "!! $LEFT mail(s) still queued after 60s - the relay is refusing or slow;"
+                 note "   docker compose -f $COMPOSE logs $SERVICE | grep -i mail" ;;
+        esac
+    fi
+    note "the party's link is printed below; the same link is in the mail"
+elif command -v sqlite3 > /dev/null 2>&1; then
     q="select kind||' attempts='||attempts||' sent_at='||coalesce(sent_at,'-')||
          case when last_error is null or last_error='' then '' else ' error='||last_error end
          from mail_queue where envelope_id='$ENVID';"
@@ -618,20 +930,24 @@ printf '   Party: %s   (PARTY=a@b.com scripts/prod-sign-run.sh to change it)\n' 
 
 if [ "$WAIT" != 1 ]; then
     printf '\nNot waiting. Re-run with WAIT=1 once you have signed.\n'
-    printf 'The server stays up on %s (pid %s); stop it with: pkill -f "[s]ignsrv.*serve"\n' "$BASE" "$SRV"
+    if [ "$CONTAINER" = 1 ]; then
+        printf 'The container stays up at %s; stop it with: scripts/test-stack.sh down\n' "$BASE"
+    else
+        printf 'The server stays up on %s (pid %s); stop it with: pkill -f "[s]ignsrv.*serve"\n' "$BASE" "$SRV"
+    fi
     exit 0
 fi
 
 # ----------------------------------------------------------------- verify ----
 say "watch (Ctrl-C is safe; the envelope keeps waiting for the party)"
-"$BIN/pdf-go" envelope get -server "$BASE" -token-env SIGNSRV_TOKEN -insecure \
+"$BIN/pdf-go" envelope get -server "$BASE" -token-env TOKEN $CLI_TLS \
     --watch --interval 5s "$ENVID" > "$WORK/envelope.json" 2>"$WORK/watch.err"
 WATCHRC=$?
 note "settled with rc $WATCHRC (0 = signed and delivered)"
 tail -2 "$WORK/watch.err" | sed 's/^/     /' || true
 
 say "report (re-open the archived PDF; verify each signature against the CA)"
-"$BIN/pdf-go" envelope report -server "$BASE" -token-env SIGNSRV_TOKEN -insecure "$ENVID" \
+"$BIN/pdf-go" envelope report -server "$BASE" -token-env TOKEN $CLI_TLS "$ENVID" \
     > "$WORK/report.json" 2>"$WORK/report.err" \
     || { cat "$WORK/report.err"; note "report failed; only the status line above stands"; }
 if [ -s "$WORK/report.json" ]; then
