@@ -553,7 +553,10 @@ func runVerify(args []string) int {
 		}
 		expect, got := want[key], f.Value
 		if f.Type == schema.TypeCheckbox || f.Type == schema.TypeRadio {
-			expect, got = normaliseState(expect), normaliseState(got)
+			// Fold both sides onto the states this document defines. The want
+			// may be the word "true" and the got may be /Oui, and that is a
+			// match - comparing the words instead called it a mismatch.
+			expect, got = pdf.CanonicalState(f, expect), pdf.CanonicalState(f, got)
 		}
 		v := report.ValueReport{
 			Name: f.Name, Type: f.Type, Want: expect, Got: got,
@@ -586,17 +589,9 @@ func runVerify(args []string) int {
 	return status
 }
 
-// normaliseState folds the many ways a check box can be "on" into one word.
-func normaliseState(s string) string {
-	s = strings.TrimSpace(s)
-	switch {
-	case s == "", strings.EqualFold(s, "Off"), strings.EqualFold(s, "false"), strings.EqualFold(s, "no"):
-		return "Off"
-	case strings.EqualFold(s, "true"), strings.EqualFold(s, "yes"):
-		return "Yes"
-	}
-	return s
-}
+// The folding of check-box words ("true", "yes", "off", "") lives in
+// pdf.CanonicalState, not here: it needs the field's own list of states, and a
+// word-level fold alone cannot tell /Oui from /true.
 
 func sortedKeys(m map[string]string) []string {
 	out := make([]string, 0, len(m))
@@ -631,8 +626,11 @@ MINIMAL SPEC
 
 VALUES BY TYPE
   text         string. Truncated to maxLen, scaled to fit the box.
-  checkbox     true / false, "" / "Off" to clear, or an on-state from
-               "states" (the appearance keys the document defines).
+  checkbox     true (or "yes") to tick, false / "" / "Off" / "no" to clear.
+               true is written as the document's own on-state from "options"
+               or "states" - /Oui on one form, /Yes on another - so the word
+               "true" is never invented as an export value. An explicit on-state
+               from "states" may also be given.
   radio        the export value of the button to switch on, taken from the
                children "options". Set it on the group name.
   combo        one of "options".

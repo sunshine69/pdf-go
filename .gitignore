@@ -60,3 +60,6 @@ models/.*
 # a live token into history.
 *.links.json
 dist/**
+
+# Python bytecode from running the scripts.
+__pycache__/

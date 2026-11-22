@@ -177,6 +177,11 @@ func FieldValue(t schema.Field, raw any) (formfill.FDFValue, error) {
 		return nil, nil
 	case bool:
 		if t.Type == schema.TypeCheckbox || t.Type == schema.TypeRadio {
+			// false has to actually clear the box. It used to return the on
+			// state either way, so false left a tick in the form.
+			if !v {
+				return formfill.FDFName("Off"), nil
+			}
 			return formfill.FDFName(checkboxOnState(t)), nil
 		}
 		if v {
@@ -208,8 +213,11 @@ func textValue(t schema.Field, s string) (formfill.FDFValue, error) {
 		}
 		return formfill.FDFText(s), nil
 	case schema.TypeCheckbox, schema.TypeRadio:
-		if s == "" || strings.EqualFold(s, "off") || strings.EqualFold(s, "false") || strings.EqualFold(s, "no") {
-			return formfill.FDFName("Off"), nil
+		// One path for every word: CanonicalState decides on, off, or an
+		// explicit mark. "true" written into a box whose only mark is /Yes must
+		// become /Yes - inventing an export state /true shows an empty box.
+		if state := CanonicalState(t, s); len(t.Options) == 0 || containsFold(t.Options, state) {
+			return formfill.FDFName(state), nil
 		}
 		if len(t.Options) > 0 {
 			for _, o := range t.Options {
@@ -259,10 +267,31 @@ func anySlice(vs []string) []any {
 	return out
 }
 
+// CanonicalState folds a word about a check box or radio into the state name the
+// document itself defines, so two values can be compared. "true" and "yes"
+// become the document's on-state — which is /Oui on a French form and /Yes on
+// the RTA's, so comparing the words instead of the states calls a correct fill
+// a mismatch. Off words become "Off"; anything else is returned unchanged so an
+// unknown mark is still visible rather than silently folded.
+func CanonicalState(t schema.Field, raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" || isOffWord(s) {
+		return "Off"
+	}
+	if strings.EqualFold(s, "true") || strings.EqualFold(s, "yes") {
+		return checkboxOnState(t)
+	}
+	return s
+}
+
 func checkboxOnState(t schema.Field) string {
-	for _, o := range t.Options {
-		if o != "Off" && o != "No" && o != "" {
-			return o
+	// /Opt is often missing on a check box, so the widget's own appearance
+	// names (States) are the better source; Options wins when both exist.
+	for _, list := range [][]string{t.Options, t.States} {
+		for _, o := range list {
+			if o != "Off" && o != "No" && o != "" {
+				return o
+			}
 		}
 	}
 	return "Yes"
@@ -417,10 +446,13 @@ func fitNote(f schema.Field, raw any) string {
 		if !isText {
 			return ""
 		}
-		if text == "" || isOffWord(text) {
+		// Judge the folded state, not the word: "true" folds onto the document's
+		// own mark and is not an unknown check mark.
+		state := CanonicalState(f, text)
+		if state == "Off" {
 			return ""
 		}
-		if len(f.States) > 0 && !containsFold(f.States, text) {
+		if len(f.States) > 0 && !containsFold(f.States, state) {
 			return fmt.Sprintf("value %q is not one of the check marks defined by the document (%s); a generic tick is drawn instead",
 				text, strings.Join(f.States, ", "))
 		}

@@ -338,6 +338,79 @@ on a refusal:
 {"error":{"code":"invalid_spec","message":"...","hint":"..."}}
 ```
 
+## One-shot contract run: scripts/qld-sign-run.py
+
+`pdf-go envelope create` needs a fill spec, a parties file and a credential on
+every call. `scripts/qld-sign-run.py` wraps that for a rental contract: one PDF,
+one YAML, one command, and the envelope comes out filled and waiting.
+
+```sh
+export SIGNSRV_KEY=key_...                                  # minted at POST /api/v1/admin/clients
+export SIGNSRV_URL=https://test-pdfsign.kaykraft.org
+./scripts/qld-sign-run.py forms/Form-18a-General-tenancy-agreement.pdf -d scripts/qld-agreement.example.yaml
+```
+
+Real output from the test instance, on the official RTA form:
+
+```
+qld-sign-run: pdf-go:  ./tmp/pdf-go
+qld-sign-run: fields:  62 to fill
+qld-sign-run: parties: 2 (msh.computing@gmail.com, kaycaonz@gmail.com)
+qld-sign-run: filled:  /tmp/qld-sign-run-0gjdx6wj/filled.pdf (494732 bytes) verified
+qld-sign-run: widget:  8 item(s) sit under the boxes at x=36 y=160 on page 12
+qld-sign-run: links:   tmp/final-links.json (mode 0600) - 2 signing link(s), not mailed
+qld-sign-run: envelope e16ee1c04cedde1d06fb5da4eef0eb9b created (ready)
+qld-sign-run: service applied 62 field(s)
+qld-sign-run: not dispatched: the admin sends the invitations from the dashboard
+qld-sign-run: events:  created, transition
+qld-sign-run: envelope e16ee1c04cedde1d06fb5da4eef0eb9b is 'ready' - filled, awaiting dispatch
+```
+
+The `pdf-go:` line names the binary actually used. There is more than one build
+of it on this machine and they do not produce identical bytes, which matters
+because the service re-applies the fill itself.
+
+The YAML (`scripts/qld-agreement.example.yaml`) is the whole input: `pdf:`,
+`server:`, `envelope:`, `widget:`, `form:` (field name = value, `true` for a
+checkbox) and `parties:`. Nothing about the credentials is in it, so the file is
+safe to commit or mail. Field names come from `pdf-go extract <form>.pdf`;
+a name the PDF does not have stops the run and prints the culprit, rather than
+uploading a half-filled agreement.
+
+What the script does and does not do:
+
+- fills **locally** with `pdf-go fill`, then `pdf-go verify` reads the result
+  back. A mismatch exits 3 and nothing is uploaded. `pdf-go` is **required** —
+  it is found via `$PDFGO`, then `pdf-go` on `$PATH`, then `./tmp/pdf-go`; name
+  it explicitly with `--pdf-go` if you have more than one build, because the
+  script prints which one it used and the service re-applies the fill itself.
+- uploads the finished bytes to `POST /api/v1/envelopes` with the fill spec
+  nested as `{"fill":{"values":{...}},"widget":{...}}`, exactly as `pdf-go`
+  sends it.
+- **never calls `/send`**. The envelope lands in `ready`, which is the state a
+  create leaves behind, and the admin dispatches from the dashboard. The run
+  re-reads the envelope and prints its events so you can see no dispatch
+  happened.
+- does not print the signing links, because nobody has been mailed. `--links-out
+  FILE` writes them at mode 0600 when you want them.
+- retries only `429` and `500`. `502/503/504` are ambiguous — the create may have
+  committed while the answer was lost and the endpoint has no idempotency key —
+  so it refuses to guess and tells you to check `GET /api/v1/envelopes`.
+
+- signature placement is the `widget:` block. `auto: true` has the script
+  measure the last page — page list from `pdf-go pages`, field rectangles from
+  `pdf-go extract`, printed words from `pdftotext -bbox` — and start the stack in
+  the lowest left-column band that clears them all, printing what it chose. The
+  service never searches for free space and never refuses on overlap.
+
+`--dry-run` does everything except the network: it fills, verifies, and prints
+the payload. It needs no credential, which makes it the check to run before
+touching a live instance. Exit codes: 0 created; 1 usage, config or fill
+problem; 2 the service refused; 3 created but the envelope is not `ready`.
+
+Full guide, including the placement arithmetic and the checks to run on a new
+form: [`docs/skills/run-qld-contract.md`](docs/skills/run-qld-contract.md).
+
 ## Troubleshooting
 ## Two credentials, one username
 
