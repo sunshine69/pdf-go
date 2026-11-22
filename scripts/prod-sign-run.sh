@@ -1,112 +1,147 @@
 #!/bin/sh
-# scripts/prod-sign-run.sh — the production regression in one command.
+# scripts/prod-sign-run.sh — the production regression, over the API only.
 #
-# Everything happens here, in order, and re-running does not break anything:
+#   scripts/prod-sign-run.sh                             run it (any number of times)
+#   WAIT=1 scripts/prod-sign-run.sh                       run, then wait and verify
+#   scripts/prod-sign-run.sh report <envelope-id>         re-verify a past run
+#   scripts/prod-sign-run.sh cancel  <envelope-id>        close an open test link
 #
-#   build          rebuild signsrv and pdf-go with -trimpath
-#   stop           kill the server that answers today
-#   reset          wipe db, keystore, jwt key, storage, outbox, audit and the config,
-#                  so the run is attributable to this run's keys (RESET=0 keeps them)
-#   config         write tmp/prod.conf (0600) for the public URL; with RESET=0 it
-#                  keeps any secret already in the file, which matters because the
-#                  keystore passphrase has to match the CA on disk or every signature
-#                  issued so far stops verifying
-#   start          start on 127.0.0.1:8090 behind the proxy, dev off (real SMTP relay)
-#   key            ensure a client key scoped envelope:write envelope:read
-#   document       extract the form of the contract, write the fill spec, fill it,
-#                  re-read it to prove the values landed
-#   dispatch       create + send, one party, real mail
-#   prompt         print the signing link once, and confirm the invitation actually
-#                  left this box (the queue row, not the envelope status)
-#   verify         once you have signed: poll, verify every signature against the CA
-#                  and the timestamp, verify the audit chain, scan the log for leaks
+#   BASE=... DOC=... PARTY=... PARTY_NAME=... TITLE=...   overrides (all optional)
+#   FORCE_NEW=1                                           dispatch another envelope
+#                                                         instead of reusing this one
 #
-# The run does not block. After the invitation is mailed it prints the link and the
-# two commands to come back with. That is deliberate: the signature has to come from
-# a person in a browser, and a script that could sign its own document would prove
-# nothing.
+# WHAT THE RUN DOES. The example form is read and filled locally with the pdf-go built
+# from this source tree; one party (PARTY_NAME / PARTY) is invited; the server applies
+# the fill spec, certifies the bytes, and the party signs in a browser from the link the
+# run prints. Then the signature is verified over the API.
 #
-#   scripts/prod-sign-run.sh                                  run; leaves server up
-#   WAIT=1 scripts/prod-sign-run.sh                           also wait for the sign
-#   DOC=/path/contract.pdf scripts/prod-sign-run.sh           a specific document
-#   scripts/prod-sign-run.sh report <envelope-id>             re-verify a past run
-#   scripts/prod-sign-run.sh cancel <envelope-id>             close an open test link
-#   KEEP_RUNNING=0 scripts/prod-sign-run.sh                   stop the server at exit
+# HOW IT TALKS TO THE SERVER — the rule this script does not break
 #
-# Secrets are never printed and never written to the log. The signing link is the
-# whole capability, so it goes to the terminal once and to no file.
+#     the HTTPS API endpoint (BASE, default https://test-pdfsign.kaykraft.org), and
+#     the pdf-go CLI, built from ./cmd/pdf-go in this tree.
 #
-# Two servers are supported, and which one you are testing changes what the run
-# can see:
+# There is no docker in this script: no `docker compose`, no `docker exec`, no
+# `docker cp`, no volume paths, no shell on the server. Every question the run asks —
+# credentials, the API credential, whether the mail left, whether the audit chain is
+# intact, whether the archived bytes are the bytes that were signed — is asked over
+# HTTPS. That is what makes the run worth running: it proves what a real client can
+# prove, from where a real client stands. The only local file reads are the example PDF
+# (testdata/sample2.pdf) and the two config files that already hold the admin login;
+# the only local writes are under tmp/prod-run.
 #
-#   CONTAINER=1 (the default, the regression stack)
-#     The server is the test container: deploy/docker-compose.test.yml, published
-#     on 7000, reached through https://test-pdfsign.kaykraft.org. TLS is terminated
-#     by nginx on this box, which forwards to 127.0.0.1:7000. The API is spoken to
-#     over the public URL, so the token travels TLS. Anything the run needs out of
-#     the database, the outbox, the audit chain or the access log is read with
-#     `docker compose exec`, because those files live inside the container.
+# THE STAGES, IN ORDER
 #
-#   CONTAINER=0 (a server on this box, started by this script)
-#     The original behaviour: build, wipe, start on 127.0.0.1:8090, speak plain HTTP
-#     with -insecure, read the files under tmp/real directly.
+#   preflight   curl, jq, openssl, base64 exist; $BASE/healthz answers 200
+#   build       rebuild pdf-go with -trimpath from ./cmd/pdf-go, every run (the CLI is
+#               half of what is under test, and a run driven by a stale binary cannot be
+#               attributed to this tree)
+#   credentials the admin address comes from deploy/docker-compose.test.yml
+#               (DEFAULT_ADMIN_EMAIL) and the password from deploy/.env.test
+#               (ADMIN_PASSWORD). Both files are already 0600; neither is ever printed.
+#               POST /api/v1/auth/login turns that pair into a bearer token, cached in
+#               tmp/prod-run/admin.token and reused until it is within a minute of the
+#               exp claim in the JWT itself.
+#   client key  tmp/prod-run/client.key is checked against POST /api/v1/auth/token and,
+#               if the service does not accept it, a new one is minted with
+#               POST /api/v1/admin/clients (envelope:write envelope:read). That answer
+#               shows the key once; it is kept at 0600. The key is then exchanged ONCE
+#               per run for a bearer token (tmp/prod-run/client.bearer) and handed to
+#               pdf-go, which recognises an access token by its three parts and does not
+#               exchange it again. Without that, every pdf-go verb would spend another
+#               hit on the token endpoint, which is limited to 5 requests per minute per
+#               address — and every request of this run arrives from one address,
+#               because the proxy is the client.
+#   document    pdf-go extract the form, write the fill spec (the party's name and the
+#               date), fill it, re-read it and prove the values landed
+#   dispatch    pdf-go envelope create (title, expiry, spec, one party), then
+#               pdf-go envelope send. The links go to a 0600 file, printed once.
+#   queue       GET /api/v1/admin/dbstatus: how many invitations are still waiting for
+#               the worker (DEV=1 in deploy/.env.test, so on this instance the mail is
+#               written to the outbox inside the container rather than pushed at a relay)
+#   prompt      print the signing link to this terminal once, and the two commands to
+#               come back with. The run does not block unless WAIT=1.
+#   verify      WAIT=1 (and `report`): poll the status, pdf-go envelope report, the byte
+#               identity of the archived bytes, the audit chain, and the addresses the
+#               service recorded for the party.
 #
-# Why CONTAINER=1 is the default for the IP question. A published container port is
-# SNATed by docker, so the socket peer the container sees is the bridge gateway
-# (172.18.0.1), never the client. The client address therefore reaches a signature
-# ONLY through X-Forwarded-For. In the local shape the peer is a real, plausible
-# address, so a run can record an address that looks right while the header was
-# ignored entirely — the test passes for the wrong reason. The container shape cannot
-# do that: a missing header shows up as 172.18.0.1 on the signature.
+# IDEMPOTENT — run it as often as you like
 #
-# One limit worth stating before anyone reads a result as proof. Running this script
-# from this box reaches the domain through its public address, which hairpins back to
-# nginx on the same machine, so nginx sees this box's own address as the client. A
-# request issued here cannot produce a true remote IP, however the proxy is configured.
-# To test the IP that lands on a signature, sign from a device on a different network —
-# a phone on 4G. The script prints the link; the phone supplies the address.
+#   * nothing on the server is deleted or reset. The run reuses the existing client key
+#     and adds an envelope rather than wiping the instance, so documents signed by
+#     earlier runs keep verifying;
+#   * both credentials are validated before use and re-minted only when the service
+#     rejects them, so the script works after the instance is rebuilt under it;
+#   * the envelope this run created is remembered in tmp/prod-run/envelope.id. On a
+#     re-run, if that envelope is still waiting for a signature (draft/ready/sent/
+#     collecting) the script does not create another one and does not mail the party
+#     twice — it reads and verifies that envelope instead, and prints the commands.
+#     Once it is delivered (signed), the next run dispatches a fresh envelope.
+#     FORCE_NEW=1, or deleting that file, asks for a new envelope;
+#   * `send` on an envelope that is already sent is refused by the server's state
+#     machine, so a second mail cannot happen by accident even with FORCE_NEW=0 and a
+#     hand-edited envelope.id;
+#   * an early exit (endpoint down, bad password, form changed) leaves no half-written
+#     key, token or envelope id behind, and never writes to deploy/.env.test.
+#
+#     scripts/prod-sign-run.sh                 1st run -> creates + sends envelope A
+#     scripts/prod-sign-run.sh                 2nd run -> A still waiting: reuses A,
+#                                                        mails nobody a second time
+#     FORCE_NEW=1 scripts/prod-sign-run.sh     -> creates + sends envelope B
+#     scripts/prod-sign-run.sh report A        -> read-only, any time after
+#
+# SECRETS. The admin password and the client key are read from and written to 0600
+# files and never printed; the bearer tokens are printed nowhere. The signing link IS
+# the party's credential, so it is shown once, to this terminal, and into no log file.
+#
+# ONE LIMIT, STATED BEFORE ANYONE READS A RESULT AS PROOF. Requests issued from this
+# box reach the domain through its public address and hairpin back through nginx on the
+# same machine, so the address the service records is this box's address, not a remote
+# client's. The published container port makes that worse in a useful way: the socket
+# peer is the docker bridge gateway, so the client address can arrive ONLY through
+# X-Forwarded-For — a header that is not working shows up as 172.18.0.1 on the
+# signature instead of hiding. To put a true remote address on a signature, open the
+# printed link on a phone off this network: the link is the credential, the phone
+# supplies the address. The addresses actually recorded are read back over the API from
+# the envelope's "claimed" and "consent" events (see consent_ips).
 
 set -eu
 cd "$(dirname "$0")/.."   # the repo root, whatever directory this was started from
 
-CONF=${CONF:-tmp/prod.conf}
+BASE=${BASE:-https://test-pdfsign.kaykraft.org}
+ENVF=${ENVF:-deploy/.env.test}                     # the admin password lives here
+COMPOSE=${COMPOSE:-deploy/docker-compose.test.yml} # the admin address lives here
+DOC=${DOC:-testdata/sample2.pdf}
 WORK=${WORK:-tmp/prod-run}
 BIN=${BIN_DIR:-tmp/bin}
-DOC=${DOC:-testdata/sample2.pdf}
+PDFGO=$BIN/pdf-go
 
-# The server under test. CONTAINER=1 talks to the test container through its
-# public URL; CONTAINER=0 builds and starts a server on this box.
-CONTAINER=${CONTAINER:-1}
-COMPOSE=${COMPOSE:-deploy/docker-compose.test.yml}
-CONTAINER_NAME=${CONTAINER_NAME:-signsrv-test}
-SERVICE=${SERVICE:-signsrv}   # the compose service name: exec and logs take that, cp takes the container name
-DOMAIN=${DOMAIN:-test-pdfsign.kaykraft.org}
-HOST_PORT=${HOST_PORT:-7000}
+# The admin login the instance seeded on its first start. Overridable either way;
+# nothing here writes to the server's configuration.
+ADMIN_EMAIL=${ADMIN_EMAIL:-}
+ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
 
-PORT=${PORT:-8090}
-if [ "$CONTAINER" = 1 ]; then
-    BASE=${BASE:-https://${DOMAIN}}
-else
-    BASE=${BASE:-http://127.0.0.1:${PORT}}
-fi
-PUBLIC=${PUBLIC:-$BASE}
+# The one party.
 PARTY=${PARTY:-msh.computing@gmail.com}
 PARTY_NAME=${PARTY_NAME:-Steve Kieu}
-# In the container shape the invitation is not mailed at all (DEV=1 in
-# the compose file writes it to the outbox), so there is no relay to name.
-SMTP_HOST=${SMTP_HOST:-192.168.20.18}
-SMTP_PORT=${SMTP_PORT:-25}
-TRUST_PROXY=${TRUST_PROXY:-true}
-DEV=${DEV:-false}
-WAIT=${WAIT:-0}
-KEEP_RUNNING=${KEEP_RUNNING:-1}
+TITLE=${TITLE:-Production regression - one real signature}
+EXPIRES=${EXPIRES:-72h}
+CONSENT_REASON=${CONSENT_REASON:-I have read this document and agree to its terms}
 CANCEL_REASON=${CANCEL_REASON:-test run closed by scripts/prod-sign-run.sh}
+WAIT=${WAIT:-0}
+WATCH_SECONDS=${WATCH_SECONDS:-900}
+FORCE_NEW=${FORCE_NEW:-0}
 
-# The report endpoint wraps the verification in .report:
-#   {envelope, status, sha256, report: {valid, signers[], errors[], pages},
-#    signed_parties, required_parties, complete}
-# Pulling .valid from the top level would read as null and every run would "pass"
-# on a null that jq silently treats as falsy.
+KEYFILE=$WORK/client.key
+ADMIN_TOKEN_F=$WORK/admin.token
+BEARER_F=$WORK/client.bearer
+ENVIDFILE=$WORK/envelope.id
+API_OUT=$WORK/api.out
+
+# The verification report wraps the checks in .report:
+#   {status, sha256, report:{valid, signers[], errors[], pages}, signed_parties,
+#    required_parties, complete}
+# Reading .valid at the top level gives null, which jq treats as falsy, so a run would
+# "pass" on a value that was never there.
 report_jq='{status, sha256, complete, signed: .signed_parties, required: .required_parties,
            valid: .report.valid, pages: .report.pages,
            signers: [.report.signers[] | {name, valid, trusted, revoked, timestamped}],
@@ -116,107 +151,241 @@ say()  { printf '\n== %s\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
 fail() { printf 'FAIL  %s\n' "$*" >&2; exit 1; }
 
-# ---------------------------------------------------- container access ----
-# In the container shape the database, the outbox, the audit directory and the
-# access log are inside signsrv-test, so anything read from them goes through
-# `docker compose exec`. The exec runs the binary that is already in the image,
-# against the environment the service itself runs with, so the config the CLI
-# reads is the config the server read — no second copy of the secrets to keep in
-# step, and no risk of auditing the wrong keystore.
-dc() { docker compose -f "$COMPOSE" "$@"; }
+umask 077
+mkdir -p "$WORK" "$BIN"
+cleanup() { rm -f "$WORK/jwt.p"; }
+trap cleanup EXIT INT TERM
 
-# dexec runs a signsrv verb inside the container and writes the output to a host
-# file, so the same grep/jq logic downstream does not care where it came from.
-dexec() { # dexec <output-file> <verb...>
-    out=$1; shift
-    dc exec -T "$SERVICE" signsrv "$@" > "$out" 2>&1
+# ------------------------------------------------------------- preflight ----
+case "$BASE" in
+    https://*) ;;
+    *) fail "BASE=$BASE is not https:// - the bearer token and the signing link would travel in the clear" ;;
+esac
+for t in curl jq openssl base64; do
+    command -v "$t" > /dev/null 2>&1 || fail "$t is not on PATH - this run needs it"
+done
+[ -f "$DOC" ]     || fail "no document at $DOC (DOC=/path/contract.pdf scripts/prod-sign-run.sh for a different form)"
+[ -f "$ENVF" ]    || fail "no $ENVF - the admin password comes from that file"
+[ -f "$COMPOSE" ] || fail "no $COMPOSE - the admin login address comes from that file"
+
+# ------------------------------------------------------- read the login ----
+# .env.test writes ADMIN_PASSWORD='...' and compose writes DEFAULT_ADMIN_EMAIL: both
+# spellings are handled, comment lines are skipped, and neither value is ever echoed.
+# These files are not generated and not modified here: the keystore passphrase in
+# .env.test belongs to the CA on the server's volume, so a run that invented its own
+# credentials would be testing an instance nobody uses.
+# The two files spell the same idea differently, and both spellings are handled:
+#   .env.test        KEY='value'            (it is an env_file, so dotenv syntax)
+#   compose YAML     KEY: value             (and "KEY": "value", and KEY = value)
+# Comment lines are dropped, because this file talks about DEFAULT_ADMIN_EMAIL in prose
+# more often than it sets it. Quoted values keep any '#' or space inside them. Nothing
+# printed here is a secret.
+env_value() { # <file> <KEY>
+    sed -n -E "/^[[:space:]]*[#]/!s/^[[:space:]]*\"?$2\"?[[:space:]]*[:=][[:space:]]*(.*)$/\1/p" "$1" 2>/dev/null \
+        | head -1 | sed -E "s/^[\"']//; s/[\"'][[:space:]]*\$//; s/[[:space:]]+\$//"
 }
+[ -n "$ADMIN_EMAIL" ]    || ADMIN_EMAIL=$(env_value "$COMPOSE" DEFAULT_ADMIN_EMAIL)
+[ -n "$ADMIN_PASSWORD" ] || ADMIN_PASSWORD=$(env_value "$ENVF" ADMIN_PASSWORD)
+[ -n "$ADMIN_EMAIL" ]    || fail "no admin address: DEFAULT_ADMIN_EMAIL is not in $COMPOSE and ADMIN_EMAIL is not set"
+[ -n "$ADMIN_PASSWORD" ] || fail "no password: ADMIN_PASSWORD is not in $ENVF and ADMIN_PASSWORD is not set"
 
-# Same as dexec but appends, so two verbs can land in one report file the way the
-# local branch writes them.
-dexec_append() { # dexec_append <output-file> <verb...>
-    out=$1; shift
-    dc exec -T "$SERVICE" signsrv "$@" >> "$out" 2>&1
-}
-
-# dsh runs a shell command inside the container.
-dsh() { # dsh <output-file> <shell-command>
-    out=$1; shift
-    dc exec -T "$SERVICE" sh -c "$1" > "$out" 2>&1
-}
-
-# In the container the paths live in the volume. In the local shape they are the
-# tmp/real tree the config names. Everything below reads these variables instead
-# of hard-coding a path, which is the only way one script can serve both.
-if [ "$CONTAINER" = 1 ]; then
-    C_DB=/var/lib/signsrv/signsrv.db
-    C_STORAGE=/var/lib/signsrv/storage
-    C_OUTBOX=/var/lib/signsrv/outbox
-    C_AUDIT=/var/lib/signsrv/audit
-    C_LOG=/var/lib/signsrv/log/signsrv.jsonl
-else
-    C_DB=tmp/real/signsrv.db
-    C_STORAGE=tmp/real/storage
-    C_OUTBOX=tmp/real/outbox
-    C_AUDIT=tmp/real/audit
-    C_LOG=tmp/real/signsrv.jsonl
-fi
-
-# The -insecure flag is about the transport: pdf-go refuses a plain-HTTP server
-# because a client token would cross the network in the clear. Over the https
-# public URL it must NOT be passed, and over local http it must be. Getting this
-# backwards either fails every call ("--server is plain HTTP") or silently sends
-# the token unencrypted.
-if [ "$CONTAINER" = 1 ]; then
-    case "$BASE" in
-        https://*) CLI_TLS="" ;;
-        *) fail "CONTAINER=1 but BASE=$BASE is not https:// - the client token would travel in the clear" ;;
+# ------------------------------------------------ the token helpers ----
+# The expiry of a bearer token is read out of the token rather than assumed: the JWT
+# carries exp, so the cache can be honest about the window it is reusing instead of
+# guessing a lifetime that would eventually send a stale token and read as a service
+# fault. base64 is fed a file, not a pipe, because a bare `base64 -d` on some systems
+# reads the whole token as a file name.
+jwt_field() { # <token-file> <claim> — empty when the token cannot be decoded
+    cut -d. -f2 "$1" | tr -d '\n' > "$WORK/jwt.p"
+    case $(( $(wc -c < "$WORK/jwt.p") % 4 )) in
+        2) printf '==' >> "$WORK/jwt.p" ;;
+        3) printf '='  >> "$WORK/jwt.p" ;;
     esac
-else
-    CLI_TLS="-insecure"
-fi
-
-# One bearer token per run, exchanged once and reused. The login endpoint is rate
-# limited per source address (5/min), and in the container shape every call in this
-# run arrives from the same address because nginx fronts it, so a helper that
-# re-exchanged on every read would burn the bucket and report a 429 that looks like
-# a service fault. The token is not printed and not written to any file: it is a
-# capability, and a token in a log is a token anyone with the log can use.
-access_token() {
-    [ -n "${RUN_TOKEN:-}" ] && { printf '%s' "$RUN_TOKEN"; return 0; }
-    [ -s "$WORK/client.key" ] || return 1
-    RUN_TOKEN=$(curl -sS --max-time 15 -X POST -H 'Content-Type: application/json' \
-        -d "{\"key\":\"$(cat "$WORK/client.key")\"}" \
-        "${BASE}/api/v1/auth/token" 2>/dev/null | jq -r '.access // empty')
-    [ -n "$RUN_TOKEN" ] || return 1
-    export RUN_TOKEN
-    printf '%s' "$RUN_TOKEN"
+    base64 -d "$WORK/jwt.p" 2>/dev/null | jq -r ".$2 // empty" 2>/dev/null || true
 }
 
-# The address the service recorded for each party, read over the API.
+# Still valid means valid by more than a minute: a run that waits for a signature out
+# lives longer than the 15-minute token it started with, and re-exchanging a little
+# early costs one request instead of a 401 in the middle of the verification.
+token_live() { # <token-file>
+    [ -s "$1" ] || return 1
+    exp=$(jwt_field "$1" exp)
+    [ -n "$exp" ] || return 1
+    [ "$exp" -gt $(( $(date +%s) + 60 )) ]
+}
+
+# The admin bearer token, exchanged from the email/password pair. Nothing else in the
+# run carries the password, and the pair is never sent on an ordinary API call.
+admin_token() {
+    token_live "$ADMIN_TOKEN_F" && { printf '%s' "$(cat "$ADMIN_TOKEN_F")"; return 0; }
+    rm -f "$ADMIN_TOKEN_F"
+    body=$(jq -cn --arg email "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" \
+        '{email:$email, password:$password}')
+    code=$(curl -sS --max-time 20 -o "$WORK/login.json" -w '%{http_code}' -X POST \
+        -H 'Content-Type: application/json' -d "$body" "$BASE/api/v1/auth/login" \
+        2>"$WORK/login.err" || echo 000)
+    if [ "$code" != 200 ]; then
+        note "POST /api/v1/auth/login -> HTTP $code"
+        jq -c '.error // .' "$WORK/login.json" 2>/dev/null | sed 's/^/   /' || true
+        [ "$code" = 429 ] && note "the login bucket is 5/min per address - wait a minute and re-run"
+        fail "the login over the API failed (address $ADMIN_EMAIL)"
+    fi
+    jq -r '.access // empty' "$WORK/login.json" > "$ADMIN_TOKEN_F"
+    : > "$WORK/login.json"          # that answer also held the refresh token
+    [ -s "$ADMIN_TOKEN_F" ] || fail "the login answered with no access token"
+    printf '%s' "$(cat "$ADMIN_TOKEN_F")"
+}
+
+# The API credential for the envelope verbs. pdf-go takes the value in TOKEN and works
+# out what it is: a "key_..." string is exchanged at the token endpoint, a three-part
+# token is sent as it is. Handing it the second kind is what keeps one run to a single
+# exchange.
+client_bearer() {
+    token_live "$BEARER_F" && { printf '%s' "$(cat "$BEARER_F")"; return 0; }
+    rm -f "$BEARER_F"
+    body=$(jq -cn --arg key "$(cat "$KEYFILE")" '{key:$key}')
+    curl -sS --max-time 20 -o "$WORK/exchange.json" -X POST \
+        -H 'Content-Type: application/json' -d "$body" "$BASE/api/v1/auth/token" \
+        2>"$WORK/exchange.err" || { rm -f "$WORK/exchange.json"; return 1; }
+    jq -r '.access // empty' "$WORK/exchange.json" > "$BEARER_F"
+    : > "$WORK/exchange.json"
+    [ -s "$BEARER_F" ] || { rm -f "$BEARER_F"; return 1; }
+    printf '%s' "$(cat "$BEARER_F")"
+}
+
+# api <METHOD> <path> [json-body] — one admin-scoped call. Prints the HTTP status; the
+# answer is in $API_OUT. A 401 re-exchanges once: a run that waits outgrows its token,
+# and blaming that on the service would send someone to read a healthy log.
+api() {
+    m=$1; p=$2; b=${3:-}
+    tok=$(admin_token)
+    # A POSIX shell has no arrays, so a body-bearing call and a bodyless one are
+    # spelled out separately rather than assembled from a variable.
+    if [ -n "$b" ]; then
+        code=$(curl -sS --max-time 30 -o "$API_OUT" -w '%{http_code}' -X "$m" \
+            -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' \
+            -d "$b" "${BASE}${p}" || echo 000)
+        if [ "$code" = 401 ]; then
+            rm -f "$ADMIN_TOKEN_F"
+            code=$(curl -sS --max-time 30 -o "$API_OUT" -w '%{http_code}' -X "$m" \
+                -H "Authorization: Bearer $(admin_token)" -H 'Content-Type: application/json' \
+                -d "$b" "${BASE}${p}" || echo 000)
+        fi
+    else
+        code=$(curl -sS --max-time 30 -o "$API_OUT" -w '%{http_code}' -X "$m" \
+            -H "Authorization: Bearer $tok" "${BASE}${p}" || echo 000)
+        if [ "$code" = 401 ]; then
+            rm -f "$ADMIN_TOKEN_F"
+            code=$(curl -sS --max-time 30 -o "$API_OUT" -w '%{http_code}' -X "$m" \
+                -H "Authorization: Bearer $(admin_token)" "${BASE}${p}" || echo 000)
+        fi
+    fi
+    printf '%s' "$code"
+}
+
+api_problem() { # the service's own reason for the call sitting in $API_OUT
+    jq -c '.error // {unexpected: .}' "$API_OUT" 2>/dev/null | sed 's/^/   /' \
+        || sed -E 's/(key|token|secret|pass)[^ ]*=.*/\1...=<redacted>/' "$API_OUT" 2>/dev/null \
+        | sed 's/^/   /'
+}
+
+# envelope <verb> [flags...] [the positional] — a pdf-go envelope verb, with the
+# credential in the environment and never in argv (a token in argv sits in the process
+# list, which anyone on the box can read). Callers put every flag BEFORE the positional:
+# Go's flag parser stops at the first non-flag word, so "get <id> -server ..." reads the
+# id, treats the flags as further arguments, and answers "needs --server".
+envelope() {
+    v=$1; shift
+    TOKEN=$(client_bearer) || fail "the client key was refused at /api/v1/auth/token"
+    export TOKEN
+    # -server goes right after the verb: the CLI parses the subcommand first, and its
+    # flag set stops at the first non-flag word, so the id has to stay last.
+    case "$*" in
+        *-server*) "$PDFGO" envelope "$v" "$@" ;;
+        *)         "$PDFGO" envelope "$v" -server "$BASE" "$@" ;;
+    esac
+}
+
+env_party() { # <envelope-id> — "Name <email>" of the first party, over the API.
+    # Printed instead of the PARTY/PARTY_NAME defaults: on a re-run that reuses an
+    # envelope made under other names, the defaults would show the wrong person.
+    code=$(api GET "/api/v1/envelopes/$1")
+    [ "$code" = 200 ] || { printf ''; return 0; }
+    jq -r '(.parties // [])[0] | select(.email != null)
+           | "\(.name // "unnamed") <\(.email)>"' "$API_OUT" 2>/dev/null | head -1
+}
+
+env_status() { # <envelope-id> — the status over the API, empty when it is not there
+    code=$(api GET "/api/v1/envelopes/$1")
+    [ "$code" = 200 ] || { printf ''; return 0; }
+    jq -r '.status // empty' "$API_OUT" 2>/dev/null || true
+}
+
+# ------------------------------------------------------- what to check ----
+# These four read the outcome of a run. They are defined before the subcommand dispatch
+# below, because `report` reaches them immediately and a POSIX shell resolves a function
+# name only when it is called — one defined further down has, at that point, no
+# definition yet, and the run dies on "not found" instead of reporting anything.
+
+# Byte identity of the copy the party downloads. The report names the sha256 of the
+# bytes it verified; the document endpoint serves the archived bytes for exactly one
+# envelope. If those two disagree, the file someone filed is not the file the CA
+# certified, and no amount of green on the signature checks says otherwise.
+byte_identity() { # <indent> <envelope-id> <sha from the report, may be empty>
+    ind=$1; env=$2; want=$3
+    tok=$(client_bearer) || { note "${ind}no API token - cannot fetch the document"; return 0; }
+    code=$(curl -sS --max-time 60 -o "$WORK/download.pdf" -w '%{http_code}' \
+        -H "Authorization: Bearer $tok" "${BASE}/api/v1/envelopes/${env}/document" \
+        2>"$WORK/download.err" || echo 000)
+    if [ "$code" != 200 ]; then
+        note "${ind}GET /envelopes/$env/document -> HTTP $code (nothing archived yet?)"
+        return 0
+    fi
+    got=$(openssl dgst -sha256 "$WORK/download.pdf" | awk '{print $NF}')
+    case "$want" in
+        "")   note "${ind}the document downloads; sha256 $got" ;;
+        "$got") note "${ind}the downloaded document hashes to the report's sha256 - byte-identical to what was certified" ;;
+        *)    note "${ind}!! downloaded document hashes to $got but the report names $want"
+              note "${ind}   the bytes someone can download are not the bytes the report verified" ;;
+    esac
+    head -c 5 "$WORK/download.pdf" | grep -q '%PDF' \
+        || note "${ind}!! what downloaded is not a PDF"
+}
+
+# The audit chain is the claim the archive rests on, and the API answers it in two
+# calls. The write is not optional: the hash log is appended only on an explicit call,
+# so verifying first reports "events up to id N exist, the log ends at 0 (events
+# missing)" on a perfectly healthy instance — which reads exactly like tampering.
+# Re-running the write for a day already written adds nothing, so this is idempotent.
+audit_chain() { # <indent>
+    ind=$1
+    TOKEN=$(admin_token); export TOKEN
+    "$PDFGO" admin audit-write -server "$BASE" -token-env TOKEN \
+        > "$WORK/audit-write.json" 2>"$WORK/audit.err" \
+        || { sed -E 's/(key|token|secret|pass)[^ ]*=.*/\1...=<redacted>/' "$WORK/audit.err" | sed "s/^/$ind/"; return 0; }
+    "$PDFGO" admin audit-verify -server "$BASE" -token-env TOKEN \
+        > "$WORK/audit-verify.json" 2>>"$WORK/audit.err" \
+        || note "${ind}audit-verify exited non-zero - read the reason below"
+    jq -c '{day, lines, path}' "$WORK/audit-write.json" 2>/dev/null | sed "s/^/$ind/"
+    jq -c '{ok, lines_verified, reason: (.reason // "")}' "$WORK/audit-verify.json" 2>/dev/null | sed "s/^/$ind/"
+    jq -e '.ok == true' "$WORK/audit-verify.json" > /dev/null 2>&1 \
+        && note "${ind}chain valid" \
+        || note "${ind}!! the hash log does not match the events table"
+}
+
+# The address the service recorded for each of the party's requests. No database access
+# is needed: GET /api/v1/envelopes/{id} returns the audit events, and "claimed",
+# "consent" and "declined" carry the caller's address in their payload.
 #
-# No database access is needed for this. GET /api/v1/envelopes/{id} returns the
-# envelope's audit events, and three of them carry the caller's address in their
-# payload: "claimed" (the link was opened), "consent" (the box was ticked and the
-# signature submitted) and "declined". That endpoint needs only envelope:read,
-# which the client key this run issues already holds — so the address can be read
-# with the same token as everything else, and it can be read from anywhere, not
-# only from the machine holding the volume.
-#
-# "claimed" and "consent" normally agree. When they differ the link was opened on
-# one address and submitted from another. Both are printed rather than only the
-# last one, because that difference is the interesting case.
+# events[].payload is a STRING holding JSON, not a nested object, so it has to be
+# decoded before it can be queried — `.payload.ip` on a string is always null, and a
+# null silently filters every row out.
 consent_ips() { # <indent> <envelope-id>
     ind=$1; env=$2
-    tok=$(access_token) || { note "${ind}no access token - cannot read the envelope"; return 0; }
-    curl -sS --max-time 20 -H "Authorization: Bearer $tok" \
-        "${BASE}/api/v1/envelopes/${env}" > "$WORK/ips.json" 2>"$WORK/ips.err" || {
-            note "${ind}the read failed: $(head -c 140 "$WORK/ips.err" 2>/dev/null)"
-            return 0
-        }
-    # events[].payload is a STRING holding JSON, not a nested object — the store keeps
-    # the payload as text. `.payload.ip` on it is always null, and a null silently
-    # filters every row out, so the read has to be decoded before it can be queried.
+    tok=$(client_bearer) || { note "${ind}no API token - cannot read the envelope"; return 0; }
+    curl -sS --max-time 20 -o "$WORK/ips.json" -H "Authorization: Bearer $tok" \
+        "${BASE}/api/v1/envelopes/${env}" 2>"$WORK/ips.err" || {
+            note "${ind}the read failed: $(head -c 140 "$WORK/ips.err" 2>/dev/null)"; return 0; }
     jq -r '(.events // [])[]
            | (.payload | if type == "string" then (fromjson? // {}) else . end) as $p
            | select(($p.ip // "") != "")
@@ -225,747 +394,349 @@ consent_ips() { # <indent> <envelope-id>
                | (.payload | if type == "string" then (fromjson? // {}) else . end)
                | select((.ip // "") != "")] | length' "$WORK/ips.json" 2>/dev/null || echo 0)
     [ "${n:-0}" = 0 ] && { note "${ind}no event carries an address yet - nobody has opened the link"; return 0; }
-    note "${ind}^ the address the service recorded for each request, read over HTTPS"
-    # Two addresses that mean the header did not do its job.
+    note "${ind}^ the address the service recorded, read over HTTPS"
     if jq -e '[(.events // [])[]
               | (.payload | if type == "string" then (fromjson? // {}) else . end)
-              | select(.ip == "172.18.0.1")] | length > 0' "$WORK/ips.json" > /dev/null 2>&1; then
-        note "${ind}!! 172.18.0.1 is the docker bridge gateway, not a client address."
-        note "${ind}   For that request X-Forwarded-For never reached the service."
+              | select(.ip == "172.18.0.1")] | length > 0' "$WORK/ips.json" >/dev/null 2>&1; then
+        note "${ind}!! 172.18.0.1 is the docker bridge gateway, not a client address:"
+        note "${ind}   for that request X-Forwarded-For never reached the service"
     fi
     if jq -e '[(.events // [])[]
               | (.payload | if type == "string" then (fromjson? // {}) else . end)
-              | select(.ip == "127.0.0.1" or .ip == "::1")] | length > 0' "$WORK/ips.json" > /dev/null 2>&1; then
-        note "${ind}!! a loopback address: that request did not arrive through the proxy."
+              | select(.ip == "127.0.0.1" or .ip == "::1")] | length > 0' "$WORK/ips.json" >/dev/null 2>&1; then
+        note "${ind}!! a loopback address: that request did not arrive through the proxy"
     fi
 }
 
-# The chain is the claim the archive rests on, and it is the one thing the API does not
-# show. The log is appended only by an explicit call — this CLI verb, or the admin POST —
-# so writing first is not optional: verify alone reports "the log ends at 0 (events
-# missing)" on a perfectly healthy database, which reads exactly like tampering.
-audit_chain() { # <indent> — append the events table to the hash log, then verify it
-    ind=$1
-    if [ "$CONTAINER" = 1 ]; then
-        # Run the verbs inside the container, against the volume the service itself
-        # uses. There is no config file to point at: the image's environment IS the
-        # configuration, so the audit directory and the keystore resolved here are
-        # exactly the ones the signatures were written with.
-        dexec "$WORK/audit.out" audit-write || note "audit-write failed in the container: see $WORK/audit.out"
-        dexec_append "$WORK/audit.out" audit-verify
-    else
-        [ -x "$BIN/signsrv" ] || { note "no $BIN/signsrv yet - run the full path once first"; return 0; }
-        "$BIN/signsrv" -config "$CONF" audit-write > "$WORK/audit.out" 2>&1 \
-            || note "audit-write failed: see $WORK/audit.out"
-        "$BIN/signsrv" -config "$CONF" audit-verify >> "$WORK/audit.out" 2>&1 || true
-    fi
-    tail -2 "$WORK/audit.out" | sed "s/^/$ind/"
-    if grep -q 'INVALID' "$WORK/audit.out"; then
-        note "!! the hash log does not match the events table"
-    else
-        note "chain valid"
-    fi
-}
-
-# Pull a 64-hex value out of a receipt file without needing a JSON parser. Tolerant of
-# the space a pretty-printer inserts after the colon: a receipt read from a log or an
-# email is often re-indented, and a matcher that only accepts Go's compact form would
-# report "not recorded" for a value that is plainly there.
-#
-# This sat inside audit_chain, which made final_pdf_check depend on a helper that only
-# came into existence once audit_chain had run. The report subcommand calls
-# final_pdf_check FIRST, so on a shell that had not run audit_chain yet the lookup died
-# on "receipt_hex: not found", and under set -e that aborted the report instead of
-# reporting anything. Defined at top level so both callers can see it.
-receipt_hex() { # receipt_hex <file> <key>
-    sed -n -E 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"([0-9a-f]{64})".*/\1/p' "$1" 2>/dev/null | head -1
-}
-
-umask 077
-mkdir -p "$WORK" "$BIN"
-
-# The access log already writes "Bearer [credential]". A pattern that matches the
-# redaction marker reports 23 leaks on a perfectly clean log, and a scan that cries
-# wolf gets ignored — so the pattern demands credential-shaped bytes *after* the word.
-log_leak_scan() {
-    # Read the log from wherever this shape keeps it. In the container the file is
-    # in the volume, so it is copied out to $WORK rather than grepped through a
-    # pipe: the same pattern then runs once, on a real file, instead of being
-    # re-quoted inside a shell inside a container.
-    if [ "$CONTAINER" = 1 ]; then
-        dc exec -T "$SERVICE" tail -400 "$C_LOG" > "$WORK/leak.log" 2>/dev/null \
-            || { note "no log file at $C_LOG in the container"; return 0; }
-    else
-        [ -f "$C_LOG" ] || { note "no log file at $C_LOG"; return 0; }
-        tail -400 "$C_LOG" > "$WORK/leak.log"
-    fi
-    LEAK=$(grep -Ec 'key_[a-f0-9]{64}|Bearer [A-Za-z0-9._-]{10,}|-----BEGIN [A-Z ]*KEY' \
-        "$WORK/leak.log" || true)
-    [ "${LEAK:-0}" = "0" ] \
-        && note "clean - no key, bearer token, or PEM in the last 400 records" \
-        || { note "!! $LEAK line(s) carry a credential-shaped value - investigate";
-             grep -Eo 'key_[a-f0-9]{6,}|Bearer [^ ]{0,12}|-----BEGIN [A-Z ]*KEY' "$WORK/leak.log" \
-                 | sort -u | sed 's/^/     /' | head -5; }
-}
-
-# ------------------------------------------------- byte identity of the copy ----
-# The party's downloaded copy and the bytes the CA signed have to be the same bytes.
-# The service already records, per envelope, the hash of the file as it was sent and
-# the hash of the archive that went to storage (final_sha256 in the delivery receipt).
-# A byte-level check needs no PKI, so it is a fair gate on the report path too.
-#
-# Two ways of getting the reference, in order of preference:
-#   1. the stored archive itself, hashed on disk — strongest, and needs no receipt;
-#   2. the receipt in tmp/real/storage/<final_sha256>.receipt.json.
-# A downloaded PDF is checked against the same value by hand:
-#   sha256sum downloaded.pdf        # must equal final_sha256
-final_pdf_check() { # <indent> <envelope-id> <sha from the report, may be empty>
-    ind=$1; env=$2; rep_sha=$3
-    # Read from the config rather than a path baked into this function: storage_dir is
-    # a setting, and a check that silently reads the wrong directory reports the archive
-    # missing on a box where it is present. Inlined rather than calling conf_get
-    # because the report subcommand reaches this before that helper is defined.
-    if [ "$CONTAINER" = 1 ]; then
-        # Copy the archive out and run the same logic here. The container's image
-        # carries sha256sum but not find or grep, so hashing inside it would mean
-        # rewriting this check around a smaller toolset; copying the files keeps one
-        # implementation for both shapes. compose cp nests the source directory under
-        # itself, hence the second path element.
-        sd=$WORK/storage-copy/storage
-        rm -rf "$WORK/storage-copy"
-        dc cp "$CONTAINER_NAME" "$C_STORAGE" "$WORK/storage-copy" >/dev/null 2>&1 \
-            || note "${ind}!! could not copy $C_STORAGE out of the container"
-        [ -d "$sd" ] || sd=$WORK/storage-copy        # older compose does not nest
-    else
-        sd=$STORAGE_DIR
-        [ -n "$sd" ] || sd=$(sed -n -E 's/^[[:space:]]*storage_dir[[:space:]]*=[[:space:]]*//p' "$CONF" 2>/dev/null | head -1)
-        [ -n "$sd" ] || sd=tmp/real/storage
-    fi
-    sha=$rep_sha
-    if [ -z "$sha" ] || [ "$sha" = null ]; then
-        # Pick the receipt for *this* envelope. Taking the last file in the directory
-        # would certify some other envelope's bytes against this one, and with more
-        # than one document on the box that is a wrong answer that looks right.
-        for r in "$sd"/*.receipt.json; do
-            [ -f "$r" ] || continue
-            e=$(receipt_hex "$r" envelope_id)
-            case "$e" in ""|"$env") ;; *) continue ;; esac
-            v=$(receipt_hex "$r" final_sha256)
-            [ -n "$v" ] && sha=$v && break
-        done
-    fi
-    if [ -z "$sha" ]; then
-        note "${ind}!! no final_sha256 for envelope $env in the report or on disk — cannot state what the party downloaded"
-        return 0
-    fi
-    [ "${#sha}" = 64 ] || { note "${ind}!! final_sha256 is not 64 hex chars: '$sha'"; return 0; }
-    stored=$(find "$sd" -name "${sha}*" -type f ! -name '*.json' 2>/dev/null | head -1)
-    if [ -n "$stored" ]; then
-        got=$(sha256sum "$stored" | cut -d' ' -f1)
-        [ "$got" = "$sha" ] \
-            && note "${ind}the archived document hashes to its own final_sha256 (byte-identical to what was certified)" \
-            || note "${ind}!! archived document hashes to $got but the receipt names $sha — the file was changed after it was signed"
-    else
-        note "${ind}the archive is not on this box (storage_dir may differ); final_sha256 is $sha"
-    fi
-    # dispatch_sha256 names the bytes that left the box; final_sha256 names the bytes
-    # archived. They must agree or a signing round changed the document outside the
-    # signature protocol.
-    if [ -f "$sd/${sha}.receipt.json" ]; then
-        disp=$(receipt_hex "$sd/${sha}.receipt.json" dispatch_sha256)
-        case "$disp" in
-            "")        note "${ind}dispatch_sha256 is not recorded on this receipt; final_sha256 is the reference" ;;
-            "$sha")    note "${ind}dispatch_sha256 == final_sha256: the bytes mailed were the bytes archived" ;;
-            *)         note "${ind}!! dispatch_sha256 ($disp) != final_sha256 ($sha) — bytes changed between send and archive" ;;
-        esac
-    fi
-}
-# ----------------------------------------------------- cancel / report ----
-# Subcommands that come back without building or restarting anything.
-#
-# They still need the pdf-go binary, and in the container shape nothing here
-# builds it, so a first-ever `report` on a clean checkout would die on a missing
-# file rather than report anything. Build it if it is not there.
+# The two read-only subcommands. They need the pdf-go binary and the machine client key
+# from a previous run, and nothing else — no admin login, no create, no writes to the
+# instance other than the audit-day file, which is what the nightly job writes anyway.
 if [ "${1:-}" = report ] || [ "${1:-}" = cancel ]; then
-    [ -x "$BIN/pdf-go" ] || go build -trimpath -o "$BIN/pdf-go" ./cmd/pdf-go \
-        || fail "pdf-go did not build"
-fi
-#
-# cancel <envelope-id> — close an envelope the run left open. A test link is live on
-# the public URL until it expires (link_ttl, 336h here), and anyone who has the mail
-# can still claim it, so a run you are not going to finish should be cancelled rather
-# than left to lapse. Delivered envelopes cannot be cancelled (409 state_conflict) and
-# should not be: the signature is already in the archive.
-if [ "${1:-}" = "cancel" ]; then
-    [ $# -eq 2 ] || fail "usage: $0 cancel <envelope-id>"
-    umask 077; mkdir -p "$WORK"
-    [ -s "$WORK/client.key" ] || fail "no client key at $WORK/client.key"
-    TOK=$(curl -sS -X POST -H 'Content-Type: application/json' \
-        -d "{\"key\":\"$(cat "$WORK/client.key")\"}" "${BASE}/api/v1/auth/token" | jq -r '.access // empty')
-    [ -n "$TOK" ] || fail "no access token from ${BASE}/api/v1/auth/token — is the server up? (and for a public link, is cloudflared running?)"
-    CODE=$(curl -sS -o "$WORK/cancel.json" -w '%{http_code}' -X POST \
-        -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
-        -d "{\"reason\":\"$CANCEL_REASON\"}" \
-        "${BASE}/api/v1/envelopes/$2/cancel")
-    printf '   cancel %s -> HTTP %s\n' "$2" "$CODE"
-    # The cancel answer is {envelope: "<id>", status: "cancelled", notified: [...]},
-    # with envelope a string: .envelope.status would error and print nothing, and a
-    # blank line where the outcome should be is how a wrong jq expression becomes a
-    # silent pass.
-    jq -c '{status: (.status // .error.code), notified: (.notified // [])}' "$WORK/cancel.json" \
-        2>/dev/null | sed 's/^/     /' || sed 's/^/     /' "$WORK/cancel.json"
-    [ "$CODE" = 200 ] || fail "cancel refused (HTTP $CODE). A delivered envelope cannot be cancelled, and that is correct."
-    exit 0
+    [ $# -eq 2 ] || fail "usage: $0 $1 <envelope-id>"
+    [ -s "$KEYFILE" ] || fail "no client key at $KEYFILE - run $0 (no arguments) once first"
+    go build -trimpath -o "$PDFGO" ./cmd/pdf-go || fail "pdf-go did not build"
 fi
 
-# report <envelope-id> — re-verify a run that already finished. Read-only.
 if [ "${1:-}" = "report" ]; then
-    [ $# -eq 2 ] || fail "usage: $0 report <envelope-id>"
-    [ -s "$WORK/client.key" ] || fail "no client key at $WORK/client.key"
-    TOKEN=$(cat "$WORK/client.key"); export TOKEN
-    # Flags before the positional: Go's flag parser stops at the first non-flag word,
-    # so "report <id> -server ..." reads the id, then treats the flags as arguments
-    # and answers "needs --server".
-    "$BIN/pdf-go" envelope report -server "$BASE" -token-env TOKEN $CLI_TLS "$2" \
-        > "$WORK/report.json" 2>"$WORK/report.err" \
-        || { cat "$WORK/report.err"; fail "report failed"; }
+    say "report $2  (read-only)"
+    envelope report "$2" > "$WORK/report.json" 2>"$WORK/report.err" \
+        || { cat "$WORK/report.err"; fail "report failed" ; }
     jq -c "$report_jq" "$WORK/report.json" | sed 's/^/   /'
-    final_pdf_check '   ' "$2" "$(jq -r '.sha256 // empty' "$WORK/report.json" 2>/dev/null)"
-    # Signatures alone do not prove a run: the hash chain behind the archive has to
-    # agree with the events table, so the report path checks it too.
+    jq -e '.complete and .report.valid and
+           (([.report.signers[].valid] | length) > 0) and ([.report.signers[].valid] | all)' \
+        "$WORK/report.json" >/dev/null 2>&1 \
+        && note "PASS - every party signed and every signature verifies against the CA" \
+        || note "not a PASS - read the fields above (.report.errors says why)"
+    byte_identity '   ' "$2" "$(jq -r '.sha256 // empty' "$WORK/report.json" 2>/dev/null)"
     audit_chain '   '
-    log_leak_scan
+    consent_ips '   ' "$2"
     exit 0
 fi
 
-# ------------------------------------------------------------------- build ----
-say "build (production: -trimpath, from the module cache)"
-go build -trimpath -o "$BIN/signsrv" ./cmd/signsrv || fail "signsrv did not build"
-go build -trimpath -o "$BIN/pdf-go"  ./cmd/pdf-go  || fail "pdf-go did not build"
-note "$("$BIN/signsrv" version)  $("$BIN/pdf-go" version)"
-
-# ------------------------------------------------------- container prepare ----
-# In the container shape none of the local stages below apply: the server is not
-# started here, there is no local config to write, no local state to wipe, and no
-# local port to hold. What this run needs from the container is reached through
-# `docker compose exec` and through the public URL.
-if [ "$CONTAINER" = 1 ]; then
-    command -v docker > /dev/null 2>&1 || fail "CONTAINER=1 but docker is not on PATH"
-    [ -f "$COMPOSE" ] || fail "no compose file at $COMPOSE"
-
-    say "container: $COMPOSE"
-    # RESET=1 recreates the instance from an empty volume: a fresh CA, a fresh
-    # client key, nothing carried forward. In the local shape the default is to
-    # reset; here the default is to keep, because the volume also holds every
-    # document signed in earlier runs, and wiping it orphans their signatures.
-    if [ "${RESET:-0}" = 1 ]; then
-        note "RESET=1 — the data volume is destroyed, so documents signed by earlier"
-        note "runs of this instance stop being resolvable from the volume (the API"
-        note "still answers for them only if the rows survive; they do not)."
-        sh scripts/test-stack.sh reset 2>&1 | sed 's/^/   /'
-    else
-        sh scripts/test-stack.sh up 2>&1 | sed 's/^/   /'
+if [ "${1:-}" = "cancel" ]; then
+    say "cancel $2"
+    # There is no `pdf-go envelope cancel`, so this is the route directly: POST
+    # /api/v1/envelopes/{id}/cancel, with the body the endpoint requires (an empty
+    # reason is a 422, not a default). The answer is
+    # {envelope: "<id>", status: "cancelled", notified: [...]} where `envelope` is a
+    # STRING, so .envelope.status would error and print nothing.
+    tok=$(client_bearer) || fail "the client key was refused at /api/v1/auth/token"
+    body=$(jq -cn --arg reason "$CANCEL_REASON" '{reason:$reason}')
+    code=$(curl -sS --max-time 30 -o "$WORK/cancel.json" -w '%{http_code}' -X POST \
+        -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' \
+        -d "$body" "${BASE}/api/v1/envelopes/${2}/cancel" || echo 000)
+    printf '   POST /envelopes/%s/cancel -> HTTP %s\n' "$2" "$code"
+    if [ -s "$WORK/cancel.json" ]; then
+        jq -c '{envelope, status, notified}' "$WORK/cancel.json" 2>/dev/null | sed 's/^/   /' \
+            || api_problem
     fi
-
-    say "client key (issued inside the container)"
-    KEYFILE=$WORK/client.key
-    # A key on disk is not necessarily a key the service still accepts. The data
-    # volume can be wiped (test-stack.sh reset, or a rebuild) while tmp/prod-run/
-    # survives, and then the run dies on "the key is not valid" at the first call.
-    # Ask the token endpoint before trusting the file, because that is the same
-    # check create will make, and it costs one request.
-    if [ -s "$KEYFILE" ]; then
-        kcheck=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' -X POST \
-            -H 'Content-Type: application/json' \
-            -d "{\"key\":\"$(cat "$KEYFILE")\"}" "${BASE}/api/v1/auth/token" 2>/dev/null)
-        if [ "$kcheck" != 200 ]; then
-            note "the stored key is not accepted (HTTP ${kcheck:-no answer}) — issuing a new one"
-            rm -f "$KEYFILE"
-        fi
-    fi
-    if [ ! -s "$KEYFILE" ]; then
-        dc exec -T "$SERVICE" signsrv client add prod-regression \
-            envelope:write envelope:read > "$WORK/client.out" 2>&1 \
-            || { cat "$WORK/client.out"; fail "client add failed in the container"; }
-        grep -o 'key_[a-f0-9]\{64\}' "$WORK/client.out" | head -1 > "$KEYFILE"
-        rm -f "$WORK/client.out"
-        chmod 600 "$KEYFILE"
-        note "issued a new key (revoke old ones from ${PUBLIC}/admin/)"
-    else
-        note "reusing $KEYFILE"
-    fi
-    TOKEN=$(cat "$KEYFILE"); export TOKEN
-
-    say "admin console"
-    note "sign in at ${PUBLIC}/admin/ — dev mode seeds dev@localhost with the"
-    note "ADMIN_PASSWORD from deploy/.env.test (printed once in"
-    note "'docker compose logs $CONTAINER_NAME' on the first boot)."
-fi
-
-# The stages below belong to the local shape only.
-if [ "$CONTAINER" != 1 ]; then
-
-# -------------------------------------------------------------------- stop ----
-say "stop every running server"
-# The bracket keeps this script's own command line out of its own match. The .* is
-# load-bearing: the real command line is `signsrv -config x serve`, so a pattern that
-# demands the two words adjacent leaves the server running, holding the port.
-SRVPAT='[s]ignsrv( .*)? serve( .*)?'
-if pgrep -f "$SRVPAT" >/dev/null 2>&1; then
-    pkill -f "$SRVPAT" || true
-    i=0
-    while pgrep -f "$SRVPAT" >/dev/null 2>&1; do
-        i=$((i + 1)); [ "$i" -gt 20 ] && fail "the old server would not stop"
-        sleep 1
-    done
-    note "stopped"
-else
-    note "nothing was listening"
-fi
-
-# Port ownership check. If the stop above missed something — a server started by a
-# service manager, or one whose command line this pattern does not cover — it keeps the
-# port, the health poll reads 200, and every later line prints green while the pid, the
-# log tail and the exit-time kill all point at a process that never ran. Name it now.
-if curl -fsS -o "$WORK/health.pre" --max-time 2 "${BASE}/healthz" 2>/dev/null; then
-    holder=$(ss -ltnp 2>/dev/null | grep ":${BASE##*:} " | head -1)
-    printf 'FAIL  something else is holding %s (it answers /healthz now)\n' "$BASE"
-    printf '      %s\n      find it: ss -ltnp | grep %s\n' "${holder:-no owner visible in ss output}" "${BASE##*:}"
-    printf '      or move this run off the port: BASE=http://127.0.0.1:8091 scripts/prod-sign-run.sh\n'
-    exit 1
-fi
-
-# ------------------------------------------------------------------ config ----
-# Idempotent in form: a key already in the file survives. But see the reset section
-# below — by default it deletes the config first, so every run issues fresh secrets.
-# RESET=0 is the mode in which the preservation below is what actually happens.
-#
-# keystore_pass CANNOT be invented once tmp/real/keystore/ca.key exists — the CA is
-# encrypted with it, and a wrong passphrase means the service comes up and every
-# signature already issued reads as invalid. So under RESET=0: keep what is in the
-# file; if there is none and a CA exists, stop and ask rather than guess.
-say "config: $CONF"
-conf_get() { # conf_get <key> — value from the existing config, empty if absent
-    [ -f "$CONF" ] || return 0
-    sed -n -E "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" | head -1 | tr -d '"'
-}
-
-KS_PASS=$(conf_get keystore_pass)
-ADMIN_PW=$(conf_get admin_password)
-JWT_FILE=$(conf_get jwt_secret_file)
-TSA_URL=$(conf_get tsa_url)
-SMTP_PASS=$(conf_get smtp_pass)
-MAIL_FROM=$(conf_get mail_from)
-DB=$(conf_get db)
-[ -n "$DB" ] || DB=tmp/real/signsrv.db
-KS_DIR=$(conf_get keystore_dir)
-[ -n "$KS_DIR" ] || KS_DIR=tmp/real/keystore
-STORAGE_DIR=$(conf_get storage_dir)
-[ -n "$STORAGE_DIR" ] || STORAGE_DIR=tmp/real/storage
-OUTBOX_DIR=$(conf_get outbox_dir)
-[ -n "$OUTBOX_DIR" ] || OUTBOX_DIR=tmp/real/outbox
-AUDIT_DIR=$(conf_get audit_dir)
-[ -n "$AUDIT_DIR" ] || AUDIT_DIR=tmp/real/audit
-
-# Env var wins, then whatever is already in the file, then the default. Without the
-# middle step, an operator who set dev=true or trust_proxy=false in the file finds the
-# script quietly rewriting their intent on every run.
-# An operator who sets dev=true or trust_proxy=false in the file gets it rewritten on
-# every run otherwise. The earlier `X=${X:-default}` cannot tell "unset" from "the
-# default", so the test is: an environment value that differs from the default is a
-# deliberate choice and wins; anything else defers to the file, then the default.
-keep() { # keep <key> <env-value> <default>
-    v=$(conf_get "$1")
-    if [ -n "$2" ] && [ "$2" != "$3" ]; then printf '%s' "$2"
-    elif [ -n "$v" ]; then printf '%s' "$v"
-    else printf '%s' "$3"; fi
-}
-DEV=$(keep dev "$DEV" false)
-TRUST_PROXY=$(keep trust_proxy "$TRUST_PROXY" true)
-SMTP_HOST=$(keep smtp_host "$SMTP_HOST" 192.168.20.18)
-SMTP_PORT=$(keep smtp_port "$SMTP_PORT" 25)
-STARTTLS=$(keep smtp_starttls "${SMTP_STARTTLS:-}" false)
-[ -n "$JWT_FILE" ] || JWT_FILE=$KS_DIR/../jwt.ed25519.key
-
-# --------------------------------------------------------------- reset ----
-# Every run from now on starts from nothing: database, keystore, jwt secret, client
-# key, stored PDFs, outbox, audit log and the config itself. Without this the run is
-# *mostly* fresh but carries the old CA and jwt key forward, so the documents signed
-# in this run are signed by a key that has already been used, and a failure cannot be
-# attributed to the run that produced it.
-#
-# It also removes the reason the secrets-preservation logic below exists: with the old
-# state gone there is no passphrase to orphan and no CA to keep, so the new one is
-# generated and written fresh. RESET=0 restores the preserve-everything behaviour.
-#
-# The wipe has to happen here, after the paths are resolved and before anything is
-# generated or written: wipe after generation and the freshly generated values are
-# dropped on the floor, which produces a config with an empty keystore_pass and an
-# admin_password — checkconfig then refuses it with "keystore_pass is required".
-#
-# This is destructive and it is irreversible. Only ever point it at the test tree.
-RESET=${RESET:-1}
-if [ "$RESET" = 1 ]; then
-    say "reset: wiping prior state"
-    [ "${RESET_CONFIRM:-yes}" = "yes" ] || fail "RESET_CONFIRM must be 'yes' to wipe"
-    for p in "$DB" "$KS_DIR" "$JWT_FILE" "$STORAGE_DIR" "$OUTBOX_DIR" "$AUDIT_DIR"; do
-        case "$p" in
-            tmp/*|../tmp/*) ;;
-            *) fail "refusing to wipe: $p is outside tmp/ (set RESET=0 to keep it)" ;;
-        esac
-    done
-    # $JWT_FILE first, and never after $KS_DIR: the default path is
-    # "$KS_DIR/../jwt.ed25519.key", and once the keystore directory is gone that path
-    # no longer resolves, so rm -rf walks past it and leaves a stale key behind for the
-    # service to choke on.
-    for p in "$JWT_FILE" "$DB" "$DB-wal" "$DB-shm" "$KS_DIR" \
-             "$STORAGE_DIR" "$OUTBOX_DIR" "$AUDIT_DIR" \
-             tmp/real/signsrv.jsonl tmp/real/serve.log; do
-        [ -e "$p" ] && { rm -rf "$p"; note "removed $p"; } || true
-    done
-    rm -f "$CONF"
-    rm -rf "$WORK"; mkdir -p "$WORK"
-    # Whatever the deleted config held is stale now, and the CA it protected is gone.
-    # Clearing these here is what makes the generation below actually generate.
-    KS_PASS=""; ADMIN_PW=""
-    note "state reset — a fresh CA, jwt key and client key will be issued this run"
-fi
-
-if [ -z "$KS_PASS" ] && [ -f "$KS_DIR/ca.key" ]; then
-    fail "keystore_pass is not in $CONF but $KS_DIR/ca.key exists. Put the CA's
-   passphrase in the config by hand: the one that unlocked the keystore the last
-   time. Generating a new one orphans every document signed so far."
-fi
-if [ -z "$KS_PASS" ]; then
-    KS_PASS=ks-$(openssl rand -hex 16)
-    note "generated keystore_pass (the keystore will be created at first start)"
-fi
-[ -n "$ADMIN_PW" ] || ADMIN_PW=admin-$(openssl rand -hex 12)
-[ -n "$JWT_FILE" ] || JWT_FILE=$KS_DIR/../jwt.ed25519.key
-[ -n "$MAIL_FROM" ] || MAIL_FROM=signer@kaykraft.org
-if [ -z "$TSA_URL" ]; then
-    note "tsa_url unset: signatures carry no RFC 3161 timestamp, so they cannot be"
-    note "proven to predate any later compromise of the key. Set tsa_url in $CONF."
-fi
-
-mkdir -p "$(dirname "$DB")" "$KS_DIR" "$STORAGE_DIR" "$OUTBOX_DIR" "$AUDIT_DIR"
-mkdir -p "$(dirname "$JWT_FILE")"
-# The jwt key is created by the service, not by this script. signauth.LoadKeyring
-# generates it in its own encoding (base64 of the 64-byte ed25519 private blob) plus
-# a .pub sibling, and it refuses anything else: an `openssl genpkey` PEM file is a
-# perfectly good Ed25519 key that the loader cannot read, and the server dies with
-# "is not base64" at boot. If the file already exists, leave it alone and only fix
-# the mode, which LoadKeyring also enforces (0600 or it refuses to load).
-if [ ! -f "$JWT_FILE" ]; then
-    note "$JWT_FILE absent — the service will create it at first start"
-else
-    chmod 600 "$JWT_FILE"
-    note "reusing $JWT_FILE"
-fi
-
-# Secrets live inline in this file (0600) rather than in a second file that is easy
-# to forget: one artifact, one owner, one mode.
-{
-    echo "# Generated by scripts/prod-sign-run.sh. Mode 0600 — it contains secrets."
-    echo "# Re-running the script preserves every value already present here."
-    echo "listen=${BASE#http://}"
-    echo "public_url=${PUBLIC}"
-    echo "trust_proxy=${TRUST_PROXY}"
-    echo "dev=${DEV}"
-    echo "db=${DB}"
-    echo "storage_dir=tmp/real/storage"
-    echo "outbox_dir=tmp/real/outbox"
-    echo "audit_dir=tmp/real/audit"
-    echo "log_path=tmp/real/signsrv.jsonl"
-    echo "keystore_dir=${KS_DIR}"
-    echo "keystore_pass=${KS_PASS}"
-    echo "admin_password=${ADMIN_PW}"
-    echo "jwt_secret_file=${JWT_FILE}"
-    echo "mail_from=${MAIL_FROM}"
-    echo "smtp_host=${SMTP_HOST}"
-    echo "smtp_port=${SMTP_PORT}"
-    # The relay on this box is a plain SMTP server that does not advertise STARTTLS,
-    # and the service default is true: leaving the default in place makes every
-    # invitation fail with an error that reads like a network fault. So the default
-    # written here is false, and an existing setting in the file still wins.
-    echo "smtp_starttls=${STARTTLS}"
-    echo "link_ttl=336h"
-    echo "worker_interval=2s"
-    echo "max_pdf_mb=20"
-    echo "log_level=info"
-    [ -n "$TSA_URL" ]   && echo "tsa_url=${TSA_URL}"
-    [ -n "$SMTP_PASS" ] && echo "smtp_pass=${SMTP_PASS}"
-} > "$CONF"
-chmod 600 "$CONF"
-note "$(cut -d= -f1 "$CONF" | grep -v '^#' | grep -v '^$' | tr '\n' ' ')"
-# Nothing above may reach a log line or a shell trace.
-[ -n "$SMTP_PASS" ] && export SMTP_PASS="$SMTP_PASS"
-
-"$BIN/signsrv" -config "$CONF" checkconfig > "$WORK/checkconfig.out" 2>&1 || {
-    sed -E 's/(pass|secret)[^ ]*=.*/\1...=<redacted>/' "$WORK/checkconfig.out"
-    fail "checkconfig refused the config"
-}
-# CHECK_ONLY=1 stops here: enough to prove a reset produced a usable config without
-# binding a port or dispatching anything to the relay.
-if [ "${CHECK_ONLY:-0}" = 1 ]; then
-    say "CHECK_ONLY=1: config verified, not starting the server"
+    [ "$code" = 200 ] || note "a delivered envelope cannot be cancelled (state_conflict) - and that is correct"
     exit 0
 fi
-if [ "$DEV" = true ]; then
-    note "checkconfig clean. dev=true: invitations are written to outbox_dir as .eml"
-    note "files instead of being mailed, and dev_mode_blocked_* guards are off."
+
+note "credentials read from $ENVF and $COMPOSE (neither printed)"
+
+# ------------------------------------------------------------- health ----
+say "preflight: $BASE"
+CODE=$(curl -sS --max-time 20 -o "$WORK/health.json" -w '%{http_code}' "$BASE/healthz" \
+    2>"$WORK/health.err" || echo 000)
+[ "$CODE" = 200 ] || { printf '%s\n' "$(head -c 200 "$WORK/health.err" 2>/dev/null)"
+                       fail "GET $BASE/healthz -> HTTP $CODE"; }
+note "GET /healthz -> 200   $(jq -c '{status, version}' "$WORK/health.json" 2>/dev/null)"
+admin_token > /dev/null
+note "login over the API ok (token not printed)"
+
+# ------------------------------------------------------------------ build ----
+say "build pdf-go (-trimpath, from ./cmd/pdf-go)"
+go build -trimpath -o "$PDFGO" ./cmd/pdf-go || fail "pdf-go did not build"
+note "$("$PDFGO" version)   $PDFGO"
+
+# ------------------------------------------------------------ client key ----
+# A key file is not a key the service still accepts: the instance can be rebuilt while
+# tmp/prod-run survives. So the file is asked about before it is trusted, at the same
+# endpoint the next call would use. Minting also happens over the API — the key is shown
+# once by POST /api/v1/admin/clients and stored as a hash, so a lost file means the
+# client is revoked from the console, not guessed at.
+say "client key (over the API)"
+key_check() { # HTTP status of the token exchange for the key on disk
+    [ -s "$KEYFILE" ] || { printf 'none'; return 0; }
+    body=$(jq -cn --arg key "$(cat "$KEYFILE")" '{key:$key}')
+    curl -sS --max-time 20 -o "$WORK/keycheck.json" -w '%{http_code}' -X POST \
+        -H 'Content-Type: application/json' -d "$body" "$BASE/api/v1/auth/token" \
+        2>/dev/null || printf '000'
+    : > "$WORK/keycheck.json"
+}
+KC=$(key_check)
+if [ "$KC" = 200 ]; then
+    note "reusing $KEYFILE (the token endpoint accepts it)"
 else
-    note "checkconfig clean. dev=false: invitations go to the relay at ${SMTP_HOST}:${SMTP_PORT}."
+    [ "$KC" = none ] && note "no key on disk yet" \
+        || note "the stored key is not accepted (HTTP $KC) - issuing a new one"
+    # The name is unique on the instance and the key is unrecoverable (hashed, shown
+    # once), so a client left by an earlier run whose key file is gone cannot be reused
+    # and cannot be re-keyed: mint a second one. The service answers that collision with
+    # a 500 on the insert, not a 409, so a plain name is tried first and a numbered one
+    # only after it is refused. Revoke the old ones from the console when it matters.
+    CNAME=prod-regression
+    body=$(jq -cn --arg n "$CNAME" '{name:$n, scopes:["envelope:write","envelope:read"]}')
+    code=$(api POST /api/v1/admin/clients "$body")
+    case "$code" in
+        200|201) : ;;
+        *) CNAME="prod-regression-$(date +%s)"
+           note "'prod-regression' is already taken on this instance (an earlier run that"
+           note "lost its key file). Minting as $CNAME instead; revoke the old one in the console."
+           body=$(jq -cn --arg n "$CNAME" '{name:$n, scopes:["envelope:write","envelope:read"]}')
+           code=$(api POST /api/v1/admin/clients "$body") ;;
+    esac
+    case "$code" in
+        200|201) : ;;
+        *) printf '   POST /api/v1/admin/clients -> HTTP %s\n' "$code"; api_problem
+           fail "could not mint the client key over the API" ;;
+    esac
+    # The key is in this answer and in no later one. It goes file to file: never argv,
+    # never the terminal, never the log.
+    jq -r '.key' "$API_OUT" > "$KEYFILE"
+    [ -s "$KEYFILE" ] || { api_problem; fail "the create answer held no key"; }
+    KC=$(key_check)
+    [ "$KC" = 200 ] || { note "the new key was refused too (HTTP $KC)"; fail "the client key does not work"; }
+    note "issued client id $(jq -r '.client.id' "$API_OUT") (revoke: DELETE /api/v1/admin/clients/<id> or ${BASE}/admin/)"
 fi
-
-# ------------------------------------------------------------------- start ----
-say "start"
-LOG=tmp/real/serve.log
-nohup "$BIN/signsrv" serve -config "$CONF" > "$LOG" 2>&1 &
-SRV=$!
-trap '[ "$KEEP_RUNNING" = 1 ] || { kill "$SRV" 2>/dev/null || true; }' EXIT
-i=0
-until curl -fsS -o "$WORK/health.json" --max-time 3 "${BASE}/healthz" 2>/dev/null; do
-    i=$((i + 1))
-    kill -0 "$SRV" 2>/dev/null || { tail -20 "$LOG"; fail "serve exited (pid $SRV gone)"; }
-    [ "$i" -gt 60 ] && { tail -20 "$LOG"; fail "health never came up"; }
-    sleep 0.5
-done
-note "pid $SRV   GET ${BASE}/healthz -> 200"
-
-# --------------------------------------------------------------------- key ----
-# One key, stored once. Each pdf-go *process* exchanges it for its own bearer token
-# (the exchange is rate limited per source address under the login guard), so keep the
-# number of CLI invocations low: this run does create, get --watch and report, which
-# is three. A loop of CLI calls would read as a 429 server fault.
-say "client key"
-KEYFILE=$WORK/client.key
-if [ ! -s "$KEYFILE" ]; then
-    "$BIN/signsrv" -config "$CONF" client add prod-regression envelope:write envelope:read \
-        > "$WORK/client.out" 2>&1 || { cat "$WORK/client.out"; fail "client add failed"; }
-    grep -o 'key_[a-f0-9]\{64\}' "$WORK/client.out" | head -1 > "$KEYFILE"
-    rm -f "$WORK/client.out"          # the human-readable copy held the key too
-    chmod 600 "$KEYFILE"
-    note "issued a new key (revoke the old ones from the admin UI when you are done)"
-else
-    note "reusing $KEYFILE"
-fi
-export TOKEN
-TOKEN=$(cat "$KEYFILE")
-
-# ------------------------------------------------------------- admin account ----
-# The client key above is what drives the API, so a run works without any admin
-# account — which is exactly why the gap goes unnoticed: /admin/ then refuses every
-# login and nothing in the run output says so. admin_password in the config seeds
-# nothing by itself; there is no default address. ADMIN_EMAIL makes it explicit.
-say "admin account"
-if [ -n "${ADMIN_EMAIL:-}" ]; then
-    if "$BIN/signsrv" -config "$CONF" admin list 2>/dev/null | grep -qi -- "$ADMIN_EMAIL"; then
-        note "admin $ADMIN_EMAIL already exists"
-    else
-        ADMIN_PASSWORD="$ADMIN_PW" "$BIN/signsrv" -config "$CONF" admin add "$ADMIN_EMAIL" \
-            > "$WORK/admin.out" 2>&1 \
-            || { cat "$WORK/admin.out"; fail "admin add failed"; }
-        sed 's/^/   /' "$WORK/admin.out"
-        note "sign in at ${PUBLIC}/admin/ as $ADMIN_EMAIL (the admin_password in $CONF)"
-    fi
-else
-    note "no ADMIN_EMAIL set: the API works, /admin/ has no account to sign in with."
-    note "  later: ADMIN_PASSWORD=... $BIN/signsrv -config $CONF admin add you@example.org"
-fi
-
-fi   # end of the local-server-only stages (CONTAINER != 1)
-# ------------------------------------------------------------- shared path ----
-# Everything below is the same in both shapes: the document is read and filled
-# here, the envelope is created and sent over the API, and the answers are read
-# back over the API. The only difference is the transport - https through the
-# public URL in the container shape, plain http on loopback in the local one -
-# and that is carried in $BASE and $CLI_TLS.
+rm -f "$BEARER_F"      # any cached bearer belongs to the key that was just checked
+client_bearer > /dev/null || fail "the client key was refused at /api/v1/auth/token"
+note "API credential ready (one exchange for the whole run)"
 
 # --------------------------------------------------------------- document ----
-# Read the form. Never guess a field name: a name that is not in the document is a
-# 400 at create, and a name that is there but wrong is a document that says the
-# wrong thing and gets certified anyway.
+# Read the form before naming a field. A name that is not in the document is a 400 at
+# create; a name that is in the document but wrong is a document that says the wrong
+# thing and gets certified anyway.
 say "document: $DOC"
-[ -f "$DOC" ] || fail "no document at $DOC"
-"$BIN/pdf-go" extract "$DOC" -o "$WORK/schema.json" > "$WORK/extract.out" 2>&1 \
-    || { cat "$WORK/extract.out"; fail "extract failed (scanned PDF with no form?)"; }
+"$PDFGO" extract "$DOC" -o "$WORK/schema.json" > "$WORK/extract.out" 2>&1 \
+    || { cat "$WORK/extract.out"; fail "extract failed (a scanned PDF with no form?)"; }
 jq -r '.fields[] | select(.type=="text") | .name' "$WORK/schema.json" > "$WORK/fields.txt"
 note "fillable text fields: $(tr '\n' ' ' < "$WORK/fields.txt")"
 
-if [ ! -s "$WORK/fill.json" ]; then
-    # Reuse the last known-good values if this box has any; otherwise seed from the
-    # schema with the date, and stop rather than dispatch a blank document.
-    LAST=$(ls -t tmp/real/fill*.json 2>/dev/null | head -1 || true)
-    if [ -n "$LAST" ]; then
-        cp "$LAST" "$WORK/fill.json"; note "seeded from $LAST — check the values"
-    else
-        jq -n --arg d "$(date +%F)" '{values: {Text1: "Steve Kieu", Text2: $d}}' > "$WORK/fill.json"
-        note "no earlier fill spec; wrote a minimal one. Edit $WORK/fill.json to suit."
-    fi
-fi
-jq -e '.values' "$WORK/fill.json" > /dev/null 2>&1 || fail "$WORK/fill.json needs a .values object"
-for f in $(jq -r '.values | keys[]' "$WORK/fill.json"); do
-    grep -qx "$f" "$WORK/fields.txt" || fail "fill.json sets '$f', which is not in $DOC"
-done
-note "every name in fill.json exists in the document"
+# The party's name, the date, and a line naming the run. The rest of the form is left
+# alone deliberately: a regression run should change the least the signature has to
+# cover, so a failure points at the protocol rather than at the artwork.
+FILL_DATE=$(date +%F)
+FILL_REF="regression $(date +%Y-%m-%dT%H:%M) $(printf '%s' "${BASE#https://}")"
+jq -n --arg n "$PARTY_NAME" --arg d "$FILL_DATE" --arg r "$FILL_REF" \
+    '{values: {Text1: $n, Text2: $d, Text5: $n, Text6: $r}}' > "$WORK/fill.json"
+# Field names are read one line at a time rather than word-split: a form written by
+# Word names its fields "Full name" and company, and a `for` loop would test "Full" and
+# "name" separately and call that a match.
+jq -r '.values | keys[]' "$WORK/fill.json" > "$WORK/fill-keys.txt"
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    grep -Fxq -- "$f" "$WORK/fields.txt" \
+        || fail "the fill spec sets '$f', which is not a text field in $DOC"
+done < "$WORK/fill-keys.txt"
+note "the fill spec sets: $(jq -r '.values | keys | join(", ")' "$WORK/fill.json")"
 
-"$BIN/pdf-go" fill "$WORK/fill.json" "$DOC" -o "$WORK/filled.pdf" > "$WORK/fill.out" 2>&1 \
+"$PDFGO" fill "$WORK/fill.json" "$DOC" -o "$WORK/filled.pdf" > "$WORK/fill.out" 2>&1 \
     || { cat "$WORK/fill.out"; fail "fill failed"; }
-grep -i 'note\|warn' "$WORK/fill.out" | sed 's/^/     /' || true
-"$BIN/pdf-go" fields "$WORK/filled.pdf" > "$WORK/filled-fields.txt" 2>&1 \
+grep -i 'warn' "$WORK/fill.out" | sed 's/^/     /' || true
+"$PDFGO" fields "$WORK/filled.pdf" > "$WORK/filled-fields.txt" 2>&1 \
     || { cat "$WORK/filled-fields.txt"; fail "the filled document cannot be re-read"; }
-for v in $(jq -r '.values[]' "$WORK/fill.json"); do
-    grep -Fq "$v" "$WORK/filled-fields.txt" || note "!! '$v' did not read back from the PDF"
-done
+# One value per line, same reason as the field names above: the party's name is two
+# words, and a word-split check would pass on either half of it.
+jq -r '.values[]' "$WORK/fill.json" > "$WORK/fill-values.txt"
+while IFS= read -r v; do
+    [ -n "$v" ] || continue
+    grep -Fq -- "$v" "$WORK/filled-fields.txt" || note "!! '$v' did not read back from the PDF"
+done < "$WORK/fill-values.txt"
 note "filled document re-reads with the values in it"
+note "local sha256 of those bytes: $(openssl dgst -sha256 "$WORK/filled.pdf" | awk '{print $NF}')"
 
-# ---------------------------------------------------------------- dispatch ----
+# --------------------------------------------------------------- dispatch ----
 say "dispatch"
-jq -n --arg e "$PARTY" --arg n "$PARTY_NAME" \
-    '[{email: $e, name: $n, order: 1, reason: "I have read this document and agree to its terms"}]' \
-    > "$WORK/parties.json"
+jq -n --arg e "$PARTY" --arg n "$PARTY_NAME" --arg r "$CONSENT_REASON" \
+    '[{email: $e, name: $n, order: 1, reason: $r}]' > "$WORK/parties.json"
 
-# -spec applies fill.json server-side, so the certified bytes are the filled bytes.
-# Without -send nothing is mailed and the party has nothing to act on.
-#
-# The document is the LAST argument on purpose: Go's flag parser stops at the first
-# non-flag word, so putting the path first makes every flag after it a positional
-# and the CLI answers "needs --server".
-"$BIN/pdf-go" envelope create \
-    -server "$BASE" -token-env TOKEN $CLI_TLS \
-    -title "${TITLE:-Production regression - one real signature}" \
-    -subject "One document is waiting for your signature" \
-    -message "Please review and sign. The link expires in 72 hours." \
-    -expires 72h -spec "$WORK/fill.json" -parties "$WORK/parties.json" \
-    -links-out "$WORK/links.json" -send "$DOC" \
-    > "$WORK/create.json" 2>"$WORK/create.err" || {
-        cat "$WORK/create.err"; fail "create/send failed"
-    }
-# create --send answers with TWO JSON documents: the create result and the send
-# result. Reading .envelope.id from the file therefore yields the id twice, and a
-# two-line id matches nothing in the database. Slurp and take the last document,
-# which is the send: its status is the one that matters.
-last() { jq -s -r "$1" "$WORK/create.json"; }
-lastc() { jq -s -c "$1" "$WORK/create.json"; }
-ENVID=$(last '.[-1].envelope.id')
-note "envelope $ENVID   status $(last '.[-1].envelope.status')"
-lastc '.[-1].links | [.[] | {email, expires_at}]' | sed 's/^/     /'
-case "$ENVID" in ""|null) fail "the service answered without an envelope id" ;; esac
-[ "$(printf '%s' "$ENVID" | wc -l)" = 0 ] || fail "read a multi-line envelope id: the create answer has more than two documents"
-
-# A send whose mail fails does not fail: the row keeps its next_at and is retried,
-# so the envelope status cannot tell you the invitation left. The queue is the truth.
-# The worker drains on its own interval, so this polls briefly instead of reading a
-# row that has not been attempted yet and calling that a pass.
-# In the container shape the database is inside the container and sqlite3 is not
-# on the host, so the same query runs there.
-if [ "$CONTAINER" = 1 ]; then
-    # Over the API there is no per-envelope queue row to read: the send answer
-    # reports what was QUEUED (send is synchronous, so that is the queue truth),
-    # and GET /api/v1/admin/dbstatus reports how many queued mails are still
-    # undelivered across the whole instance. On this test instance the run is the
-    # only traffic, so a queue that drains to zero is this envelope's mail having
-    # left. A shared instance would need the events endpoint instead.
-    tok=$(access_token) || { note "   no access token - cannot check the mail queue"; }
-    if [ -n "${tok:-}" ]; then
-        QUEUED=$(lastc '.[-1].notified // [] | length')
-        note "${QUEUED:-0} invitation(s) queued by the send"
-        i=0; LEFT=""
-        while [ "$i" -lt 30 ]; do
-            LEFT=$(curl -sS --max-time 15 -H "Authorization: Bearer $tok" \
-                "${BASE}/api/v1/admin/dbstatus" 2>/dev/null | jq -r '.mail_queued // empty')
-            [ "$LEFT" = 0 ] && break
-            i=$((i + 1)); sleep 2
-        done
-        case "$LEFT" in
-            0)   note "mail queue empty - the invitation left the container" ;;
-            '')  note "!! dbstatus did not answer - check the worker in the container log" ;;
-            *)   note "!! $LEFT mail(s) still queued after 60s - the relay is refusing or slow;"
-                 note "   docker compose -f $COMPOSE logs $SERVICE | grep -i mail" ;;
-        esac
-    fi
-    note "the party's link is printed below; the same link is in the mail"
-elif command -v sqlite3 > /dev/null 2>&1; then
-    q="select kind||' attempts='||attempts||' sent_at='||coalesce(sent_at,'-')||
-         case when last_error is null or last_error='' then '' else ' error='||last_error end
-         from mail_queue where envelope_id='$ENVID';"
-    i=0
-    while [ "$i" -lt 30 ]; do
-        ROW=$(sqlite3 "file:${DB}?mode=ro" "$q" 2>/dev/null || true)
-        case "$ROW" in
-            *sent_at=20*) break ;;                                  # delivered
-            *error=*)     break ;;                                  # failed for real
-        esac
-        [ -z "$ROW" ] && break
-        i=$((i + 1)); sleep 1
-    done
-    [ -n "$ROW" ] && printf '%s\n' "$ROW" | sed 's/^/     mail_queue: /' \
-        || note "!! no mail_queue row for $ENVID - the invitations were never queued"
-    case "$ROW" in
-        *error=*) note "!! the relay refused the mail: the party has no link" ;;
-        *sent_at=20*) note "the invitation left this box" ;;
-        *) note "the invitation is still queued; check the worker in $LOG" ;;
+# Reuse, do not repeat. The envelope this run made is remembered, and while it is still
+# waiting there is nothing to create and nothing to mail.
+ENVID=""
+if [ -s "$ENVIDFILE" ]; then
+    CAND=$(tr -d ' \t\n' < "$ENVIDFILE")
+    case "$CAND" in
+        [0-9a-f][0-9a-f]*)
+            st=$(env_status "$CAND")
+            if [ "$FORCE_NEW" = 1 ]; then
+                note "envelope $CAND (${st:-gone}) exists; FORCE_NEW=1 asks for another"
+            elif [ -z "$st" ]; then
+                note "envelope $CAND is no longer on the instance - creating one"
+            else
+                case "$st" in
+                    draft|ready|sent|collecting)
+                        # Waiting for a signature in every one of these. draft and ready
+                        # still need their send (the send below only fires from ready);
+                        # sent and collecting are already mailed, so this run reads and
+                        # verifies only.
+                        ENVID=$CAND
+                        note "envelope $CAND is waiting for a signature (status $st):"
+                        note "not creating another, and not mailing the party twice. FORCE_NEW=1 for a new one."
+                        ;;
+                    *)
+                        note "envelope $CAND is $st - this run dispatches a fresh one"
+                        ;;
+                esac
+            fi ;;
+        *) note "ignoring a malformed $ENVIDFILE"; rm -f "$ENVIDFILE" ;;
     esac
-else
-    note "sqlite3 not on PATH: check the mail_queue rows for $ENVID yourself"
 fi
 
-LINK=$(jq -r '.links[0].url // empty' "$WORK/links.json" 2>/dev/null)
-[ -n "$LINK" ] || LINK=$(jq -r '.links[0].url // empty' "$WORK/create.json")
+if [ -z "$ENVID" ]; then
+    # The document is the LAST argument on purpose (Go's flag parser stops at the first
+    # non-flag word, so a path first makes every flag after it positional and the CLI
+    # answers "needs --server"). No -send here: send is the next stage, so a run that
+    # stops in between leaves a ready envelope that can be sent by hand.
+    envelope create \
+        -server "$BASE" -token-env TOKEN -title "$TITLE" -expires "$EXPIRES" \
+        -subject "One document is waiting for your signature" \
+        -message "Please review and sign. The link expires in $EXPIRES." \
+        -spec "$WORK/fill.json" -parties "$WORK/parties.json" \
+        -links-out "$WORK/links.json" "$DOC" \
+        > "$WORK/create.json" 2>"$WORK/create.err" \
+        || { cat "$WORK/create.err"; fail "create failed"; }
+    ENVID=$(jq -r '.envelope.id // empty' "$WORK/create.json")
+    case "$ENVID" in ""|null) cat "$WORK/create.err"; fail "the service answered with no envelope id" ;; esac
+    printf '%s\n' "$ENVID" > "$ENVIDFILE"
+    note "created envelope $ENVID   status $(jq -r '.envelope.status' "$WORK/create.json")"
+    # The bytes that get certified are the server's fill of the spec, not the local file.
+    # A field the server could not set is the one thing that would put a different
+    # document in front of the party than the one filled here, so it is named here.
+    if [ -n "$(jq -r '.fill.missing // [] | .[]' "$WORK/create.json" 2>/dev/null)" ]; then
+        note "!! the server did not set: $(jq -r '.fill.missing | join(", ")' "$WORK/create.json")"
+    fi
+    note "server set: $(jq -r '.fill.applied // [] | join(", ")' "$WORK/create.json")"
+    note "form locked on the server: $(jq -r '.fill.lockedForm // "not reported"' "$WORK/create.json")"
+fi
+
+# Send, once. A ready envelope is the only state the machine sends from, so this cannot
+# mail the same party twice by accident; a refusal is the service's own problem document.
+st=$(env_status "$ENVID")
+if [ "$st" = ready ]; then
+    envelope send -server "$BASE" -token-env TOKEN -links-out "$WORK/links.json" "$ENVID" \
+        > "$WORK/send.json" 2>"$WORK/send.err" \
+        || { cat "$WORK/send.err"; fail "send failed"; }
+    note "sent. envelope status now $(env_status "$ENVID")"
+    jq -c '[.links[]? | {order, email, expires_at}]' "$WORK/send.json" 2>/dev/null | sed 's/^/     /'
+elif [ -n "$st" ]; then
+    note "envelope is '$st' - not sending again; the party was already invited"
+else
+    note "!! could not read envelope $ENVID over the API - not sending"
+fi
+
+# Whether the invitation actually left. A send whose mail fails does not fail the call:
+# the queue row keeps its next_at and is retried, so the envelope status cannot tell you
+# the party has a mail. dbstatus counts the queue. On this instance DEV=1 (deploy/.env.test)
+# writes the invitation to the outbox inside the container instead of pushing it at a
+# relay, so "queue empty" here means the worker ran and wrote it. The count is for the
+# whole instance, not for this envelope — on a shared instance, read the envelope's
+# events instead.
+i=0; LEFT=""; code=000
+while [ "$i" -lt 15 ]; do
+    code=$(api GET /api/v1/admin/dbstatus)
+    [ "$code" = 200 ] && LEFT=$(jq -r '.mail_queued // empty' "$API_OUT" 2>/dev/null) && break
+    i=$((i + 1)); sleep 2
+done
+case "$LEFT" in
+    0)  note "mail queue drained   $(jq -c '{envelopes, parties_pending, mail_queued}' "$API_OUT" 2>/dev/null)" ;;
+    '') note "dbstatus did not answer (HTTP $code) - the invitation may still be queued" ;;
+    *)  note "!! $LEFT mail(s) still queued after 30s - the worker is not draining it" ;;
+esac
+
+# The link. It is the party's credential, and the service never returns it twice, so the
+# file that holds it is checked for belonging to THIS envelope before it is printed: a
+# stale file from an earlier run would otherwise show someone a live link for a document
+# that is not this one.
+LINK=""
+if [ -s "$WORK/links.json" ] && [ "$(jq -r '.envelope // empty' "$WORK/links.json" 2>/dev/null)" = "$ENVID" ]; then
+    LINK=$(jq -r '.links[0].url // empty' "$WORK/links.json" 2>/dev/null)
+else
+    [ -s "$WORK/links.json" ] && { rm -f "$WORK/links.json"; note "removed a stale $WORK/links.json (a different envelope)"; }
+    LINK=$(jq -r '.links[0].url // empty' "$WORK/send.json" 2>/dev/null)
+fi
 if [ -n "$LINK" ]; then
-    printf '\n   >>> THE SIGNING LINK - ONE TIME, TO THIS TERMINAL ONLY <<<\n\n'
+    printf '\n   >>> THE SIGNING LINK - ONCE, TO THIS TERMINAL ONLY <<<\n\n'
     printf '       %s\n\n' "$LINK"
+else
+    note "no link in hand (it is in the invitation, and `pdf-go envelope links` can reprint"
+    note "it from $WORK/links.json while that file exists)"
 fi
 
 # ---------------------------------------------------------------- prompt ----
-printf '   To sign: open the link on a phone or laptop (the page is mobile-usable),'
-printf '\n   tick the box, draw or type the signature, submit. The worker delivers.\n\n'
-printf '   To verify it afterwards:\n'
+printf '   To sign: open the link on a phone or a laptop, tick the box, draw or type the\n'
+printf '   signature, submit. The worker then certifies, signs, timestamps and archives.\n\n'
+printf '   To verify afterwards:\n'
 printf '       WAIT=1 scripts/prod-sign-run.sh          # poll + verify in one go\n'
 printf '       scripts/prod-sign-run.sh report  %s\n' "$ENVID"
 printf '   To close the link without signing (do this if you walk away):\n'
 printf '       scripts/prod-sign-run.sh cancel  %s\n' "$ENVID"
-printf '   Party: %s   (PARTY=a@b.com scripts/prod-sign-run.sh to change it)\n' "$PARTY"
+# Whoever is actually on the envelope, read back over the API — not the defaults this
+# invocation was started with, which are wrong when a re-run reuses an earlier envelope.
+WHO=$(env_party "$ENVID")
+[ -n "$WHO" ] || WHO="$PARTY_NAME <$PARTY>"
+printf '   Party: %s\n' "$WHO"
+printf '   (override the party on a NEW envelope with PARTY=a@b.com PARTY_NAME="Someone")\n'
+printf '   Envelope remembered in %s - re-running reuses it until it is signed.\n' "$ENVIDFILE"
 
 if [ "$WAIT" != 1 ]; then
-    printf '\nNot waiting. Re-run with WAIT=1 once you have signed.\n'
-    if [ "$CONTAINER" = 1 ]; then
-        printf 'The container stays up at %s; stop it with: scripts/test-stack.sh down\n' "$BASE"
-    else
-        printf 'The server stays up on %s (pid %s); stop it with: pkill -f "[s]ignsrv.*serve"\n' "$BASE" "$SRV"
-    fi
+    printf '\nNot waiting. Run with WAIT=1 once you have signed, or use the report command.\n'
     exit 0
 fi
 
-# ----------------------------------------------------------------- verify ----
-say "watch (Ctrl-C is safe; the envelope keeps waiting for the party)"
-"$BIN/pdf-go" envelope get -server "$BASE" -token-env TOKEN $CLI_TLS \
-    --watch --interval 5s "$ENVID" > "$WORK/envelope.json" 2>"$WORK/watch.err"
-WATCHRC=$?
-note "settled with rc $WATCHRC (0 = signed and delivered)"
-tail -2 "$WORK/watch.err" | sed 's/^/     /' || true
+# ---------------------------------------------------------------- verify ----
+say "verify (up to ${WATCH_SECONDS}s; Ctrl-C is safe - the envelope keeps waiting)"
+deadline=$(( $(date +%s) + WATCH_SECONDS ))
+STATUS=""
+while :; do
+    STATUS=$(env_status "$ENVID")
+    case "$STATUS" in
+        delivered|completed|signed|expired|cancelled|failed) break ;;
+    esac
+    [ "$(date +%s)" -ge "$deadline" ] && { note "out of patience at status '${STATUS:-unknown}'"; break; }
+    printf '   status %-11s %ss left\n' "${STATUS:-unknown}" $((deadline - $(date +%s)))
+    sleep 10
+done
+note "settled at status '${STATUS:-unknown}'"
 
-say "report (re-open the archived PDF; verify each signature against the CA)"
-"$BIN/pdf-go" envelope report -server "$BASE" -token-env TOKEN $CLI_TLS "$ENVID" \
-    > "$WORK/report.json" 2>"$WORK/report.err" \
+say "report (re-opens the archived bytes; verifies every signature against the CA)"
+envelope report "$ENVID" > "$WORK/report.json" 2>"$WORK/report.err" \
     || { cat "$WORK/report.err"; note "report failed; only the status line above stands"; }
 if [ -s "$WORK/report.json" ]; then
     jq -c "$report_jq" "$WORK/report.json" | sed 's/^/     /'
-    # .complete means signed_parties reached required_parties; .report.valid means
-    # every cryptographic check passed. Either one alone is not the release gate.
+    # .complete means the parties reached the required count; .report.valid means every
+    # cryptographic check passed. Neither one alone is the gate.
     jq -e '.complete and .report.valid and
            (([.report.signers[].valid] | length) > 0) and ([.report.signers[].valid] | all)' \
-        "$WORK/report.json" > /dev/null 2>&1 \
+        "$WORK/report.json" >/dev/null 2>&1 \
         && note "PASS - all parties signed, every signature verifies, timestamps present" \
         || note "FAIL - read the fields above"
 fi
 
-# The party's copy and the certified copy are the same bytes — or the run says so.
-final_pdf_check '     ' "$ENVID" "$(jq -r '.sha256 // empty' "$WORK/report.json" 2>/dev/null)"
-
+byte_identity '     ' "$ENVID" "$(jq -r '.sha256 // empty' "$WORK/report.json" 2>/dev/null)"
 audit_chain '     '
-log_leak_scan
+consent_ips '     ' "$ENVID"
 
 say "done. artifacts in $WORK (0600, no passwords)"
-[ "$KEEP_RUNNING" = 1 ] && printf 'Server left up on %s (pid %s). Stop: pkill -f "[s]ignsrv serve"\n' "$BASE" "$SRV"

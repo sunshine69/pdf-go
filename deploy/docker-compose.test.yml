@@ -80,7 +80,11 @@ services:
       LISTEN: 0.0.0.0:7000
       PUBLIC_URL: https://test-pdfsign.kaykraft.org
       TRUST_PROXY: "1"
-      DEV: "1"
+      # DEV left unset (and commented in .env.test): mail is pushed at the SMTP
+      # relay below instead of being written to the outbox, and the signing link
+      # is no longer echoed into the log. To go back to outbox-only mail, set
+      # DEV: "1" here — this block wins over env_file, so .env.test alone does
+      # not switch it off.
       MAIL_FROM: signer@kaykraft.org
       TSA_URL: https://freetsa.org/tsr
       # The login the first start of an empty volume creates, seeded with the
