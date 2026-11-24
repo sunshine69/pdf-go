@@ -1,0 +1,146 @@
+# qld-agreement.yaml — one Queensland RTA general tenancy agreement (Form 18a).
+#
+# Field names are verbatim from the official RTA PDF:
+#   forms/Form-18a-General-tenancy-agreement.pdf
+#   (downloaded 2021-06 revision from rta.qld.gov.au, 12 pages, 135 fields)
+#
+# Regenerate them for any form with:
+#
+#     pdf-go extract forms/Form-18a-General-tenancy-agreement.pdf -o tmp/form18a.json
+#
+# Names carry trailing digits where the form repeats a box ("Lessor address2"),
+# and spaces must be typed exactly, including the odd spellings the RTA ships
+# ("facsimilie"). Apostrophes are literal: "Lessor's agent ABN (optional)1".
+#
+# Checkboxes take a YAML true/false; the script sends the JSON boolean and the
+# service maps it to the box's own on-state (this form's are all /Yes).
+
+pdf: forms/Form-18a-General-tenancy-agreement.pdf
+
+envelope:
+  title: "Tenancy agreement - 4/128 Brookfield Rd"
+  # expires_hours omitted: the service default applies.
+
+# ---------------------------------------------------------------- page 1 ----
+form:
+  # Lessor. The form allows two lessors; add "Lessor name/trading name2" etc.
+  Lessor name/trading name: "Steve Kieu"
+  Lessor address: "Unit 5, 38 Boundary Street"
+  Lessor address2: "West End QLD"
+  Lessor postcode: "4101"
+  Lessor phone number: "0400 000 000"
+  Lessor mobile number: "0400 000 000"
+  Lessor email address: "msh.computing@gmail.com"
+
+  # Lessor's agent - fill or delete this whole block, the form has both.
+  Lessor's agent full name/trading name: "Kay Kraft Property"
+  Lessor's agent address line 1: "Level 11, Midtown Centre"
+  Lessor's agent address line 2: "150 Mary Street"
+  Lessor's agent postcode: "4000"
+  Lessor's agent phone number: "(07) 0000 0000"
+  Lessor's agent mobile number: "0400 000 000"
+  Lessor's agent email: "kaycaonz@gmail.com"
+
+  # Tenants. "Tenant 1 full name/s" is the Part 1 name; page 12 repeats the
+  # names on the signature page and those are filled separately below.
+  Tenant 1 full name/s: "Steve Kieu"
+  Tenant 1 phone number: "0400 000 000"
+  Tenant 1 email: "msh.computing@gmail.com"
+  Tenant 2 full name/s: "Kay Cao"
+  Tenant 2 phone number: "0411 111 111"
+  Tenant 2 email: "kaycaonz@gmail.com"
+
+# ---------------------------------------------------------------- page 2 ----
+# Part 2 - the agreed terms. The radio-style choices here are checkboxes:
+# tick exactly one of Fixed/Periodic, and one of Weekly/Monthly.
+  Fixed term agreement1: true
+  Periodic agreement1: false
+  Start date (dd/mm/yyyy): "01/12/2025"
+  End date (dd/mm/yyyy): "31/05/2026"
+  Address of the rental premises1: "Unit 4, 128 Brookfield Road"
+  Address of the rental premises2: "Brookfield QLD"
+  Postcode: "4069"
+  Rent amount: "580"
+  Weekly: true
+  Monthly: false
+  Rental bond amount: "2320"
+
+  # Payment of rent. Account number max 9 chars, BSB max 6 - the form truncates
+  # anything longer, silently, so keep them short.
+  Account name: "Steve Kieu"
+  BSB number: "000000"
+  Account number: "000000000"
+  Payment reference: "Tenancy 4-128"
+  Method 1: "Direct debit"
+  Method 2: ""
+
+# ---------------------------------------------------------------- page 3 ----
+# Parts 3-6 and the service agreements.
+  Number of persons allowed to reside at the premises: "2"
+  Inclusions provided1: "BEDS | TV | Wi-Fi router"
+  # There is no single "Utilities" box. The form splits it per service, and the
+  # Yes/No checkboxes next to each are named Yes7/No7 etc with no clue in the
+  # name - read them off the page with: pdf-go extract <form> -o x.json, then
+  # match each box's rect against the printed words (see the guide).
+  Cost for electricity: "Tenant's own supply agreement"
+  How electricity must be paid for: "Direct debit with the electricity retailer"
+  Cost for gas: "Not applicable - no gas supply"
+  How gas must be paid for: ""
+  Cost for other services: "Water $200 per quarter, separately metered"
+  How other services must be paid for: "Quarterly invoice from the water supplier"
+  Type of services the tenant must pay for: "Electricity, internet, water"
+  Type of pets approved_1: ""
+  Number of the approved pets1: "0"
+  Type of pets approved_2: ""
+  Number of the approved pets2: ""
+  Place of rent payment: "Direct credit to the account on page 2"
+  Day the rent must be paid on: "1"
+  Day of last rent increase (dd/mm/yyyy): ""
+
+# --------------------------------------------------------------- page 12 ----
+# The signature page prints the names; the signatures themselves are drawn by
+# the service (see widget: below), not filled as fields - this form has no
+# signature form-fields, only the print-name boxes.
+  Lessor/agent name/trading name: "Steve Kieu"
+  Name of tenant 1: "Steve Kieu"
+  Name of tenant 2: "Kay Cao"
+  Name of tenant 3: ""
+  Date of signature (dd/mm/yyyy)1: "01/12/2025"
+  Date of signature (dd/mm/yyyy)2: "01/12/2025"
+  Date of signature (dd/mm/yyyy)3: ""
+  Date of signature (dd/mm/yyyy)4: ""
+  Special terms: "Rear gate code changed at start of tenancy; two vehicle passes issued."
+
+# Where the service draws each party's signature. Coordinates are PDF points
+# from the LOWER-LEFT of the page - the same frame as "rect" from
+# pdf-go extract. Page 12 of Form 18a is the signature page: a 2x2 grid of
+# signature slots, lessor and tenant 1 on top, tenants 2 and 3 below.
+#
+# The service always draws a 220x80 pt box per party, stacked 90 pt apart in a
+# single column, so the grid and the stack never line up perfectly. Measured
+# from this form (see docs/skills/run-qld-contract.md), the top-left slot's
+# "Signature" label sits at y 240-252 with blank space below it down to the
+# Date box at y 222. A box based at y=160 covers y 160-240: it sits on the
+# lessor's signature line and touches nothing printed.
+#
+#   widget: {auto: true}                    # last page, lowest clear band
+#   widget: {page: 12, x: 24, y: 160}       # measured spot, warned if unclear
+#   widget: {field: SignHere}               # anchor on an existing field
+# auto is honest about this - it reports "no band on page 12 holds a 170 pt
+# stack clear of print" and picks the least crowded spot. Stating the numbers
+# says what you actually want: party 1 lands on the lessor's signature line.
+widget:
+  page: 12
+  x: 36
+  y: 160
+
+parties:
+  - email: msh.computing@gmail.com
+    name: "Steve Kieu"
+    order: 1
+  - email: kaycaonz@gmail.com
+    name: "Kay Cao"
+    order: 2
+#  - email: agent@example.com
+#    name: "Sam Devlin"
+#    order: 3

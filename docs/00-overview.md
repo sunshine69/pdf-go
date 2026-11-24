@@ -157,7 +157,9 @@ Forwarding a link gets the third party to a claim screen that fails the email
 match. Default link TTL 7 days, configurable per envelope, max 30 days.
 
 Rate limits: login 5/min/IP, claim 10/min/IP, consent 10/min/envelope, link
-opens 60/min/IP. 429 with `Retry-After`.
+opens 60/min/IP, create 20/min/IP, send 30/min/IP, other API calls 600/min/IP.
+429 with `Retry-After`. Every one is a `rate_limit_*` setting (see
+`CONFIG.md`); these are the defaults, and a negative value disables a bucket.
 
 ## 7. API surface
 

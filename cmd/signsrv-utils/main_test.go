@@ -27,7 +27,7 @@ func TestReadDotEnv(t *testing.T) {
 			want: map[string]string{"listen": "127.0.0.1:8080", "db": "/var/lib/signsrv/signsrv.db"},
 		},
 		{
-			name: " prefix stripped, as systemd's EnvironmentFile uses",
+			name: "upper-case keys, as systemd's EnvironmentFile writes them",
 			body: "DB=/var/lib/signsrv/signsrv.db\nKEYSTORE_PASS=hunter2\n",
 			want: map[string]string{"db": "/var/lib/signsrv/signsrv.db", "keystore_pass": "hunter2"},
 		},

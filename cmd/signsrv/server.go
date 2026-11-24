@@ -105,6 +105,7 @@ func newServerWithSigner(cfg *Config, log *slog.Logger, store *signstore.Store, 
 			Users:      store,
 			Limits:     signauth.NewLimiter(),
 			TrustProxy: cfg.TrustProxy,
+			Budgets:    cfg.SignLimits,
 		}
 		// The signing guard reads the same clock as every other deadline in
 		// the process. A test that moves the server clock moves the guard with

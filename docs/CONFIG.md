@@ -30,10 +30,11 @@ export LOG_LEVEL=debug
 
 - `#` starts a comment; blank lines are skipped.
 - A line with no `=` is a hard error (`expected KEY=value`).
-- Keys are lower-cased, and a leading `signsrv_` is **stripped**, so
-  `LOG_LEVEL=debug` in the file works the same as `log_level=debug`. The
-  environment name is the key uppercased, with no prefix needed; a
-  `SIGNSRV_`-prefixed env var is still read as a legacy spelling.
+- Keys are lower-cased. **One name per setting**: the key as it is, lowercased,
+  in the file, and the same name uppercased in the environment. There is no
+  product prefix to remember and no second spelling to fall back to —
+  `LOG_LEVEL` and `log_level` name the same setting, and `SIGNSRV_LOG_LEVEL`
+  names nothing, so it is ignored.
 - Surrounding single or double quotes on a value are trimmed. A value is otherwise
   taken literally to the end of the line, so **do not quote secrets that contain
   spaces or `#`** — a `#` mid-value is not a comment here, but leading/trailing
@@ -111,6 +112,38 @@ whatever `WorkingDirectory` was. Prefer absolute paths.
 | `max_pdf_mb` | `MAX_PDF_MB` | `25` | no | Upload ceiling. 1–200. |
 | `tsa_url` | `TSA_URL` | `https://freetsa.org/tsr` | no | RFC 3161 timestamp authority. Empty uses the default. Over `http://` warns: the timestamp is the one field a forged document needs, and it would be unauthenticated. |
 | `worker_interval` | `WORKER_INTERVAL` | `15s` | no | How often the queue is drained. |
+
+### Rate limits
+
+Every budget is a setting now. Each key is optional — an instance with no
+`rate_limit_` lines runs exactly the limits it ran with before these keys
+existed. A **negative value switches that bucket off.**
+
+| Key | Env var | Default | Counted against | Meaning |
+| --- | --- | --- | --- | --- |
+| `rate_limit_login` | `RATE_LIMIT_LOGIN` | `5` | address | Every attempt runs argon2id, so this is the CPU guard. Also covers `token` and `refresh`. |
+| `rate_limit_claim` | `RATE_LIMIT_CLAIM` | `10` | address | Claiming a signing link. |
+| `rate_limit_consent` | `RATE_LIMIT_CONSENT` | `10` | **envelope** | Consent and decline. Per envelope, so a party cannot farm consent from a second address and neighbours behind one office IP cannot starve each other. |
+| `rate_limit_link` | `RATE_LIMIT_LINK` | `60` | address | Reading the envelope and the document behind a link — what a forwarded link saturates. |
+| `rate_limit_create` | `RATE_LIMIT_CREATE` | `20` | address | A create costs a fill, a certification signature and a TSA round trip: the most expensive call in the service. |
+| `rate_limit_send` | `RATE_LIMIT_SEND` | `30` | address | Also the bucket for `cancel`, `reissue`, `sign`, `sweep` and `audit-write`. |
+| `rate_limit_api` | `RATE_LIMIT_API` | `600` | address | Any other authenticated call. |
+| `rate_limit_remind` | `RATE_LIMIT_REMIND` | `2` | **envelope** | Over `rate_limit_remind_window`, not the standard one. |
+| `rate_limit_mail_test` | `RATE_LIMIT_MAIL_TEST` | `6` | address | The admin "send a test mail" button. |
+| `rate_limit_window` | `RATE_LIMIT_WINDOW` | `1m` | — | The span every bucket counts, Go duration. |
+| `rate_limit_remind_window` | `RATE_LIMIT_REMIND_WINDOW` | `10m` | — | The remind bucket's own span. |
+
+Three things worth knowing before you tune them:
+
+- **In memory, per process.** Two replicas double every budget; a restart clears every counter. A network-level limiter in front is a deployment detail, not a substitute for these.
+- **A refused call answers `429` with `Retry-After`**, set to how long until the oldest hit in the window ages out. `signsrv` and the SDK both honour it.
+- **`trust_proxy` decides who the address is.** Behind a proxy with `trust_proxy=false`, every visitor is the proxy, so a single aggressive client exhausts the login bucket for everyone. That is the most common way these limits cause an outage.
+
+The effective set is printed at start and by `signsrv configcheck`, as one line:
+
+```
+rate_limits=login=5 claim=10 consent=10 link=60 create=20 send=30 api=600 remind=2/10m0s mail_test=6 window=1m0s
+```
 
 ### CA subject (only matters at first CA creation)
 

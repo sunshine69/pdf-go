@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sunshine69/pdf-go/internal/signauth"
 	"github.com/sunshine69/pdf-go/internal/signpdf"
 )
 
@@ -36,6 +37,10 @@ type Config struct {
 	CASubject  *signpdf.CASubject
 	TrustProxy bool
 	Dev        bool
+	// SignLimits are the per-route request budgets. Loaded from the
+	// rate_limit_* keys; unset keys keep the built-in defaults. A negative
+	// value switches that bucket off.
+	SignLimits signauth.Limits
 	// WorkerInterval is how often the worker drains the mail queue and
 	// advances expiries. A zero interval means the worker does not run.
 	WorkerInterval time.Duration
@@ -139,28 +144,17 @@ func LoadConfig(path string) (*Config, error) {
 	// KEYSTORE_PASS, ADMIN_PASSWORD. The service is scoped by how it is
 	// launched — a systemd unit with EnvironmentFile, a container with an
 	// env_file — so the names do not need a product prefix to be unambiguous.
-	// A SIGNSRV_-prefixed name is still read, as a legacy spelling, and the
-	// unprefixed one wins when both are present.
+	// That is the only spelling: an unrelated variable in the environment is
+	// not a setting, and the loader never chooses between two names for one
+	// value.
 	env := map[string]string{}
-	legacy := map[string]string{}
 	for _, kv := range os.Environ() {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok || v == "" {
 			continue
 		}
-		name := strings.ToLower(k)
-		switch {
-		case configKeys[name]:
+		if name := strings.ToLower(k); configKeys[name] {
 			env[name] = v
-		case strings.HasPrefix(name, "signsrv_"):
-			if base := strings.TrimPrefix(name, "signsrv_"); configKeys[base] {
-				legacy[base] = v
-			}
-		}
-	}
-	for k, v := range legacy {
-		if env[k] == "" {
-			env[k] = v
 		}
 	}
 	get := func(key, def string) string {
@@ -207,6 +201,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	c.Dev = boolVal("dev", false)
 	c.TrustProxy = boolVal("trust_proxy", false)
+	c.SignLimits = loadLimits(c, get)
 
 	var err error
 	if c.TSAURL == "" {
@@ -396,8 +391,35 @@ func (c *Config) Redacted() string {
 		"smtp_pass=" + c.smtpPassDigest,
 		"mail_from=" + c.MailFrom,
 		"trust_proxy=" + strconv.FormatBool(c.TrustProxy),
+		// One line for the whole budget set rather than eleven. The point of
+		// printing it at all is that an operator comparing two instances can
+		// see at a glance whether their limits differ.
+		"rate_limits=" + c.describeLimits(),
 		"dev=" + strconv.FormatBool(c.Dev),
 	}, "\n")
+}
+
+// describeLimits renders the budget set as one compact line. A bucket that is
+// switched off reads "off" rather than a negative number, because the summary
+// is read by a person.
+func (c *Config) describeLimits() string {
+	l := c.SignLimits.Normalise()
+	n := func(v int) string {
+		if v <= 0 {
+			return "off"
+		}
+		return strconv.Itoa(v)
+	}
+	return "login=" + n(l.Login) +
+		" claim=" + n(l.Claim) +
+		" consent=" + n(l.Consent) +
+		" link=" + n(l.Link) +
+		" create=" + n(l.Create) +
+		" send=" + n(l.Send) +
+		" api=" + n(l.API) +
+		" remind=" + n(l.Remind) + "/" + l.RemindWindow.String() +
+		" mail_test=" + n(l.MailTest) +
+		" window=" + l.Window.String()
 }
 
 // KeystoreDigest is the digest of the keystore passphrase, safe to log.
@@ -421,9 +443,15 @@ func readConfigFile(path string) (map[string]string, error) {
 		if !ok {
 			return nil, fmt.Errorf("%s:%d: expected KEY=value", path, n)
 		}
+		// One spelling per setting, in the file as in the environment.
 		k = strings.ToLower(strings.TrimSpace(k))
-		k = strings.TrimPrefix(k, "signsrv_")
 		if !configKeys[k] {
+			// The one mistyping this file shape invites is an environment
+			// variable's name written into it. The answer is named rather
+			// than left to be worked out; the key is still refused.
+			if base := strings.TrimPrefix(k, "signsrv_"); base != k && configKeys[base] {
+				return nil, fmt.Errorf("%s:%d: unknown config key %q: a file uses the plain key, write %q", path, n, k, base)
+			}
 			return nil, fmt.Errorf("%s:%d: unknown config key %q (see config.example.env)", path, n, k)
 		}
 		out[k] = strings.TrimSpace(strings.Trim(v, `"'`))
@@ -435,9 +463,11 @@ func readConfigFile(path string) (map[string]string, error) {
 // a typo in a config file fails at startup instead of being silently ignored,
 // and it is the whitelist for the environment — the env name for a key is the
 // key uppercased (public_url and PUBLIC_URL), and an environment variable that
-// is not one of these is ignored rather than becoming a setting. Unprefixed
-// names are short, and some of them (DB, DEV, CONFIG) are words a shell or a
-// build tool already has in the environment.
+// is not one of these is ignored rather than becoming a setting. The names are
+// short — DB, DEV, CONFIG are words a shell or a build tool already has in the
+// environment — which is why the whitelist matters: a variable that is not a
+// key has to stay out of the configuration, and there is no second spelling
+// that could let it in.
 var configKeys = map[string]bool{
 	"listen": true, "public_url": true, "db": true, "db_path": true,
 	"storage_dir": true, "keystore_dir": true, "outbox_dir": true,
@@ -455,6 +485,15 @@ var configKeys = map[string]bool{
 	// it in a config file gets a hard error otherwise, which is how a documented
 	// knob becomes an unreachable one.
 	"worker_interval": true,
+	// The rate limits. Each is optional and defaults to the built-in value;
+	// a negative value switches that bucket off. rate_limit_window is the
+	// span every bucket counts except the remind bucket, which has its own.
+	"rate_limit_login": true, "rate_limit_claim": true,
+	"rate_limit_consent": true, "rate_limit_link": true,
+	"rate_limit_create": true, "rate_limit_send": true,
+	"rate_limit_api": true, "rate_limit_remind": true,
+	"rate_limit_mail_test": true, "rate_limit_window": true,
+	"rate_limit_remind_window": true,
 }
 
 func duration(s string, def time.Duration) (time.Duration, error) {
@@ -520,6 +559,66 @@ func digest(s string) string {
 	}
 	sum := sha256.Sum256([]byte(s))
 	return "sha256:" + hex.EncodeToString(sum[:])[:12]
+}
+
+// loadLimits reads the rate_limit_* keys into the default budget set. Every
+// key is optional, which is what makes the section additive rather than a
+// breaking change: an instance with no rate_limit_ lines runs exactly the
+// limits it ran with before these keys existed.
+//
+// A value that is not a number is a problem, not a silent fallback, because a
+// limit the operator typed wrong is a limit they believe they set. A negative
+// value is accepted and switches that bucket off.
+func loadLimits(c *Config, get func(key, def string) string) signauth.Limits {
+	l := signauth.DefaultLimits()
+	for _, k := range []struct {
+		key string
+		set *int
+	}{
+		{"rate_limit_login", &l.Login},
+		{"rate_limit_claim", &l.Claim},
+		{"rate_limit_consent", &l.Consent},
+		{"rate_limit_link", &l.Link},
+		{"rate_limit_create", &l.Create},
+		{"rate_limit_send", &l.Send},
+		{"rate_limit_api", &l.API},
+		{"rate_limit_remind", &l.Remind},
+		{"rate_limit_mail_test", &l.MailTest},
+	} {
+		raw := strings.TrimSpace(get(k.key, ""))
+		if raw == "" {
+			continue
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			cproblems(c, k.key+": not a number: "+raw)
+			continue
+		}
+		*k.set = n
+	}
+	for _, k := range []struct {
+		key string
+		set *time.Duration
+	}{
+		{"rate_limit_window", &l.Window},
+		{"rate_limit_remind_window", &l.RemindWindow},
+	} {
+		raw := strings.TrimSpace(get(k.key, ""))
+		if raw == "" {
+			continue
+		}
+		d, err := duration(raw, 0)
+		if err != nil {
+			cproblems(c, k.key+": "+err.Error())
+			continue
+		}
+		if d < 0 {
+			cproblems(c, k.key+": a window cannot be negative: "+raw)
+			continue
+		}
+		*k.set = d
+	}
+	return l
 }
 
 func cproblems(c *Config, msg string) { c.problems = append(c.problems, msg) }

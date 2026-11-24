@@ -8,6 +8,19 @@ import (
 	"github.com/sunshine69/pdf-go/internal/signauth"
 )
 
+// lim is the request budget set this server was configured with, with the
+// built-in defaults in every field the config file did not mention. The
+// routes ask it instead of the constants in signauth, which is what makes a
+// limit a line in the config file rather than a recompile.
+func (s *server) lim() signauth.Limits {
+	if s.cfg == nil {
+		// A server built without a config (the health-only tests) still
+		// registers routes, and routes wants a number to wrap them in.
+		return signauth.DefaultLimits()
+	}
+	return s.cfg.SignLimits.Normalise()
+}
+
 // routes wires every endpoint. Step 01 delivers /healthz and the static
 // shells; the API endpoints of steps 05 to 10 are registered here as they
 // are implemented.
@@ -30,11 +43,11 @@ func (s *server) routes() {
 	// attempt runs argon2id: five verifications a minute is the budget a
 	// single address gets.
 	s.mux.Handle("POST /api/v1/auth/login",
-		s.loginGuard(s.handleLogin, "login", signauth.LoginLimit))
+		s.loginGuard(s.handleLogin, "login", s.lim().Login))
 	s.mux.Handle("POST /api/v1/auth/token",
-		s.loginGuard(s.handleClientToken, "client-token", signauth.LoginLimit))
+		s.loginGuard(s.handleClientToken, "client-token", s.lim().Login))
 	s.mux.Handle("POST /api/v1/auth/refresh",
-		s.loginGuard(s.handleRefresh, "refresh", signauth.LoginLimit))
+		s.loginGuard(s.handleRefresh, "refresh", s.lim().Login))
 
 	// Logout is authenticated, so the caller has to hold a live token. Any
 	// authenticated caller may end their own session, so no scope is needed:
@@ -52,10 +65,10 @@ func (s *server) routes() {
 	// gets a bucket of its own, so a client that floods create cannot use up
 	// the budget of the read endpoints.
 	s.mux.Handle("POST /api/v1/envelopes",
-		s.apiBucket(s.handleCreateEnvelopes, "create", signauth.CreateLimit,
+		s.apiBucket(s.handleCreateEnvelopes, "create", s.lim().Create,
 			signauth.ScopeEnvelopeWrite))
 	s.mux.Handle("POST /api/v1/envelopes/{id}/send",
-		s.apiBucket(s.handleSendEnvelope, "send", signauth.SendLimit,
+		s.apiBucket(s.handleSendEnvelope, "send", s.lim().Send,
 			signauth.ScopeEnvelopeWrite))
 	s.mux.Handle("GET /api/v1/envelopes/{id}", s.api(s.handleGetEnvelope, signauth.ScopeEnvelopeRead))
 	s.mux.Handle("GET /api/v1/envelopes/{id}/document", s.api(s.handleGetDocument, signauth.ScopeEnvelopeRead))
@@ -94,13 +107,13 @@ func (s *server) routes() {
 	s.mux.Handle("GET /api/v1/admin/schema", s.api(s.handleSchemaStatus, signauth.ScopeAdminRead))
 	s.mux.Handle("GET /api/v1/admin/configcheck", s.api(s.handleConfigCheck, signauth.ScopeAdminRead))
 	s.mux.Handle("POST /api/v1/admin/sweep",
-		s.apiBucket(s.handleSweep, "sweep", signauth.SendLimit, signauth.ScopeAdminRead))
+		s.apiBucket(s.handleSweep, "sweep", s.lim().Send, signauth.ScopeAdminRead))
 	s.mux.Handle("POST /api/v1/admin/audit/verify",
 		s.api(s.handleAuditVerify, signauth.ScopeAdminRead))
 	s.mux.Handle("POST /api/v1/admin/audit/write",
-		s.apiBucket(s.handleAuditWrite, "audit-write", signauth.SendLimit, signauth.ScopeAdminRead))
+		s.apiBucket(s.handleAuditWrite, "audit-write", s.lim().Send, signauth.ScopeAdminRead))
 	s.mux.Handle("POST /api/v1/admin/mail-test",
-		s.apiBucket(s.handleMailTest, "mail-test", choreMailLimit, signauth.ScopeAdminRead))
+		s.apiBucket(s.handleMailTest, "mail-test", s.lim().MailTest, signauth.ScopeAdminRead))
 	s.mux.Handle("GET /api/v1/admin/users", s.api(s.handleUsersList, signauth.ScopeAdminRead))
 	s.mux.Handle("DELETE /api/v1/admin/users/{id}",
 		s.api(s.handleUserRevoke, signauth.ScopeAdminRead))
@@ -108,16 +121,16 @@ func (s *server) routes() {
 		s.api(s.handleUserRevoke, signauth.ScopeAdminRead))
 
 	s.mux.Handle("POST /api/v1/envelopes/{id}/remind",
-		s.envelopeBucket(s.handleEnvelopeRemind, "remind", signauth.RemindLimit,
-			signauth.RemindWindow, signauth.ScopeEnvelopeWrite))
+		s.envelopeBucket(s.handleEnvelopeRemind, "remind", s.lim().Remind,
+			s.lim().RemindWindow, signauth.ScopeEnvelopeWrite))
 	s.mux.Handle("POST /api/v1/envelopes/{id}/cancel",
-		s.apiBucket(s.handleEnvelopeCancel, "cancel", signauth.SendLimit,
+		s.apiBucket(s.handleEnvelopeCancel, "cancel", s.lim().Send,
 			signauth.ScopeEnvelopeWrite))
 	s.mux.Handle("POST /api/v1/envelopes/{id}/reissue",
-		s.apiBucket(s.handleEnvelopeReissue, "reissue", signauth.SendLimit,
+		s.apiBucket(s.handleEnvelopeReissue, "reissue", s.lim().Send,
 			signauth.ScopeEnvelopeWrite))
 	s.mux.Handle("POST /api/v1/envelopes/{id}/sign",
-		s.apiBucket(s.handleEnvelopeSign, "sign", signauth.SendLimit,
+		s.apiBucket(s.handleEnvelopeSign, "sign", s.lim().Send,
 			signauth.ScopeEnvelopeWrite))
 	s.mux.Handle("GET /api/v1/envelopes/{id}/report",
 		s.api(s.handleEnvelopeReport, signauth.ScopeEnvelopeRead))
@@ -130,15 +143,15 @@ func (s *server) routes() {
 	// limit a party cannot escape by changing source address. The view and
 	// the document are per address, which is what a forwarded link saturates.
 	s.mux.Handle("POST "+signAPI+"/claim",
-		s.signGuard(s.handleSignerClaim, "claim", signauth.ClaimLimit, false))
+		s.signGuard(s.handleSignerClaim, "claim", s.lim().Claim, false))
 	s.mux.Handle("GET "+signAPI+"/envelope",
-		s.signGuard(s.handleSignerEnvelope, "link-read", signauth.LinkLimit, false))
+		s.signGuard(s.handleSignerEnvelope, "link-read", s.lim().Link, false))
 	s.mux.Handle("GET "+signAPI+"/document",
-		s.signGuard(s.handleSignerDocument, "link-doc", signauth.LinkLimit, true))
+		s.signGuard(s.handleSignerDocument, "link-doc", s.lim().Link, true))
 	s.mux.Handle("POST "+signAPI+"/consent",
-		s.signGuard(s.handleSignerConsent, "consent", signauth.ConsentLimit, true))
+		s.signGuard(s.handleSignerConsent, "consent", s.lim().Consent, true))
 	s.mux.Handle("POST "+signAPI+"/decline",
-		s.signGuard(s.handleSignerDecline, "consent", signauth.ConsentLimit, true))
+		s.signGuard(s.handleSignerDecline, "consent", s.lim().Consent, true))
 
 	// Static faces. The apps are built in steps 08 and 09; the handlers
 	// below serve whatever is embedded, so the routes never move again.
@@ -156,11 +169,6 @@ func (s *server) routes() {
 
 	s.mux.HandleFunc("/", s.handleUnknown)
 }
-
-// choreMailLimit is the per-minute budget of the mail-test route. Six is enough
-// for an operator checking a relay, and small enough that a leaked admin token
-// cannot turn the service into a spam relay.
-const choreMailLimit = 6
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -235,13 +243,13 @@ func noStore() http.Handler {
 
 // api is the wrapper every protected route uses: rate limit first, because the
 // cost being limited is a CPU burst, then authentication, then the scope. The
-// 600/min figure is the generic ceiling for an authenticated caller; the
+// The API budget is the generic ceiling for an authenticated caller; the
 // endpoints that cost more (a send, a batch trigger) get their own buckets.
 func (s *server) api(next http.HandlerFunc, scopes ...string) http.Handler {
 	if s.auth == nil {
 		return noStore()
 	}
-	return s.auth.RateLimit(s.auth.RequireAPI(next, scopes...), "api", 600, nil)
+	return s.auth.RateLimit(s.auth.RequireAPI(next, scopes...), "api", s.lim().API, nil)
 }
 
 // apiBucket is the same chain with a named bucket of its own, keyed per

@@ -287,8 +287,8 @@ TLS is terminated in front of the service in both cases. See `deploy/Caddyfile`.
 Every key has an environment variable named for it — the key uppercased, so
 `public_url` is `PUBLIC_URL` and `keystore_pass` is `KEYSTORE_PASS`; with
 `-config FILE` the same names work in the file, and **the environment wins**.
-A `SIGNSRV_`-prefixed name is still read, as a legacy spelling, but the
-unprefixed one wins when both are present.
+That is the only spelling of each name: there is no prefixed variant to
+remember, and a prefixed variable in the environment is simply not a setting.
 The compose file and the systemd unit set the same values by different means,
 which is deliberate — the behaviour must not depend on which you chose.
 

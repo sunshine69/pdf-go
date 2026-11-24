@@ -171,8 +171,8 @@ func resolveDB(dbFlag, cfgFlag string) (path, source string, err error) {
 //
 // The server writes this file with bare lowercase keys (listen=...), but a
 // hand-written one is usually uppercase (LISTEN=...) because that is how an
-// EnvironmentFile reads. Both shapes are accepted here, and so is a leading
-// SIGNSRV_ on any of them.
+// EnvironmentFile reads. Both shapes are accepted here — case alone is not a
+// difference in meaning. Nothing else decorates a key: the name is the name.
 func readDotEnv(path string) (map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -196,9 +196,8 @@ func readDotEnv(path string) (map[string]string, error) {
 			continue // a stray comment, or a shell line; not ours to police
 		}
 		k = strings.ToLower(strings.TrimSpace(k))
-		k = strings.TrimPrefix(k, "signsrv_")
 		if k == "" {
-			continue
+			continue // a line that is just "=" or just whitespace
 		}
 		v = strings.TrimSpace(v)
 		v = strings.Trim(v, `"'`)

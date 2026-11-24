@@ -74,6 +74,12 @@ type Auth struct {
 	Limits     *Limiter
 	TrustProxy bool
 
+	// Budgets are the per-route request budgets the routes are wrapped with.
+	// It is a value, not a pointer, because a zero Budgets is meaningful: it
+	// means "the defaults", which is what a hand-built Auth in a test wants.
+	// The server fills it from the config file.
+	Budgets Limits
+
 	// now is the clock the signing guard reads. It is nil-safe: a zero Auth
 	// uses the wall clock, so a test that builds Auth by hand gets the same
 	// behaviour as the server.
@@ -392,6 +398,17 @@ func (a *Auth) RequireSigner(next http.Handler) http.Handler {
 	})
 }
 
+// window is the span a bucket counts, for the routes that use the standard
+// one. The limits themselves are resolved once, when the routes are wired;
+// this is the per-request half, and it stays cheap so a refused request does
+// not pay for rebuilding the budget set.
+func (a *Auth) window() time.Duration {
+	if a.Budgets.Window > 0 {
+		return a.Budgets.Window
+	}
+	return Window
+}
+
 // RateLimit guards one route with one limit. keyOf builds the bucket key:
 // per-address for login/claim/link opens, per-envelope for consent, which is
 // the limit a party cannot escape by changing source address.
@@ -427,7 +444,9 @@ func (a *Auth) RateLimit(next http.Handler, name string, limit int, keyOf func(*
 			} else {
 				key += ClientIP(r, a.TrustProxy)
 			}
-			if ok, retry := a.Limits.Allow(key, limit, Window); !ok {
+			// The window is read outside the Allow call so a request that is
+			// refused does not pay for a second look at the budget set.
+			if ok, retry := a.Limits.Allow(key, limit, a.window()); !ok {
 				w.Header().Set("Retry-After", retryAfter(retry))
 				a.writeProblem(w, r, http.StatusTooManyRequests, "rate_limited",
 					"too many requests, retry later")

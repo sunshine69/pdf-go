@@ -1,10 +1,17 @@
+forms/**
 run/**
 var/**
 envelop**
 testdata/**
 vendor/**
 var/log/**
-tmp/**
+# Scratch output. A bare `tmp/` (no slash before a pattern) matches a tmp
+# directory at ANY depth, so scripts/tmp and cmd/.../tmp are covered too —
+# the earlier `tmp/**` was anchored to the repo root and let a nested tmp/
+# through. No tracked file lives under a tmp/ path, so ignoring every one
+# is safe. (git also cannot track an empty directory, so a stray empty
+# tmp/ never reaches the index anyway; this is about the files put in it.)
+tmp/
 .aig*
 .playwright-mcp/**
 test_*

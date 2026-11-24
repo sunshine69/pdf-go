@@ -195,34 +195,36 @@ func TestCheckConfigReportHasNoSecrets(t *testing.T) {
 }
 
 // The environment name is the config key uppercased, no product prefix: the
-// service is scoped by how it is launched. A SIGNSRV_-prefixed name is still
-// read, because existing units and compose files use it, but the plain name
-// wins when both are present.
+// service is scoped by how it is launched, so there is exactly one name for
+// every setting. A SIGNSRV_-prefixed name is not a setting at all — a stray
+// one in the environment is ignored, rather than the service having to
+// decide which of two spellings to believe.
 func TestConfigEnvironmentNamesAreTheKeysUppercased(t *testing.T) {
 	p := checkConfigServer(t, goodBase, 0o600)
 
 	t.Setenv("PUBLIC_URL", "https://plain.example.org")
-	t.Setenv("SIGNSRV_PUBLIC_URL", "https://legacy.example.org")
+	t.Setenv("SIGNSRV_PUBLIC_URL", "https://prefixed.example.org")
 	cfg, err := LoadConfig(p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.PublicURL != "https://plain.example.org" {
-		t.Errorf("public_url = %q, want the unprefixed name to win", cfg.PublicURL)
+		t.Errorf("public_url = %q, want the name for the setting", cfg.PublicURL)
 	}
 
+	// With no plain name set, the prefixed one does not step in: the value
+	// comes from the file, as it would if the variable were absent.
 	os.Unsetenv("PUBLIC_URL")
 	cfg, err = LoadConfig(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.PublicURL != "https://legacy.example.org" {
-		t.Errorf("public_url = %q, want the SIGNSRV_-prefixed name still read", cfg.PublicURL)
+	if cfg.PublicURL != "https://sign.example.org" {
+		t.Errorf("public_url = %q, want the file value: a prefixed name is not read", cfg.PublicURL)
 	}
 
 	// A setting is read from the name for that setting only: an unrelated
 	// variable in the environment has no effect on it.
-	t.Setenv("SIGNSRV_PUBLIC_URL", "")
 	t.Setenv("SMTP_HOST", "smtp.plain.example.org")
 	cfg, err = LoadConfig(p)
 	if err != nil {
