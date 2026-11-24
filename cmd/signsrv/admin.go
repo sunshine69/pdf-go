@@ -618,6 +618,17 @@ func (s *server) handleClientCreate(w http.ResponseWriter, r *http.Request) {
 	key := randomKey()
 	hash := sha256.Sum256([]byte(key))
 	id, err := s.store.AddClient(r.Context(), name, hex.EncodeToString(hash[:]), strings.Join(scopes, ","))
+	if errors.Is(err, signstore.ErrDuplicateClientName) {
+		// Not an internal fault: the operator picked a name another client
+		// already has. It is logged at info and answered as a conflict, so the
+		// UI can say which end of the form to fix.
+		s.logJSON(slog.LevelInfo, "client create name taken", "name", name,
+			"actor", actor(r), "request", requestID(r.Context()))
+		writeProblem(w, http.StatusConflict, "name_taken",
+			"a client named "+name+" already exists; names must be unique",
+			"choose another name, or revoke the existing client first")
+		return
+	}
 	if err != nil {
 		s.logJSON(slog.LevelError, "client create", "error", err, "request", requestID(r.Context()))
 		writeProblem(w, http.StatusInternalServerError, "internal", "the client could not be created", "")

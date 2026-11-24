@@ -383,6 +383,21 @@ func TestAdminSettingsAndClients(t *testing.T) {
 		t.Fatalf("client with no scopes: want 400, got %d (%v)", code, out["detail"])
 	}
 
+	// A name already in use is a conflict the operator can act on, not a 500
+	// carrying the driver's constraint text. "reader" was created at the top of
+	// this test, so the collision costs no extra row.
+	code, out = adminCode(t, ts, http.MethodPost, "/api/v1/admin/clients", admin,
+		`{"name":"reader","scopes":["envelope:write"]}`)
+	if code != http.StatusConflict {
+		t.Fatalf("duplicate client name: want 409, got %d (%v)", code, out)
+	}
+	if c := codeOf(t, out); c != "name_taken" {
+		t.Fatalf("duplicate client name code: want name_taken, got %q", c)
+	}
+	if !strings.Contains(fmt.Sprint(out["error"]), "reader") {
+		t.Fatalf("the answer should name the client that is in the way: %v", out["error"])
+	}
+
 	code, out = adminCode(t, ts, http.MethodGet, "/api/v1/admin/settings", admin, "")
 	if code != http.StatusOK {
 		t.Fatalf("settings: code %d", code)

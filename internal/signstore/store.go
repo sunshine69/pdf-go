@@ -18,6 +18,12 @@ import (
 // with errors.Is.
 var ErrNotFound = errors.New("signstore: not found")
 
+// ErrDuplicateClientName is returned when a client name is already in use.
+// Names are UNIQUE so that a revoked client's name cannot be quietly reused
+// with a new key, and the create endpoint answers a collision with a 409
+// rather than a 500 carrying the driver's constraint text.
+var ErrDuplicateClientName = errors.New("signstore: client name taken")
+
 // MaxPDFBytes and MaxBlobBytes bound what the store accepts. They are
 // enforced here as well as at the HTTP layer, so a bug in a handler cannot
 // write an unbounded file.
@@ -666,12 +672,18 @@ func (s *Store) ListAdmins(ctx context.Context) ([]Admin, error) {
 }
 
 // AddClient inserts a machine API client. keyHash is a SHA-256 of the key
-// that is printed once to the operator.
+// that is printed once to the operator. A name already in use comes back as
+// ErrDuplicateClientName rather than the driver's constraint text: the name is
+// UNIQUE, and the HTTP layer needs to tell "pick another name" from "internal
+// error" without matching on a message string.
 func (s *Store) AddClient(ctx context.Context, name, keyHash, scopes string) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
 		"insert into clients(name, key_hash, scopes, created_at) values(?,?,?,?)",
 		name, keyHash, scopes, timeNow())
 	if err != nil {
+		if isUniqueViolation(err) {
+			return 0, ErrDuplicateClientName
+		}
 		return 0, err
 	}
 	return res.LastInsertId()

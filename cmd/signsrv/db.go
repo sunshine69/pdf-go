@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -378,6 +379,10 @@ func clientCmd(ctx context.Context, configPath string, args []string) int {
 		key := randomKey()
 		sum := sha256Of([]byte(key))
 		id, err := store.AddClient(ctx, args[1], sum, defaultScopes(args[2:]))
+		if errors.Is(err, signstore.ErrDuplicateClientName) {
+			fmt.Fprintf(os.Stderr, "signsrv client add: a client named %q already exists\n", args[1])
+			return 1
+		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "signsrv:", err)
 			return 1

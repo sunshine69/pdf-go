@@ -1,442 +1,881 @@
-// The admin app. Built in step 09 (see docs/steps/09-admin-ui.md).
+// The admin app. Built in step 09 (see docs/steps/09-admin-ui.md), reworked
+// when the Clients view was added.
 // Rules: token in a JS variable only, never in storage; every server string
 // rendered with textContent. No framework, no build step, no third-party JS,
 // no external URL: every request is a relative path under /api/v1.
+//
+// The views are rendered in JS, so navigation is a hash route: back and
+// forward work, and a reload lands on the page you were looking at. Reloading
+// loses the token by design, so the path is remembered and followed once the
+// operator has logged in again.
 
 const app = document.getElementById("app");
+const statusline = document.getElementById("statusline");
 
-// Token lives in a closure only. A page reload loses it on purpose: the admin
-// token is not a thing that survives a browser session.
-let accessToken = "";
-let refreshToken = "";
-const TIMEOUT_MS = 20000;
-let pollTimer = null;
-// view names the screen currently on screen ("dashboard", "envelopes",
-// "envelope", "settings"). shell() sets it from the route it is handed, so
-// every view is covered without each one having to remember. The poll reads it
-// to decide whether it is still allowed to rebuild the page.
-let view = "";
+let accessToken = "";   // in memory only
+let refreshToken = "";  // used by exactly one call: refresh
+let pendingPath = "";   // the route to follow once logged in
+let pollTimer = null;   // dashboard refresh, cancelled by every shell()
 
-async function api(path, opts = {}, allowRetry = true) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  const init = {
-    method: opts.method || "GET",
-    credentials: "same-origin",
-    signal: controller.signal,
-    headers: {},
-  };
-  if (accessToken) init.headers["Authorization"] = "Bearer " + accessToken;
-  if (opts.body) init.headers["Content-Type"] = "application/json";
-  if (opts.body) init.body = opts.body;
-  let res;
+// ---------------------------------------------------------------- api layer
+
+// REQUEST_TIMEOUT is the ceiling on one call. Without it a request that hangs
+// (a proxy that accepts and never answers) leaves the page showing a spinner
+// forever, and the operator cannot tell a slow server from a dead one.
+const REQUEST_TIMEOUT = 20000;
+
+async function rawFetch(path, opts) {
+  const o = Object.assign({ credentials: "same-origin" }, opts || {});
+  o.headers = Object.assign({ "Content-Type": "application/json" }, o.headers || {});
+  const ctl = new AbortController();
+  o.signal = ctl.signal;
+  const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT);
   try {
-    res = await fetch("/api/v1" + path, init);
-  } catch (networkErr) {
+    return await fetch("/api/v1" + path, o);
+  } finally {
     clearTimeout(timer);
-    if (allowRetry) return api(path, opts, false);
-    throw networkErr;
   }
-  clearTimeout(timer);
-  if (res.status === 401 && allowRetry && refreshToken) {
-    // Refresh once; do not retry on 401 after a failed refresh.
-    const r = await fetch("/api/v1/auth/refresh", {
+}
+
+async function api(path, opts) {
+  const withToken = Object.assign({}, opts || {});
+  if (accessToken) {
+    withToken.headers = Object.assign({}, withToken.headers,
+      { "Authorization": "Bearer " + accessToken });
+  }
+  let res = await rawFetch(path, withToken);
+  if (res.status === 401 && refreshToken) {
+    // Expired. Refresh, then retry once. Both tokens go: refresh rotates the
+    // pair, and the access token in hand is revoked so the old one cannot
+    // outlive the rotation.
+    const r = await rawFetch("/auth/refresh", {
       method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      body: JSON.stringify({ refresh: refreshToken, access: accessToken }),
     });
     if (r.ok) {
       const body = await r.json();
-      accessToken = body.access || "";
-      refreshToken = body.refresh || refreshToken;
-      return api(path, opts, false);
+      accessToken = body.access;
+      refreshToken = body.refresh;
+      withToken.headers["Authorization"] = "Bearer " + accessToken;
+      res = await rawFetch(path, withToken);
+    } else {
+      accessToken = "";
+      refreshToken = "";
+      showLogin("The session expired. Log in again.");
     }
-    showLogin();
-    return res;
   }
   return res;
 }
 
+async function problem(res) {
+  try {
+    const body = await res.json();
+    // Every error from this service is one document:
+    // {"error":{"code":...,"message":...,"hint":...}}. The code and the hint
+    // are shown alongside the message: the code is what an operator quotes in
+    // a support thread, the hint says what to do next. A body that is not that
+    // shape (a proxy error page, say) still gets the status line.
+    const p = (body && body.error) || body || {};
+    let out = p.message || p.detail || p.title || res.status + " " + res.statusText;
+    if (p.code && p.code !== "invalid_request") out += " (" + p.code + ")";
+    if (p.hint) out += " — " + p.hint;
+    return out;
+  } catch (_) {
+    return res.status + " " + res.statusText;
+  }
+}
+
+async function getJSON(path) {
+  const r = await api(path);
+  if (!r.ok) throw new Error(await problem(r));
+  return r.json();
+}
+
+// The event payload on one line: the audit list is a table of rows, and a
+// pretty-printed payload turns it into a wall of braces.
+function logJSON(o) {
+  // The detail endpoint sends a payload as a JSON string, the audit endpoint
+  // as JSON. Parse the first so both render as one readable line instead of a
+  // quoted, escaped wall.
+  if (typeof o === "string") {
+    try { o = JSON.parse(o); } catch (_) { return o; }
+  }
+  try { return JSON.stringify(o); } catch (_) { return String(o); }
+}
+
+// ------------------------------------------------------------- element maker
+
 function el(tag, text, cls) {
   const node = document.createElement(tag);
-  if (text !== undefined) node.textContent = text;
+  if (text !== undefined && text !== null) node.textContent = String(text);
   if (cls) node.className = cls;
   return node;
 }
 
-function clear() { while (app.firstChild) app.removeChild(app.firstChild); }
-
-function show(message) {
-  let p = app.querySelector("#statusline");
-  if (!p) { p = el("p", undefined, "notice"); p.id = "statusline"; app.insertBefore(p, app.firstChild); }
-  p.textContent = message;
+function card(title, lede) {
+  const c = el("div", undefined, "card");
+  if (title) c.appendChild(el("h2", title));
+  if (lede) c.appendChild(el("p", lede, "lede"));
+  return c;
 }
 
-// problem reads the RFC 7807 body and returns the sentence an operator should
-// see. A 409 and a 429 carry different advice, so the code is kept.
-async function problem(res) {
-  const body = await res.json().catch(() => null);
-  const e = body && body.error ? body.error : null;
-  if (!e) return "The server answered " + res.status + ".";
-  if (res.status === 429) return (e.message || "Too many requests.") + " Try again later.";
-  if (res.status === 409) return e.message || "The envelope is in a state that does not allow that.";
-  if (res.status === 403) return "This account may not do that.";
-  return e.message || ("Request failed (" + res.status + ").");
+function clear() {
+  // The notice lives inside the page so it reads in order, which means a
+  // re-render would take it down with the rest. Park it on the body first: an
+  // action that shows a message and then reloads the view still has somewhere
+  // to show it.
+  if (statusline && statusline.parentNode !== document.body) {
+    document.body.appendChild(statusline);
+  }
+  while (app.firstChild) app.removeChild(app.firstChild);
+}
+
+// Status line: a success or a failure, never a server's raw HTML.
+function show(msg, kind) {
+  if (!statusline) return;
+  statusline.textContent = msg || "";
+  statusline.className = "notice " + (kind || "");
+  statusline.hidden = !msg;
+  if (!msg) return;
+  // The notice belongs under the page head, where the operator's eye already
+  // is. A view with no head (the login card) gets it at the top of the body.
+  const page = document.getElementById("page");
+  if (page && page.childNodes.length > 1) {
+    page.insertBefore(statusline, page.childNodes[1]);
+  } else if (!page.contains(statusline)) {
+    document.body.insertBefore(statusline, document.body.firstChild);
+  }
+}
+
+// A destructive action asks first. A browser confirm() is enough here and is
+// one less widget to get wrong.
+function confirmRun(text, fn) {
+  return async function () {
+    if (!window.confirm(text)) return;
+    try { await fn(); } catch (err) { show(String(err.message || err), "bad"); }
+  };
+}
+
+function button(label, cls, onClick) {
+  const b = el("button", label, cls);
+  b.type = "button";
+  if (onClick) b.addEventListener("click", onClick);
+  return b;
+}
+
+// A link straight at an API path. The token is in memory, so a bare href
+// would download an unauthorized body; these go through fetch and open the
+// result as a blob instead.
+function apiLink(path, label) {
+  const a = el("a", label);
+  a.href = "#";
+  a.addEventListener("click", async (ev) => {
+    ev.preventDefault();
+    try {
+      const r = await api(path);
+      if (!r.ok) { show(await problem(r), "bad"); return; }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const name = path.split("/").pop();
+      const open = el("a", "Open " + name);
+      open.href = url; open.target = "_blank"; open.rel = "noopener";
+      const save = el("a", "Save " + name);
+      save.href = url; save.download = name;
+      show("", "");
+      const row = el("div", undefined, "actions");
+      row.appendChild(open); row.appendChild(save);
+      const box = document.getElementById("page");
+      if (box) box.insertBefore(row, box.childNodes[1] || null);
+    } catch (err) {
+      show(String(err.message || err), "bad");
+    }
+  });
+  return a;
 }
 
 function linkTo(path, label, onClick) {
   const a = el("a", label);
-  a.href = path;
-  a.addEventListener("click", (ev) => { ev.preventDefault(); onClick(); });
+  a.href = "#" + path;
+  if (onClick) a.addEventListener("click", (ev) => { ev.preventDefault(); onClick(); });
   return a;
 }
 
-// ---------------------------------------------------------------------------
-// login
-
-function showLogin() {
-  accessToken = ""; refreshToken = "";
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  clear();
-  app.appendChild(el("h1", "Signsrv admin"));
-  const form = el("form", undefined, "field");
-  form.appendChild(el("label", "Email"));
-  const email = el("input"); email.type = "email"; email.setAttribute("autofocus", "");
-  form.appendChild(email);
-  form.appendChild(el("label", "Password"));
-  const pw = el("input"); pw.type = "password";
-  form.appendChild(pw);
-  const btn = el("button", "Log in", "primary");
-  form.appendChild(btn);
-  app.appendChild(form);
-
-  form.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const res = await fetch("/api/v1/auth/login", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: email.value.trim(), password: pw.value }),
-    });
-    if (!res.ok) { show(await problem(res)); return; }
-    const body = await res.json();
-    accessToken = body.access || "";
-    refreshToken = body.refresh || "";
-    showDashboard();
+// A copy control. The key is shown once, so being able to select it is not
+// enough: without this an operator retypes a 32-character hex string.
+function copyButton(text) {
+  const b = button("Copy", "mini", async () => {
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(text);
+        b.textContent = "Copied";
+        setTimeout(() => { b.textContent = "Copy"; }, 1500);
+        return;
+      }
+    } catch (_) { /* fall through to the manual hint */ }
+    show("Copy manually: select the text above.", "warn");
   });
-  btn.addEventListener("click", () => form.requestSubmit());
+  return b;
 }
 
+// ------------------------------------------------------------- shell and nav
+
+// The shell is the frame every view is drawn inside: top bar, nav, page head.
+// It takes two arguments by design — the header's second line is optional, so
+// it is read from arguments rather than widening the signature every view has
+// to satisfy.
 function shell(title, path) {
-  view = path;
-  // The 30s auto-refresh belongs to the dashboard only. Every view starts by
-  // tearing down the page here, so the poll must be cleared on entry to any
-  // view; showDashboard re-arms it after it builds. Leaving it running made
-  // the interval fire showDashboard() from the envelope detail and the
-  // envelopes table alike, which clear()ed the user's view and dropped them
-  // back to the stats page a few seconds after they clicked "open".
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  const subtitle = arguments[2];
+  clearInterval(pollTimer);   // every view owns its own timer, if any
   clear();
-  app.appendChild(el("h1", title));
+  const top = el("header", undefined, "top");
+  const bar = el("div", undefined, "bar");
+  const brand = el("div", undefined, "brand");
+  brand.appendChild(el("b", "signsrv"));
+  brand.appendChild(el("span", "admin"));
+  bar.appendChild(brand);
   const nav = el("nav", undefined, "nav");
-  nav.appendChild(linkTo("/", "Dashboard", showDashboard));
-  nav.appendChild(linkTo("/admin/envelopes", "Envelopes", showEnvelopes));
-  nav.appendChild(linkTo("/admin/settings", "Settings", showSettings));
-  const logoutBtn = el("button", "Log out");
-  logoutBtn.addEventListener("click", async () => {
-    await api("/admin/logout", { method: "POST" });
-    showLogin();
+  for (const [p, label] of [["/", "Dashboard"], ["/admin/envelopes", "Envelopes"],
+    ["/admin/clients", "Clients"], ["/admin/settings", "Settings"]]) {
+    const a = el("a", label);
+    a.href = "#" + p;
+    if (p === path) a.setAttribute("aria-current", "page");
+    if (p === path) a.addEventListener("click", (ev) => { ev.preventDefault(); route(true); });
+    nav.appendChild(a);
+  }
+  nav.appendChild(button("Refresh", "", () => route(true)));
+  const out = button("Log out", "", async () => {
+    try {
+      await api("/auth/logout", { method: "POST", body: JSON.stringify({ refresh: refreshToken }) });
+    } catch (_) { /* the tokens are dropped either way */ }
+    accessToken = ""; refreshToken = "";
+    showLogin("Logged out.");
   });
-  nav.appendChild(logoutBtn);
-  app.appendChild(nav);
-  app.appendChild(el("p", undefined, "muted"));
+  nav.appendChild(out);
+  bar.appendChild(nav);
+  top.appendChild(bar);
+  app.appendChild(top);
+
+  const main = el("div");
+  main.id = "page";
+  const head = el("div", undefined, "head");
+  const block = el("div");
+  block.appendChild(el("h1", title));
+  if (subtitle) block.appendChild(el("p", subtitle, "sub"));
+  head.appendChild(block);
+  main.appendChild(head);
+  app.appendChild(main);
+  return main;
 }
 
-// ---------------------------------------------------------------------------
-// dashboard
+// ------------------------------------------------------------------- router
+
+const routes = [
+  { path: "/", view: showDashboard },
+  { path: "/admin/envelopes", view: showEnvelopeList },
+  { path: "/admin/clients", view: showClients },
+  { path: "/admin/settings", view: showSettings },
+];
+
+let view = "/";
+
+function currentPath() {
+  const h = location.hash.replace(/^#/, "");
+  return h || "/";
+}
+
+function route(force) {
+  if (!accessToken) { pendingPath = currentPath(); showLogin(); return; }
+  const path = currentPath();
+  if (!force && path === view) { showDashboard(); return; }
+  for (const r of routes) {
+    if (path === r.path) { view = path; r.view(); return; }
+  }
+  if (path.indexOf("/admin/envelopes/") === 0) {
+    view = path;
+    showEnvelopeDetail(path.slice("/admin/envelopes/".length));
+    return;
+  }
+  view = path;
+  showDashboard();
+}
+
+window.addEventListener("hashchange", () => route(false));
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && view === "/" && accessToken) {
+    showDashboard();
+  }
+});
+
+// -------------------------------------------------------------------- login
+
+function showLogin(message) {
+  clear();
+  clearInterval(pollTimer);
+  accessToken = "";
+  const box = el("div", undefined, "card");
+  box.style.maxWidth = "26rem";
+  box.style.margin = "3rem auto";
+  box.appendChild(el("h1", "signsrv admin"));
+  box.appendChild(el("p", "Administrator email and password.", "muted small"));
+  if (message) box.appendChild(el("p", message, "notice bad"));
+  const email = el("input"); email.type = "email"; email.autocomplete = "username";
+  const pw = el("input"); pw.type = "password"; pw.autocomplete = "current-password";
+  const f1 = el("label", "Email", "field"); f1.appendChild(email);
+  const f2 = el("label", "Password", "field"); f2.appendChild(pw);
+  box.appendChild(f1); box.appendChild(f2);
+  const go = button("Log in", "primary", submit);
+  box.appendChild(go);
+  app.appendChild(box);
+  email.focus();
+  pw.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+
+  async function submit() {
+    go.disabled = true;
+    try {
+      const res = await rawFetch("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email: email.value.trim(), password: pw.value }),
+      });
+      if (!res.ok) { show(await problem(res), "bad"); go.disabled = false; return; }
+      const body = await res.json();
+      accessToken = body.access;
+      refreshToken = body.refresh;
+      const path = pendingPath; pendingPath = "";
+      if (path && path !== "/") { location.hash = "#" + path; }
+      route(true);
+    } catch (err) {
+      show(String(err.message || err), "bad");
+      go.disabled = false;
+    }
+  }
+}
+
+// ---------------------------------------------------------------- dashboard
+
+const STATUS_ORDER = ["draft", "ready", "sent", "collecting", "signed",
+  "completed", "delivered", "expired", "cancelled", "failed"];
+
+function badge(status) {
+  return el("span", status, "badge " + status);
+}
+
+// A time from the server is UTC RFC 3339 with seconds. Shown in the browser's
+// zone, because an operator reading "14:02Z" has to do arithmetic to know
+// whether that was before lunch.
+function whenText(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
 
 async function showDashboard() {
-  shell("Dashboard", "/");
-  const res = await api("/admin/stats");
-  if (!res.ok) { show(await problem(res)); return; }
-  const body = await res.json();
+  const main = shell("Dashboard", "/", "Live state of this instance. Polls every 30 seconds.");
+  let body;
+  try {
+    body = await getJSON("/admin/stats");
+  } catch (err) {
+    main.appendChild(el("p", String(err.message || err), "notice bad"));
+    return;
+  }
+  show("");
 
+  const counts = body.by_status || body.counts || {};
   const grid = el("div", undefined, "grid");
-  for (const [status, count] of Object.entries(body.by_status || body.counts || {})) {
-    const tile = el("div", undefined, "card");
-    tile.appendChild(el("strong", String(count)));
-    tile.appendChild(el("p", status, "muted"));
-    grid.appendChild(tile);
+  const live = ["sent", "collecting", "signed"].reduce((n, k) => n + (counts[k] || 0), 0);
+  const tile = (label, n, cls) => {
+    const t = el("div", undefined, "tile " + (cls || ""));
+    t.appendChild(el("strong", n));
+    t.appendChild(el("span", label, "cap"));
+    return t;
+  };
+  grid.appendChild(tile("awaiting a signer", live, live ? "live" : "zero"));
+  grid.appendChild(tile("overdue", body.overdue || 0, body.overdue ? "warn" : "zero"));
+  for (const st of STATUS_ORDER) {
+    grid.appendChild(tile(st, counts[st] || 0, counts[st] ? "" : "zero"));
   }
-  app.appendChild(grid);
-
-  const queues = body.queues || {};
-  const qcard = el("div", undefined, "card");
-  qcard.appendChild(el("h2", "Queues"));
-  qcard.appendChild(el("p", "mail waiting " + (queues.mail_waiting ?? 0) +
-    ", in flight " + (queues.mail_claimed ?? 0) +
-    ", oldest " + (queues.mail_oldest_seconds ?? 0) + "s"));
-  qcard.appendChild(el("p", "batch waiting " + (queues.batch_waiting ?? 0) +
-    ", in flight " + (queues.batch_claimed ?? 0) +
-    ", failures " + (queues.batch_failures ?? 0)));
-  app.appendChild(qcard);
-
-  const overdue = (body.overdue || []);
-  if (overdue.length) {
-    app.appendChild(el("h2", "Overdue"));
-    const list = el("ul", undefined, "parties");
-    for (const row of overdue) {
-      const li = el("li");
-      li.textContent = (row.title || row.id) + " — " + row.status + ", expired " + (row.expires_at || "");
-      list.appendChild(li);
-    }
-    app.appendChild(list);
+  // The queue depth is what tells an operator the worker is not draining. The
+  // waiting count alone is not enough: a queue that is claimed but never
+  // finished shows as zero waiting and a non-zero claimed.
+  const q = body.queues || {};
+  grid.appendChild(tile("mail waiting", q.mail_waiting || 0, q.mail_waiting ? "warn" : "zero"));
+  grid.appendChild(tile("mail in flight", q.mail_claimed || 0, q.mail_claimed ? "warn" : "zero"));
+  grid.appendChild(tile("batches waiting", q.batch_waiting || 0, q.batch_waiting ? "warn" : "zero"));
+  grid.appendChild(tile("batch failures", q.batch_failures || 0, q.batch_failures ? "warn" : "zero"));
+  if (q.mail_oldest_seconds) {
+    grid.appendChild(tile("oldest mail (min)", Math.round(q.mail_oldest_seconds / 60), "warn"));
   }
+  main.appendChild(grid);
 
-  app.appendChild(el("h2", "Collecting"));
-  const collecting = (body.collecting || []);
+  const collecting = body.collecting || [];
+  const c = card("Collecting", "Envelopes with at least one consent in.");
   if (!collecting.length) {
-    app.appendChild(el("p", "No envelope is waiting for signatures.", "muted"));
+    c.appendChild(el("p", "Nothing is collecting.", "muted"));
   } else {
-    const list = el("ul", undefined, "parties");
-    for (const row of collecting) {
-      const li = el("li");
-      li.textContent = (row.title || row.id) + " — " + row.consented + "/" + row.total;
-      li.appendChild(document.createTextNode(" "));
-      li.appendChild(linkTo("/admin/envelopes/" + row.id, "open", () => showEnvelope(row.id)));
-      list.appendChild(li);
+    const t = el("table");
+    const head = el("tr");
+    for (const h of ["Envelope", "Progress", ""]) {
+      head.appendChild(el("th", h, h === "Progress" ? "num" : ""));
     }
-    app.appendChild(list);
+    t.appendChild(head);
+    for (const row of collecting) {
+      const tr = el("tr");
+      const td = el("td");
+      td.appendChild(linkTo("/admin/envelopes/" + row.id, row.title || row.id));
+      td.appendChild(el("div", row.id, "id"));
+      tr.appendChild(td);
+      const tp = el("td", undefined, "num");
+      const total = row.total || 0;
+      const pct = total ? Math.round(100 * (row.consented || 0) / total) : 0;
+      const pr = el("span", undefined, "progress" + (total && row.consented >= total ? " done" : ""));
+      const track = el("span", undefined, "track");
+      const fill = el("span", undefined, "fill");
+      fill.style.width = pct + "%";
+      track.appendChild(fill);
+      pr.appendChild(track);
+      pr.appendChild(el("span", (row.consented || 0) + " of " + total));
+      tp.appendChild(pr);
+      tr.appendChild(tp);
+      const ta = el("td", undefined, "num");
+      ta.appendChild(linkTo("/admin/envelopes/" + row.id, "Open", "mini"));
+      tr.appendChild(ta);
+      t.appendChild(tr);
+    }
+    c.appendChild(t);
   }
+  main.appendChild(c);
 
-  // Poll every 30s, and only while this tab is visible and still showing the
-  // dashboard: a background tab is not being read, and the stats query is not
-  // free. The view check is the important half — a tick can already be queued
-  // when the user navigates away, and showDashboard rebuilds the whole page
-  // through shell()/clear(). Without it, a tick that fires just after the user
-  // leaves the dashboard wipes their new view and returns them to the stats.
-  if (pollTimer) clearInterval(pollTimer);
+  const e = card("Recent events", "The audit log, newest first.");
+  try {
+    const ev = await getJSON("/admin/events?limit=20");
+    e.appendChild(eventList(ev.events || []));
+  } catch (err) {
+    e.appendChild(el("p", String(err.message || err), "muted"));
+  }
+  main.appendChild(e);
+
+  // Poll. The guard keeps a backgrounded tab from burning requests.
   pollTimer = setInterval(() => {
-    if (view === "/" && document.visibilityState === "visible") showDashboard();
+    if (view === "/" && accessToken && document.visibilityState === "visible") {
+      showDashboard();
+    }
   }, 30000);
 }
 
-
-// ---------------------------------------------------------------------------
-// envelope table
-
-async function showEnvelopes() {
-  shell("Envelopes", "/admin/envelopes");
-  const res = await api("/envelopes");
-  if (!res.ok) { show(await problem(res)); return; }
-  const body = await res.json();
-  const rows = body.envelopes || [];
-  app.appendChild(el("p", rows.length + " envelope(s).", "muted"));
-  const table = el("table");
-  const head = el("tr");
-  for (const h of ["title", "status", "progress", "created", "expires"]) head.appendChild(el("th", h));
-  table.appendChild(head);
-  for (const row of rows) {
-    const tr = el("tr");
-    const titleCell = el("td");
-    titleCell.appendChild(linkTo("/admin/envelopes/" + row.id, row.title || row.id, () => showEnvelope(row.id)));
-    tr.appendChild(titleCell);
-    tr.appendChild(el("td", row.status || ""));
-    tr.appendChild(el("td", row.consented + "/" + row.parties));
-    tr.appendChild(el("td", row.created_at || ""));
-    tr.appendChild(el("td", row.expires_at || ""));
-    table.appendChild(tr);
+function eventList(events) {
+  const ul = el("ul", undefined, "log");
+  if (!events.length) {
+    ul.appendChild(el("li", "No events yet."));
+    return ul;
   }
-  app.appendChild(table);
+  for (const ev of events) {
+    const li = el("li");
+    li.appendChild(el("time", whenText(ev.created_at)));
+    li.appendChild(el("span", ev.kind, "kind"));
+    const who = el("span", undefined, "who");
+    who.textContent = (ev.actor || "system") + " · " + logJSON(ev.payload || {});
+    li.appendChild(who);
+    ul.appendChild(li);
+  }
+  return ul;
 }
 
-// ---------------------------------------------------------------------------
-// envelope detail
+// ---------------------------------------------------------------- envelopes
 
-async function showEnvelope(id) {
-  shell("Envelope", "/admin/envelopes/" + id);
-  const res = await api("/envelopes/" + encodeURIComponent(id));
-  if (!res.ok) { show(await problem(res)); return; }
-  const body = await res.json();
-  const env = body.envelope || body;
+let envelopeFilter = { status: "", q: "" };
 
-  app.appendChild(el("h2", env.title || env.id));
-  app.appendChild(el("p", "status " + env.status + " · " + (env.consented ?? 0) + "/" + (env.parties ?? 0) +
-    " consented · expires " + (env.expires_at || "none")));
+async function showEnvelopeList() {
+  const main = shell("Envelopes", "/admin/envelopes", "Every envelope this instance has, newest first.");
+  const bar = el("div", undefined, "form-inline");
+  const fs = el("label", "Status", "field");
+  const sel = el("select");
+  for (const opt of [["", "any"], ["draft", "draft"], ["ready", "ready"], ["sent", "sent"],
+    ["collecting", "collecting"], ["signed", "signed"], ["completed", "completed"],
+    ["delivered", "delivered"], ["expired", "expired"], ["cancelled", "cancelled"],
+    ["failed", "failed"]]) {
+    const o = el("option", opt[1]);
+    o.value = opt[0];
+    if (envelopeFilter.status === opt[0]) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", () => { envelopeFilter.status = sel.value; showEnvelopeList(); });
+  fs.appendChild(sel);
 
-  const actions = el("div", undefined, "actions");
-  const action = (label, path, method, bodyText) => {
-    const b = el("button", label);
-    b.addEventListener("click", async () => {
-      const r = await api(path, { method: method || "POST", body: bodyText });
-      if (!r.ok) { show(await problem(r)); return; }
-      show(label + " accepted.");
-      showEnvelope(id);
-    });
-    actions.appendChild(b);
-  };
-  // One mailing button, safe to press as often as needed: it mails the parties
-  // who have not signed, with the links they already hold. "remind" used to sit
-  // beside it as a second, subtly different action, which meant guessing which
-  // one worked after a restart. The route still exists; the button does not.
-  action("mail unsigned", "/envelopes/" + encodeURIComponent(id) + "/send");
-  action("reissue links", "/envelopes/" + encodeURIComponent(id) + "/reissue");
-  action("sign now", "/envelopes/" + encodeURIComponent(id) + "/sign");
-  const cancelBtn = el("button", "cancel");
-  cancelBtn.addEventListener("click", async () => {
-    const reason = window.prompt("Why is this request cancelled?");
-    if (!reason) { show("A cancel needs a reason."); return; }
-    const r = await api("/envelopes/" + encodeURIComponent(id) + "/cancel",
-      { method: "POST", body: JSON.stringify({ reason: reason }) });
-    if (!r.ok) { show(await problem(r)); return; }
-    show("Cancelled.");
-    showEnvelope(id);
+  const fq = el("label", "Search", "field");
+  const qi = el("input"); qi.type = "text"; qi.value = envelopeFilter.q;
+  qi.placeholder = "id, title or party email";
+  qi.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { envelopeFilter.q = qi.value.trim(); showEnvelopeList(); }
   });
-  actions.appendChild(cancelBtn);
-  const dl = el("a", "download document");
-  dl.href = "/api/v1/envelopes/" + encodeURIComponent(id) + "/document";
-  dl.setAttribute("rel", "noopener");
-  actions.appendChild(dl);
-  const zip = el("a", "download audit.zip");
-  zip.href = "/api/v1/envelopes/" + encodeURIComponent(id) + "/audit.zip";
-  zip.setAttribute("rel", "noopener");
-  actions.appendChild(zip);
-  app.appendChild(actions);
+  fq.appendChild(qi);
+  bar.appendChild(fs); bar.appendChild(fq);
+  bar.appendChild(button("Search", "primary", () => {
+    envelopeFilter.q = qi.value.trim(); showEnvelopeList();
+  }));
+  main.appendChild(bar);
 
-  const report = await api("/envelopes/" + encodeURIComponent(id) + "/report");
-  if (report.ok) {
-    const r = await report.json();
-    const rep = r.report || {};
-    const card = el("div", undefined, "card");
-    card.appendChild(el("h2", "Report"));
-    card.appendChild(el("p", "document valid: " + String(rep.valid === true) +
-      " · signatures: " + (rep.signers ? rep.signers.length : 0) +
-      " · party signatures " + (r.signed_parties ?? 0) + "/" + (r.required_parties ?? 0) +
-      " · complete: " + String(r.complete === true)));
-    if (rep.errors && rep.errors.length) card.appendChild(el("p", rep.errors.join("; "), "muted"));
-    app.appendChild(card);
+  const params = new URLSearchParams();
+  if (envelopeFilter.status) params.set("status", envelopeFilter.status);
+  if (envelopeFilter.q) params.set("q", envelopeFilter.q);
+  params.set("limit", "100");
+  let body;
+  try {
+    body = await getJSON("/envelopes?" + params.toString());
+  } catch (err) {
+    main.appendChild(el("p", String(err.message || err), "notice bad"));
+    return;
   }
-
-  app.appendChild(el("h2", "Parties"));
-  const partyList = el("ul", undefined, "parties");
-  for (const p of body.parties || []) {
-    const li = el("li");
-    li.textContent = p.name + " <" + (p.email || "") + "> — " + (p.status || "") +
-      (p.consented_at ? ", consented " + p.consented_at : "") +
-      (p.signature ? ", signed \"" + p.signature + "\" at " + (p.signed_at || "") +
-        (p.serial ? ", cert " + p.serial : "") : "");
-    partyList.appendChild(li);
-  }
-  app.appendChild(partyList);
-
-  app.appendChild(el("h2", "Revisions"));
-  const revList = el("ul", undefined, "parties");
-  for (const rev of body.revisions || []) {
-    const li = el("li");
-    li.textContent = rev.kind + " · " + (rev.sha256 || "").slice(0, 16) + " · " + (rev.created_at || "");
-    revList.appendChild(li);
-  }
-  app.appendChild(revList);
-
-  const events = await api("/admin/events?envelope=" + encodeURIComponent(id));
-  if (events.ok) {
-    const e = await events.json();
-    app.appendChild(el("h2", "Events"));
-    const list = el("ul", undefined, "parties");
-    for (const ev of e.events || []) {
-      const li = el("li");
-      li.textContent = (ev.created_at || "") + " " + ev.actor + " " + ev.kind;
-      list.appendChild(li);
+  show("");
+  const c = card(undefined, undefined);
+  c.classList.add("flush");
+  const rows = body.envelopes || [];
+  if (!rows.length) {
+    c.appendChild(el("p", "No envelopes match.", "empty"));
+  } else {
+    const t = el("table");
+    const head = el("tr");
+    for (const h of ["Envelope", "Status", "Created", "Updated", "Expires"]) {
+      head.appendChild(el("th", h));
     }
-    app.appendChild(list);
+    t.appendChild(head);
+    for (const env of rows) {
+      const tr = el("tr");
+      const td = el("td");
+      td.appendChild(linkTo("/admin/envelopes/" + env.id, env.title || "(untitled)"));
+      td.appendChild(el("div", env.id, "id"));
+      tr.appendChild(td);
+      const ts = el("td");
+      ts.appendChild(badge(env.status));
+      tr.appendChild(ts);
+      tr.appendChild(el("td", whenText(env.created_at)));
+      tr.appendChild(el("td", whenText(env.updated_at)));
+      tr.appendChild(el("td", whenText(env.expires_at)));
+      t.appendChild(tr);
+    }
+    c.appendChild(t);
   }
+  main.appendChild(c);
+  main.appendChild(el("p", rows.length + " shown of " + (body.total === undefined
+    ? rows.length : body.total) + " matching.", "muted small"));
 }
 
-// ---------------------------------------------------------------------------
-// settings
+// ------------------------------------------------------------ envelope view
+
+async function showEnvelopeDetail(id) {
+  const main = shell("Envelope " + id, "/admin/envelopes", "One envelope: its parties, revisions, audit trail, and the operator actions.");
+  let body;
+  try {
+    body = await getJSON("/envelopes/" + encodeURIComponent(id));
+  } catch (err) {
+    main.appendChild(el("p", String(err.message || err), "notice bad"));
+    return;
+  }
+  show("");
+  // This endpoint answers with the envelope's own fields at the top level,
+  // alongside parties/revisions/events — not nested under "envelope".
+  const env = body;
+
+  const head = card();
+  const line = el("div", undefined, "titlerow");
+  line.appendChild(el("h2", env.title || "(untitled)"));
+  line.appendChild(badge(env.status || "unknown"));
+  line.appendChild(el("span", env.id, "id"));
+  head.appendChild(line);
+  // Only the keys this response actually carries. The audit trail below has
+  // the timestamps; inventing a row that renders "—" for a field the endpoint
+  // never sends is how an operator starts distrusting the whole page.
+  const kv = el("dl", undefined, "kv");
+  const put = (k, v) => {
+    if (v === undefined || v === null || v === "") return;
+    kv.appendChild(el("dt", k));
+    kv.appendChild(el("dd", String(v)));
+  };
+  put("Expires", whenText(env.expires_at));
+  put("Consents", env.total !== undefined ? ((env.consented || 0) + " of " + env.total) : undefined);
+  put("Cert serial", env.serial);
+  put("Document SHA-256", env.document_sha);
+  head.appendChild(kv);
+  main.appendChild(head);
+
+  const ops = el("div", undefined, "actions");
+  ops.appendChild(apiLink("/envelopes/" + env.id + "/document", "Download document"));
+  ops.appendChild(apiLink("/envelopes/" + env.id + "/report", "Verify report"));
+  ops.appendChild(apiLink("/envelopes/" + env.id + "/audit.zip", "Audit zip"));
+  ops.appendChild(el("span", undefined, "sep"));
+  const st = env.status;
+  const post = async (path, bodyText, ok) => {
+    const r = await api(path, { method: "POST", body: bodyText || "{}" });
+    if (!r.ok) { show(await problem(r), "bad"); return; }
+    show(ok || "Done.", "ok");
+    showEnvelopeDetail(id);
+  };
+  if (st === "draft" || st === "ready") {
+    ops.appendChild(button("Send", "primary", () =>
+      post("/envelopes/" + env.id + "/send", "{}", "Sent: the invitations are queued.")));
+  }
+  if (st === "sent" || st === "collecting" || st === "expired") {
+    ops.appendChild(button("Reissue", "", () =>
+      post("/envelopes/" + env.id + "/reissue", "{}", "Links reissued.")));
+    if (st !== "expired") {
+      ops.appendChild(button("Remind", "", () =>
+        post("/envelopes/" + env.id + "/remind", "{}", "Reminder queued.")));
+    }
+  }
+  if (st === "collecting" || st === "signed") {
+    // Sign enqueues the batch. From collecting it needs every consent; from
+    // signed it is the repair for a batch that died mid-run.
+    ops.appendChild(button("Sign", "primary", () =>
+      post("/envelopes/" + env.id + "/sign", "{}", "Batch queued.")));
+  }
+  if (st !== "delivered" && st !== "cancelled" && st !== "expired" && st !== "failed") {
+    ops.appendChild(button("Cancel", "danger", confirmRun("Cancel this envelope? The parties are notified.", async () => {
+      const reason = window.prompt("Reason for cancelling (required)", "operator cancelled");
+      if (reason === null) return;
+      const r = await api("/envelopes/" + env.id + "/cancel", {
+        method: "POST", body: JSON.stringify({ reason: reason || "operator cancelled" }),
+      });
+      if (!r.ok) { show(await problem(r), "bad"); return; }
+      show("Cancelled.", "ok");
+      showEnvelopeDetail(id);
+    })));
+  }
+  main.appendChild(ops);
+
+  const p = card("Parties", "In signing order. A link token is never shown here; only its state.");
+  const pt = el("table");
+  const ph = el("tr");
+  for (const h of ["#", "Name", "Email", "Status", "Consent at", "Link expires"]) {
+    ph.appendChild(el("th", h));
+  }
+  pt.appendChild(ph);
+  for (const party of (body.parties || [])) {
+    const tr = el("tr");
+    tr.appendChild(el("td", String(party.order)));
+    tr.appendChild(el("td", party.name || "—"));
+    tr.appendChild(el("td", party.email));
+    const ts = el("td");
+    ts.appendChild(badge(party.status || "pending"));
+    if (party.signature_text) ts.appendChild(el("span", party.signature_text, "muted small"));
+    tr.appendChild(ts);
+    tr.appendChild(el("td", whenText(party.consent_at)));
+    tr.appendChild(el("td", whenText(party.link_expires_at)));
+    pt.appendChild(tr);
+  }
+  if (!(body.parties || []).length) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "No parties.", "empty"));
+    pt.appendChild(tr);
+  }
+  p.appendChild(pt);
+  main.appendChild(p);
+
+  const r = card("Revisions", "The certification chain. The report link verifies the bytes.");
+  const rt = el("table");
+  const rh = el("tr");
+  for (const h of ["#", "Kind", "SHA-256", "Bytes", "Created", "Cert serial"]) {
+    rh.appendChild(el("th", h));
+  }
+  rt.appendChild(rh);
+  (body.revisions || []).forEach((rev, i) => {
+    const tr = el("tr");
+    tr.appendChild(el("td", String(i + 1)));
+    tr.appendChild(el("td", rev.kind || "—"));
+    const ts = el("td", rev.sha256, "id");
+    if (rev.prev_id) ts.appendChild(el("div", "prev " + rev.prev_id.slice(0, 12)));
+    tr.appendChild(ts);
+    tr.appendChild(el("td", rev.size === undefined ? "—" : String(rev.size), "num"));
+    tr.appendChild(el("td", whenText(rev.created_at)));
+    tr.appendChild(el("td", rev.cert_serial || "—", "id"));
+    rt.appendChild(tr);
+  });
+  if (!(body.revisions || []).length) {
+    rt.appendChild(el("tr")).appendChild(el("td", "No revisions.", "empty"));
+  }
+  r.appendChild(rt);
+  main.appendChild(r);
+
+  const e = card("Events", "Every state change, newest first.");
+  e.appendChild(eventList(body.events || []));
+  main.appendChild(e);
+}
+
+// ------------------------------------------------------------------ clients
+
+async function showClients() {
+  const main = shell("Clients", "/admin/clients",
+    "Machine callers. A client authenticates with its key and gets a token; the key is shown once, at creation.");
+  let body;
+  try {
+    body = await getJSON("/admin/clients");
+  } catch (err) {
+    main.appendChild(el("p", String(err.message || err), "notice bad"));
+    return;
+  }
+  show("");
+  const clients = body.clients || [];
+
+  const c = card("Existing clients",
+    "The id is what you quote when you revoke a client; a revoked client drops off this list. The key is stored as a hash, so it is not recoverable from here.");
+  if (!clients.length) {
+    c.appendChild(el("p", "No clients yet. Create one below.", "empty"));
+  } else {
+    const t = el("table");
+    const th = el("tr");
+    for (const h of ["Client id", "Subject", "Name", "Scopes", "Created", ""]) {
+      th.appendChild(el("th", h));
+    }
+    t.appendChild(th);
+    for (const cl of clients) {
+      const tr = el("tr");
+      tr.appendChild(el("td", String(cl.id), "id"));
+      // The subject is what appears in the audit log as the actor of every
+      // request this client made, so it is the string an operator needs.
+      tr.appendChild(el("td", "client:" + cl.id, "id"));
+      tr.appendChild(el("td", cl.name));
+      const tsc = el("td");
+      for (const s of (cl.scopes || [])) tsc.appendChild(el("span", s, "badge"));
+      tr.appendChild(tsc);
+      tr.appendChild(el("td", whenText(cl.created_at)));
+      const ta = el("td", undefined, "num");
+      ta.appendChild(button("Revoke", "mini danger", confirmRun(
+        "Revoke client " + cl.id + " (" + cl.name + ")? Its key stops working immediately.",
+        async () => {
+          const r = await api("/admin/clients/" + encodeURIComponent(cl.id), { method: "DELETE" });
+          if (!r.ok) { show(await problem(r), "bad"); return; }
+          // Re-render first, then say so: every view clears the notice when it
+          // draws, so a message shown before the redraw would be erased by it.
+          await showClients();
+          show("Client " + cl.id + " (" + cl.name + ") revoked.", "ok");
+        })));
+      tr.appendChild(ta);
+      t.appendChild(tr);
+    }
+    c.appendChild(t);
+  }
+  main.appendChild(c);
+
+  const f = card("New client", undefined);
+  f.appendChild(el("p", "Give it a name. The name is unique and cannot be changed, so use the system that will hold the key.", "lede"));
+  const nameField = el("label", "Name", "field");
+  const nameInput = el("input"); nameInput.type = "text"; nameInput.placeholder = "billing-service";
+  nameField.appendChild(nameInput);
+  f.appendChild(nameField);
+  const readScope = el("input"); readScope.type = "checkbox"; readScope.checked = true;
+  const writeScope = el("input"); writeScope.type = "checkbox"; writeScope.checked = true;
+  const scopeList = el("ul", undefined, "plain");
+  for (const [box, name, note] of [[readScope, "envelope:read", "list, read, report, document, audit zip"],
+    [writeScope, "envelope:write", "create, fill, send, sign, reissue, remind, cancel"]]) {
+    const li = el("li");
+    const lab = el("label");
+    lab.appendChild(box);
+    lab.appendChild(document.createTextNode(" " + name));
+    li.appendChild(lab);
+    li.appendChild(el("span", note, "muted small grow"));
+    scopeList.appendChild(li);
+  }
+  f.appendChild(scopeList);
+  f.appendChild(el("p", "A client can hold nothing beyond these two. It is never an admin, so it cannot read the audit log or the settings.", "muted small"));
+  const create = button("Create client", "primary", async () => {
+    const name = nameInput.value.trim();
+    if (!name) { show("A name is required.", "bad"); return; }
+    const scopes = [];
+    if (readScope.checked) scopes.push("envelope:read");
+    if (writeScope.checked) scopes.push("envelope:write");
+    create.disabled = true;
+    let res;
+    try {
+      res = await api("/admin/clients", { method: "POST", body: JSON.stringify({ name: name, scopes: scopes }) });
+    } catch (err) {
+      show(String(err.message || err), "bad"); create.disabled = false; return;
+    }
+    create.disabled = false;
+    if (!res.ok) { show(await problem(res), "bad"); return; }
+    const out = await res.json();
+    showKeyCreated(out.client || {}, out.key || "", out.note || "");
+  });
+  f.appendChild(create);
+  main.appendChild(f);
+}
+
+// The one response that carries a usable secret. The server keeps only a hash,
+// so whatever is not on this screen is gone.
+function showKeyCreated(client, key, note) {
+  view = "/admin/clients";
+  const main = shell("Client created", "/admin/clients",
+    "Hand these two values to the system that will call the API.");
+  const box = el("div", undefined, "keybox");
+  const pre = el("pre", key || "(no key returned)");
+  box.appendChild(pre);
+  box.appendChild(el("p", "This is the only time it is shown. It is stored as a hash, so it cannot be read back.", "note"));
+  main.appendChild(box);
+  const meta = el("div", undefined, "keymeta");
+  meta.appendChild(copyButton(key || ""));
+  const idk = el("span", undefined, "k");
+  idk.appendChild(document.createTextNode("client id "));
+  idk.appendChild(el("b", client.id + "  (subject client:" + client.id + ")"));
+  meta.appendChild(idk);
+  meta.appendChild(el("span", "name " + (client.name || ""), "k"));
+  meta.appendChild(el("span", "scopes " + ((client.scopes || []).join(", ") || "none"), "k"));
+  main.appendChild(meta);
+  if (note) main.appendChild(el("p", note, "muted small"));
+  main.appendChild(el("p", "Use it as the key on POST /api/v1/auth/token; the token it returns is what the API calls carry. The CLI takes it in SIGNSRV_KEY.", "muted small"));
+  const back = el("div", undefined, "actions");
+  back.appendChild(linkTo("/admin/clients", "Back to the client list", () => showClients()));
+  main.appendChild(back);
+}
+
+// ----------------------------------------------------------------- settings
 
 async function showSettings() {
-  shell("Settings", "/admin/settings");
-  const res = await api("/admin/settings");
-  if (!res.ok) { show(await problem(res)); return; }
-  const settings = (await res.json()).settings || {};
-
-  const form = el("form", undefined, "field");
+  const main = shell("Settings", "/admin/settings", "The running configuration. Values you change here take effect on the next send.");
+  let body;
+  try {
+    body = await getJSON("/admin/settings");
+  } catch (err) {
+    main.appendChild(el("p", String(err.message || err), "notice bad"));
+    return;
+  }
+  show("");
+  const settings = body.settings || body || {};
+  const f = card(undefined, undefined);
   const fields = {};
-  for (const key of ["tsa_url", "link_ttl", "mail_from", "smtp_host"]) {
-    form.appendChild(el("label", key));
+  for (const [key, label, hint, type] of [
+    ["tsa_url", "TSA URL", "Where signatures get their timestamps.", "text"],
+    ["link_ttl", "Link TTL", "How long a signing link stays valid.", "text"],
+    ["mail_from", "Mail from", "The address every invitation is sent from.", "text"],
+    ["smtp_host", "SMTP host", "Empty means the outbox stays on disk.", "text"]]) {
+    const fl = el("label", label, "field");
     const input = el("input");
-    input.value = settings[key] || "";
+    input.type = type;
+    input.value = settings[key] === undefined ? "" : String(settings[key]);
+    fl.appendChild(input);
+    if (hint) fl.appendChild(el("span", hint, "hint"));
+    f.appendChild(fl);
     fields[key] = input;
-    form.appendChild(input);
   }
-  const save = el("button", "Save", "primary");
-  form.appendChild(save);
-  app.appendChild(form);
-
-  form.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const changes = {};
-    for (const key of Object.keys(fields)) {
-      if (fields[key].value !== (settings[key] || "")) changes[key] = fields[key].value;
+  const save = button("Save", "primary", async () => {
+    const patch = {};
+    for (const k of Object.keys(fields)) patch[k] = fields[k].value.trim();
+    let res;
+    try {
+      res = await api("/admin/settings", { method: "PATCH", body: JSON.stringify(patch) });
+    } catch (err) {
+      show(String(err.message || err), "bad"); return;
     }
-    if (!Object.keys(changes).length) { show("Nothing changed."); return; }
-    const r = await api("/admin/settings", { method: "PATCH", body: JSON.stringify(changes) });
-    if (!r.ok) { show(await problem(r)); return; }
-    show("Saved " + Object.keys(changes).join(", ") + ".");
-    showSettings();
-  });
-
-  const clients = await api("/admin/clients");
-  if (clients.ok) {
-    app.appendChild(el("h2", "Machine clients"));
-    const list = el("ul", undefined, "parties");
-    for (const c of (await clients.json()).clients || []) {
-      const li = el("li");
-      li.textContent = c.name + " — " + (c.scopes || []).join(" ") +
-        (c.revoked_at ? ", revoked " + c.revoked_at : "");
-      const revoke = el("button", "revoke");
-      revoke.addEventListener("click", async () => {
-        const r = await api("/admin/clients/" + encodeURIComponent(c.id), { method: "DELETE" });
-        if (!r.ok) { show(await problem(r)); return; }
-        show("Client revoked.");
-        showSettings();
-      });
-      li.appendChild(document.createTextNode(" "));
-      li.appendChild(revoke);
-      list.appendChild(li);
+    if (!res.ok) { show(await problem(res), "bad"); return; }
+    const out = await res.json();
+    show("Saved. " + ((out.changed || []).join(", ") || "nothing changed."), "ok");
+    const after = out.settings || {};
+    for (const k of Object.keys(fields)) {
+      if (after[k] !== undefined) fields[k].value = String(after[k]);
     }
-    app.appendChild(list);
-  }
-
-  const add = el("div", undefined, "field");
-  add.appendChild(el("label", "New machine client name"));
-  const nameInput = el("input");
-  add.appendChild(nameInput);
-  const scopes = el("div", undefined, "muted");
-  scopes.textContent = "envelope:read and envelope:write are the most a client may hold.";
-  add.appendChild(scopes);
-  const create = el("button", "Create client");
-  add.appendChild(create);
-  app.appendChild(add);
-  create.addEventListener("click", async () => {
-    const r = await api("/admin/clients", {
-      method: "POST",
-      body: JSON.stringify({ name: nameInput.value.trim(), scopes: ["envelope:read", "envelope:write"] }),
-    });
-    if (!r.ok) { show(await problem(r)); return; }
-    const body = await r.json();
-    clear();
-    app.appendChild(el("h1", "Settings"));
-    const pre = el("pre", body.key || "");
-    app.appendChild(el("p", "This is the only time it is shown.", "notice"));
-    app.appendChild(pre);
-    app.appendChild(el("p", "client id " + body.id, "muted"));
   });
+  f.appendChild(save);
+  main.appendChild(f);
+  main.appendChild(el("p", "Machine clients live on the Clients page. The audit log is on the dashboard and on GET /admin/events.", "muted small"));
 }
 
-// ---------------------------------------------------------------------------
-// entry point
+// ---------------------------------------------------------------- entry point
 
-if (accessToken) { showDashboard(); } else { showLogin(); }
+if (accessToken) { route(true); } else { pendingPath = currentPath(); showLogin(); }
