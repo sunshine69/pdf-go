@@ -4,10 +4,14 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	pdflib "github.com/digitorus/pdf"
 	"github.com/digitorus/pdfsign"
+	"golang.org/x/text/runes"
+	"golang.org/x/text/unicode/norm"
 )
 
 // The appearance is the printed part of a signature: what a reader sees, and
@@ -227,6 +231,158 @@ func placement(doc *pdfsign.Document, w Widget) (x, y float64, err error) {
 	return x, y, nil
 }
 
+// winAnsi is the part of WinAnsiEncoding (Microsoft cp1252) that is not the
+// rune's own byte value. ASCII 0x20-0x7E and the Latin-1 supplement 0xA0-0xFF
+// have the same value in Unicode and in WinAnsiEncoding, so what is left is the
+// 0x80-0x9F block: the typographic characters a reader pastes from a word
+// processor, plus the few accented letters that live there. The table is cp1252
+// complete -- a missing entry would drop a whole signature line -- and
+// TestStampTextIsCp1252Exactly checks it against the reference codec for every
+// scalar value in Unicode.
+var winAnsi = map[rune]byte{
+	0x20AC: 0x80, // euro sign
+	0x201A: 0x82, // single low-9 quotation mark
+	0x0192: 0x83, // f with hook
+	0x201E: 0x84, // double low-9 quotation mark
+	0x2026: 0x85, // ellipsis
+	0x2020: 0x86, // dagger
+	0x2021: 0x87, // double dagger
+	0x02C6: 0x88, // modifier letter circumflex
+	0x2030: 0x89, // per mille
+	0x0160: 0x8A, // S with caron
+	0x2039: 0x8B, // single left-pointing guillemet
+	0x0152: 0x8C, // OE ligature
+	0x017D: 0x8E, // Z with caron
+	0x2018: 0x91, // left single quote
+	0x2019: 0x92, // right single quote, and the apostrophe people actually type
+	0x201C: 0x93, // left double quote
+	0x201D: 0x94, // right double quote
+	0x2022: 0x95, // bullet
+	0x2013: 0x96, // en dash
+	0x2014: 0x97, // em dash
+	0x02DC: 0x98, // small tilde
+	0x2122: 0x99, // trademark
+	0x0161: 0x9A, // s with caron
+	0x203A: 0x9B, // single right-pointing guillemet
+	0x0153: 0x9C, // oe ligature
+	0x017E: 0x9E, // z with caron
+	0x0178: 0x9F, // Y with diaeresis
+}
+
+// StampText returns the bytes the appearance writer should draw for text, or ""
+// when the font cannot address this text at all.
+//
+// The appearance writer embeds its fonts as simple WinAnsi fonts and writes the
+// string it is given as raw bytes, so the caller has to hand it WinAnsi bytes
+// rather than UTF-8. Left alone, one character typed becomes as many printed:
+// "e" with an acute is 0xC3 0xA9 in UTF-8 and reads back as "A©". Encoding here
+// means André, Müller and Señor print correctly, as does an
+// apostrophe or an en dash inside a name.
+//
+// A rune with no WinAnsi code point cannot be encoded: Vietnamese, Thai,
+// Cyrillic, Greek, CJK, and the Latin letters whose diacritic is not in the
+// single-byte range (the Vietnamese tone marks, for instance). The glyphs are in
+// the font -- Patrick Hand covers Vietnamese, Cyrillic, Greek and Arabic -- but
+// the font dictionary cannot address them, and addressing them needs a
+// Type0/Identity-H font with a CID width array and a ToUnicode CMap. That is a
+// change in the pdfsign fork, not here.
+//
+// Such a line is therefore dropped rather than printed byte-per-byte wrong,
+// because the line it would garble is the one line carrying the party's own
+// words. Dropping is whole-line, not per-rune: "ng Vn Toan" printed for a party
+// who signed a readable phrase invites a reader to think fewer words were agreed
+// to.
+//
+// Nothing is lost by the drop. The text is stored verbatim in the consent record
+// and written verbatim to signature_text in the receipt; the receipt is the copy
+// an auditor reads, and it says whether the stamp carried the text.
+func StampText(text string) string {
+	out := make([]byte, 0, len(text))
+	for _, r := range text {
+		switch {
+		case r >= ' ' && r <= '~':
+			out = append(out, byte(r))
+		case r >= 0xA0 && r <= 0xFF:
+			// Latin-1 supplement, no-break space included: the same value in
+			// Unicode and in WinAnsiEncoding, and every one of them defined.
+			out = append(out, byte(r))
+		default:
+			b, ok := winAnsi[r]
+			if !ok {
+				// Every rune that is not valid UTF-8 arrives here as U+FFFD and is
+				// rejected with the rest, which is the safe direction: an unknown
+				// character is a dropped line, not a guessed glyph.
+				return ""
+			}
+			out = append(out, b)
+		}
+	}
+	return string(out)
+}
+
+// StampName returns the bytes to draw for the party NAME line. It is a
+// different policy from StampText and deliberately so.
+//
+// The typed signature is the party's own statement, so it is either printed
+// exactly as typed or not at all. The name line is the service's label for the
+// signer, and a stamp that shows only a timestamp identifies nobody: a reader
+// comparing the page with the receipt could not tell whose signature it is. So
+// an unencodable name is transliterated to its unaccented Latin form --
+// "Đặng Văn Toàn" is labelled "Dang Van Toan" -- which is the same form the
+// name takes in any system that does not carry diacritics.
+//
+// Two steps: decompose and drop the combining marks, which handles the
+// precomposed letters and every Vietnamese tone mark; then replace the few
+// letters that carry no diacritic to remove and are absent from WinAnsi. The
+// result goes through StampText, so a name still outside Latin (Cyrillic, CJK)
+// yields "" and the name line is omitted rather than garbled. The receipt and
+// the database always carry the name exactly as registered.
+func StampName(name string) string {
+	if name == "" {
+		return ""
+	}
+	if enc := StampText(name); enc != "" {
+		return enc
+	}
+	return StampText(latinName.Replace(normName(name)))
+}
+
+// normName splits each letter into base plus combining marks and discards the
+// marks, so "ệ" arrives at StampText as "e".
+func normName(s string) string {
+	return runes.Remove(runes.In(unicode.Mn)).String(norm.NFD.String(s))
+}
+
+// latinName covers the letters that survive mark removal but have no WinAnsi
+// code point: the barred, stroked and dotted forms, and the comma-below letters,
+// which decompose unlike their cedilla equivalents. The accented Latin letters
+// WinAnsi does have -- S with caron, Z with caron, Y with diaeresis, the OE
+// ligature -- are encoded by StampText itself, so they are not listed here.
+var latinName = strings.NewReplacer(
+	"đ", "d", "Đ", "D",
+	"ħ", "h", "Ħ", "H",
+	"ı", "i", "İ", "I",
+	"ŀ", "l", "Ŀ", "L",
+	"ŉ", "n",
+	// Stroke letters keep their shape through decomposition, so they need an
+	// entry of their own. ł is common enough in a name that omitting it loses
+	// the whole line: Łukasz would be labelled by timestamp alone.
+	"ł", "l", "Ł", "L",
+	"ŧ", "t", "Ŧ", "T",
+	// Comma-below does not decompose, unlike the cedilla and caron forms.
+	// Romanian orthography uses these rather than the cedilla letters that
+	// StampText encodes, so they belong here.
+	"ș", "s", "Ș", "S",
+	"ț", "t", "Ț", "T",
+)
+
+// StampTextDropped reports whether text is non-empty but cannot be drawn, which
+// is the one case worth telling a reader about. The receipt uses it to say that
+// signature_text is the party's words while the page does not show them.
+func StampTextDropped(text string) bool {
+	return text != "" && StampText(text) == ""
+}
+
 // appearance builds the visual. `text` is the typed signature (the consent
 // text), `name` the party name, `now` the signing time shown on line 3. The
 // handwriting font is embedded from fontData, so the file prints the same on a
@@ -239,10 +395,15 @@ func (s *Service) appearance(doc *pdfsign.Document, text, name string, now time.
 	// The typed signature keeps the top line and the full width whether or not
 	// an image was uploaded, so the no-image appearance is laid out exactly as
 	// it was before the image row existed.
+	//
+	// StampText is the gate: it hands the writer WinAnsi bytes, and drops a line
+	// the font dictionary cannot address rather than printing it byte-per-byte
+	// wrong. See StampText for why the limit is WinAnsi and not "any Unicode".
 	left := textX
-	if len(s.fontData) > 0 && text != "" {
+	drawn := StampText(text)
+	if len(s.fontData) > 0 && drawn != "" {
 		font := doc.AddFont(s.fontName, s.fontData)
-		app.Text(text).Font(font, signatureSize).Position(textX, AppearanceHeight-30)
+		app.Text(drawn).Font(font, signatureSize).Position(textX, AppearanceHeight-30)
 	}
 
 	// The image takes its own row under the typed name, with the two small
@@ -258,8 +419,11 @@ func (s *Service) appearance(doc *pdfsign.Document, text, name string, now time.
 		}
 	}
 
-	if name != "" {
-		app.Text(name).
+	// The name line goes through StampName, not StampText: a stamp that shows
+	// only a timestamp identifies nobody, so a name the font cannot address is
+	// labelled in its unaccented Latin form rather than dropped.
+	if drawnName := StampName(name); drawnName != "" {
+		app.Text(drawnName).
 			Font(pdfsign.StandardFont(pdfsign.Helvetica), nameSize).
 			SetColor(0x40, 0x40, 0x40).
 			Position(left, AppearanceHeight-46)

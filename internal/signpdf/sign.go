@@ -131,6 +131,15 @@ func NewService(cfg Config) (*Service, error) {
 	if s.fontName == "" {
 		s.fontName = "signsrv-hand"
 	}
+	// No font means no typed line in the appearance, which is the signer's own
+	// words going missing from the signed file. So an unset font falls back to
+	// the compiled-in one; an explicit empty FontData with a FontName set means
+	// "I really do not want a font" and is honoured.
+	if cfg.FontData == nil {
+		if f, name, ok := BundledFont(); ok {
+			s.fontData, s.fontName = f, name
+		}
+	}
 	if s.clock == nil {
 		s.clock = time.Now
 	}

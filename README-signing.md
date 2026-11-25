@@ -5,6 +5,58 @@ one static binary. `pdf-go` is the CLI that prepares a document and drives the
 service. Every command below is runnable as written, and every one was run
 against the config in `tmp/`.
 
+## What the stamp prints
+
+The box drawn on a signed page is the *appearance*. It shows three things: the
+text the signer typed on the consent page, the party name, and the signing
+time. If an image was uploaded it goes on the left of the name.
+
+The typed line is the only one of the three that comes from the signer, so it
+is the one that records what they agreed to. It is drawn in a handwriting face,
+which means it needs a font, and a missing font used to mean the line was
+simply not drawn — the signature looked fine and the signer's words were gone
+from the artefact. The font is therefore compiled into the binary
+(`internal/signpdf/assets`, `signpdf.BundledFont`) rather than read from
+`storage_dir/fonts`: the release artefacts contain only the binary, so anything
+loaded from a path exists in a developer's checkout and not in a container or a
+.deb. A file at `storage_dir/fonts/PatrickHand-Regular.ttf` still overrides the
+built-in face, which is the knob for a deployment that wants its own.
+
+The font is Patrick Hand, Copyright Patrick Wagesreiter, SIL Open Font License
+1.1. `signpdf.BundledFontLicense` carries the notice and is what the licence
+text in the .deb copyright file describes.
+
+One limit worth knowing: the appearance writer declares its font as a simple
+WinAnsi font and writes the string it is handed as raw bytes, so the bytes have
+to be WinAnsi already. `signpdf.StampText` does that encoding. Left to itself
+the code would print garbage — `André` is `0xC3 0xA9` in UTF-8, which reads back
+as `A©` — and this is why a name with a diacritic inside WinAnsiEncoding now
+prints correctly: `André`, `Müller`, `Señor`, a curly apostrophe and an en dash
+all draw as the one glyph the party means.
+
+A character WinAnsiEncoding has no code point for is a different case.
+Vietnamese, Thai, Cyrillic, Greek and CJK cannot be addressed, so the whole
+line is **dropped from the stamp, never garbled** — `Đặng Văn Toàn` is recorded
+in full but leaves the box empty. The line is kept whole rather than partially
+rewritten, because a signature is a statement and a silently altered statement
+is worse than an absent one.
+
+Nothing about this is silent. The signing page says so while the party can
+still retype (`stampFits` in `web/spa/app.js`, which mirrors the Go rule and is
+compared against it case by case by `TestStampFitsMatchesServerRule`); the
+consent response repeats it in `stamp_note` after the record exists; and the
+receipt carries `stamp_shows_text` per party so the JSON states, for every
+signature, whether the box on the page shows these words. A party who wants
+their name printed in the box types it in a script the stamp can address, or
+uploads a drawn image.
+
+The cause is in the pdfsign fork, not in the font: Patrick Hand covers
+Vietnamese, Cyrillic, Greek and Arabic, so the font dictionary is the limit
+(`internal/render/renderer.go`). Fixing it properly means declaring the font as
+`Type0`/`Identity-H` with a CID width array and a `ToUnicode` CMap, at which
+point `StampText` becomes the identity function and `TestStampTextPolicy` is the
+test to retire.
+
 ## Build
 
 ```sh

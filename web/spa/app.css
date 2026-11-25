@@ -14,6 +14,10 @@ input[type="text"], input[type="email"], textarea {
   width: 100%; padding: 0.5rem; font: inherit; border: 1px solid var(--line); border-radius: 6px;
 }
 .counter { text-align: right; font-size: 0.85rem; color: var(--muted); }
+/* Not an error: the consent is accepted either way. It is a fact about the
+   stamp, shown in the same voice as the counter it sits under. */
+.stamp-hint { font-size: 0.85rem; color: var(--muted); margin: 0.35rem 0 0; }
+.stamp-hint:empty { display: none; }
 button { font: inherit; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }

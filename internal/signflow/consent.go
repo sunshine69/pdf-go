@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/sunshine69/pdf-go/internal/signpdf"
 	"github.com/sunshine69/pdf-go/internal/signstore"
 )
 
@@ -64,6 +65,13 @@ type ConsentResult struct {
 	Status       string `json:"status"`
 	AllConsented bool   `json:"all_consented"`
 	ConsentID    string `json:"consent_id"`
+	// StampNote is empty in the normal case. It says the typed signature will
+	// not appear in the stamp on the page, because the appearance font cannot
+	// draw the characters used. The consent is still recorded and the text is
+	// still stored exactly as typed; the note exists so the party hears this at
+	// the moment they can still do something about it, rather than a reader
+	// finding a blank line later.
+	StampNote string `json:"stamp_note,omitempty"`
 }
 
 // DeclineResult is the answer to a decline. The request is over, and the
@@ -250,7 +258,17 @@ func (d *Deps) Consent(ctx context.Context, token string, in ConsentInput, now t
 		ConsentAt: at, IP: in.IP, UserAgent: in.UserAgent,
 	}
 
-	result := &ConsentResult{OK: true, Status: string(env.Status)}
+	// The stamp policy is decided here, while the party can still act on it,
+	// rather than discovered later by someone comparing the PDF to the receipt.
+	// The text is stored exactly as typed either way.
+	stampNote := ""
+	if signpdf.StampTextDropped(consent.SignatureText) {
+		stampNote = "Your typed signature uses characters the signature stamp cannot " +
+			"print, so it will not appear in the box on the page. The words you typed " +
+			"are recorded exactly as entered and remain part of the signed record."
+	}
+
+	result := &ConsentResult{OK: true, Status: string(env.Status), StampNote: stampNote}
 	err = store.Tx(ctx, func(tx *sql.Tx) error {
 		// The consent row first: everything after this describes the party
 		// and the envelope, and a consent with no row is a consent that did

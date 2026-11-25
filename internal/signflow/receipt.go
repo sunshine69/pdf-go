@@ -79,6 +79,14 @@ type ReceiptParty struct {
 	CertFingerprint string     `json:"cert_fingerprint,omitempty"`
 	SigField        string     `json:"sig_field,omitempty"`
 	TSA             ReceiptTSA `json:"tsa"`
+	// StampShowsText says whether signature_text is printed in the signature
+	// stamp on the page. It is false when the party typed characters the
+	// appearance font cannot draw, in which case signature_text below is still
+	// the exact words they typed and the page shows only the name and time.
+	// Without this field a reader comparing the receipt to the PDF would find a
+	// text on one and not the other and have no way to tell a dropped line from
+	// a lost consent.
+	StampShowsText bool `json:"stamp_shows_text"`
 }
 
 // ReceiptTSA states whether the signature carries a validated timestamp token.
@@ -183,6 +191,11 @@ func (d *Deps) BuildReceipt(ctx context.Context, env *signstore.Envelope,
 			TSA:   ReceiptTSA{},
 		}
 		if c != nil {
+			// The stamp carries the text only when the appearance font could
+			// address it (see signpdf.StampText). When it could not, this field
+			// is false and signature_text is still exactly what was typed: the
+			// receipt is the record, the page is only a rendering of it.
+			rp.StampShowsText = signpdf.StampText(c.SignatureText) != ""
 			rp.ConsentAt = c.ConsentAt
 			rp.SignatureText = c.SignatureText
 			rp.ConsentIP = c.IP

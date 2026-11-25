@@ -1,11 +1,16 @@
 package spa
 
 import (
+	"encoding/json"
 	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/sunshine69/pdf-go/internal/signpdf"
 	"github.com/sunshine69/pdf-go/web"
 )
 
@@ -115,6 +120,77 @@ func TestAppJSHandlesStatusCodes(t *testing.T) {
 }
 
 // app.css has no external @import and no url() to an external resource.
+// TestStampFitsMatchesServerRule runs the browser's stampFits under node and
+// compares it with signpdf.StampText, case by case. The two must agree: the
+// warning is shown from the JS copy and the decision is made by the Go copy, so
+// a drift means a party is told the wrong thing about their own signature.
+// Skipped where node is not installed, same as the pdftotext tests.
+func TestStampFitsMatchesServerRule(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	src := string(mustRead(t, "app.js"))
+	// The rule is two pieces: the character table and the function that reads
+	// it. Both are extracted, so app.js may keep the table at top level where it
+	// belongs -- but only if it stays a top-level const next to the function.
+	m := regexp.MustCompile(`(?s)const STAMP_CP1252_EXTRA = new Set\(\[.*?\]\);`).FindString(src)
+	if m == "" {
+		t.Fatal("app.js has no const STAMP_CP1252_EXTRA = new Set([...]);")
+	}
+	fn := regexp.MustCompile(`(?s)function stampFits\(s\) \{.*?\n\}`).FindString(src)
+	if fn == "" {
+		t.Fatal("app.js has no function stampFits(s)")
+	}
+	m = m + "\n" + fn
+
+	cases := []string{
+		"Hai Kieu", "O'Brien & Co.", "  spaced  ", "a b", "~", " ",
+		"Kiều", "André", "Đặng Văn Toàn", "Сигнатура", "合同", "😀",
+		"a\nb", "a\tb", "\x01x", "©", "\u00a0nbsp", // U+00A0 is a WinAnsi byte
+		"\x7f", // DEL: not printable, rejected on both sides
+		// Cases that only agree if the cp1252 0x80-0x9F table is in sync:
+		// curly quotes, the oe ligature, and a Vietnamese letter that has no
+		// cp1252 code point at all.
+		"\u201cAgree\u201d", "\u0152uvre \u0153il", "\u01a1n",
+	}
+
+	// The cases go over as JSON, not one per line: two of them contain a
+	// newline and a tab, which is exactly what is being tested. The answer comes
+	// back as one digit per case, in order.
+	dir := t.TempDir()
+	casesJSON, err := json.Marshal(cases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := filepath.Join(dir, "run.js")
+	body := m + "\n" +
+		"const cases = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));\n" +
+		"for (const c of cases) process.stdout.write((stampFits(c) ? 1 : 0) + '\\n');\n"
+	if err := os.WriteFile(js, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := filepath.Join(dir, "cases.json")
+	if err := os.WriteFile(in, casesJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(node, js, in).Output()
+	if err != nil {
+		t.Fatalf("node: %v %s", err, out)
+	}
+	got := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(got) != len(cases) {
+		t.Fatalf("node answered %d lines for %d cases", len(got), len(cases))
+	}
+	for i, c := range cases {
+		want := signpdf.StampText(c) != ""
+		if (got[i] == "1") != want {
+			t.Errorf("case %q: js stampFits=%s, go StampText fits=%v (rules have drifted)",
+				c, got[i], want)
+		}
+	}
+}
+
 func TestCSSNoExternals(t *testing.T) {
 	b := mustRead(t, "app.css")
 	if strings.Contains(b, "@import") {

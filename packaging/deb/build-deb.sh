@@ -63,6 +63,26 @@ else
     } > "$STAGE/usr/share/doc/signsrv/copyright"
 fi
 
+# The binary embeds one font (internal/signpdf/assets). An OFL-licensed font
+# compiled into an executable is allowed, but the licence text has to travel
+# with the package, so it is appended to the copyright file rather than left in
+# the source tree only. A missing asset already fails the compile, because
+# go:embed is resolved at build time; the check is here so the failure names the
+# font instead of reporting a missing embed file.
+FONT_TTF="internal/signpdf/assets/PatrickHand-Regular.ttf"
+FONT_OFL="internal/signpdf/assets/OFL.txt"
+for f in "$FONT_TTF" "$FONT_OFL"; do
+    if [ ! -s "$f" ]; then
+        echo "build-deb: $f missing; the appearance font must be compiled in" >&2
+        exit 1
+    fi
+done
+{
+    printf '\n---\n\nThis program embeds the font Patrick Hand.\n\n'
+    echo "Files: internal/signpdf/assets/PatrickHand-Regular.ttf"
+    sed -e 's/^/ /' "$FONT_OFL"
+} >> "$STAGE/usr/share/doc/signsrv/copyright"
+
 # ------------------------------------------------------------------ control ----
 # Installed-Size is in 1 KiB blocks and is what dpkg checks free space against before
 # unpacking. Guessing it low is a real failure mode: a nearly-full box would unpack

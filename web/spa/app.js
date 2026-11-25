@@ -12,6 +12,10 @@ const state = {
   resultKey: "",     // which result copy to show when the view is re-rendered
   claimed: false,
   envelope: null,
+  // The server's note about the typed signature not fitting the stamp. It
+  // arrives with the consent answer and is shown on the result page; kept in
+  // state so a re-render does not lose the only copy of it.
+  stampNote: "",
 };
 
 // ---------------------------------------------------------------------------
@@ -119,6 +123,34 @@ async function fetchEnvelope() {
   }
   await handle(res);
   return null;
+}
+
+// stampFits reports whether a typed signature can be printed in the stamp on
+// the page. The rule mirrors signpdf.StampText on the server: the appearance
+// font is a simple WinAnsi font, so the server encodes the line to cp1252 bytes
+// and drops any line containing a character cp1252 has no code point for --
+// Vietnamese, Thai, Cyrillic, Greek, CJK. It is the font dictionary that is the
+// limit, not the glyphs: Patrick Hand itself covers Vietnamese.
+//
+// The set below is the server's: printable ASCII, the Latin-1 supplement
+// 0xA0-0xFF, and the 27 characters cp1252 maps into 0x80-0x9F. A character
+// outside it is dropped, so a party who types one is warned that the stamp will
+// not carry it -- though their words are still kept in full on the record.
+const STAMP_CP1252_EXTRA = new Set([
+  0x20ac, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030,
+  0x0160, 0x2039, 0x0152, 0x017d, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022,
+  0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0x017e, 0x0178,
+]);
+
+function stampFits(s) {
+  for (const c of s) {
+    const cp = c.codePointAt(0);
+    if (cp >= 0x20 && cp <= 0x7e) continue;
+    if (cp >= 0xa0 && cp <= 0xff) continue;
+    if (STAMP_CP1252_EXTRA.has(cp)) continue;
+    return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +356,14 @@ function renderConsent() {
   const counter = el("div", "0 / 120", "counter");
   app.appendChild(counter);
 
+  // The stamp prints what WinAnsiEncoding can address, and a line using
+  // anything else is dropped rather than printed wrong (signpdf.StampText is
+  // the rule the server applies). This warning is shown while the party can
+  // still retype; the server repeats the same fact after the consent is
+  // recorded.
+  const stampHint = el("div", "", "stamp-hint");
+  app.appendChild(stampHint);
+
   const fileField = el("label", "Drawn signature (optional, PNG or JPEG, up to 512 KB)")
   const file = el("input");
   file.type = "file";
@@ -370,6 +410,14 @@ function renderConsent() {
 
   const sync = () => {
     counter.textContent = textarea.value.length + " / 120";
+    // Mirror of signpdf.StampText: the characters WinAnsiEncoding addresses.
+    // Iterating by code point rather than code unit matters now that
+    // non-ASCII can pass -- a surrogate pair is one character, and an
+    // astral character is outside WinAnsiEncoding, so it is dropped.
+    const t = textarea.value.trim();
+    stampHint.textContent = t && !stampFits(t)
+      ? "Note: this uses characters the signature stamp cannot print, so it will be recorded but not shown in the box on the page."
+      : "";
     agree.disabled = !(textarea.value.trim().length > 0 && box.checked && state.opened);
   };
   textarea.addEventListener("input", sync);
@@ -389,6 +437,9 @@ function renderConsent() {
     const res = await api("/consent", { method: "POST", body: JSON.stringify(body) });
     const out = await handle(res);
     if (!out) return;
+    // The server decides what the stamp can print, so it is the one that says
+    // whether the typed line made it. An empty note is the normal case.
+    state.stampNote = typeof out.stamp_note === "string" ? out.stamp_note : "";
     state.envelope = await fetchEnvelope();
     renderResult(out.all_consented ? "consented" : "consented");
   });
@@ -447,6 +498,12 @@ function renderResult(which) {
   const env = state.envelope;
   if (env && env.my && env.my.consent_at) {
     app.appendChild(el("p", "Recorded at " + env.my.consent_at + ".", "muted"));
+  }
+  // The server's own account of the stamp, shown here because this is the page
+  // the party reads after pressing agree. A reload clears it: the note belongs
+  // to the consent that just happened, and the receipt is the durable record.
+  if (state.stampNote) {
+    app.appendChild(el("p", state.stampNote, "muted"));
   }
 }
 

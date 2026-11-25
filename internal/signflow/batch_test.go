@@ -869,6 +869,61 @@ func TestBatchGate1RejectsMissingPartySignature(t *testing.T) {
 	}
 }
 
+// --- the stamp text policy, end to end ------------------------------------
+
+// A typed signature outside printable ASCII is dropped from the stamp (the
+// appearance font is declared as a WinAnsi font and cannot address it) and kept
+// verbatim in the evidence. This test is the contract between the two: the page
+// may lose the line, the record may not, and the reader of the record is told
+// which happened.
+func TestReceiptKeepsNonASCIITextAndSaysTheStampDroppedIt(t *testing.T) {
+	const viet = "Đặng Văn Toàn"
+	f := newBatchFixture(t, 2)
+
+	ascii := f.consent(0, "Alice Adamson")
+	if ascii.StampNote != "" {
+		t.Errorf("ASCII consent carries a stamp note: %q", ascii.StampNote)
+	}
+	nonASCII := f.consent(1, viet)
+	if nonASCII.StampNote == "" {
+		t.Error("a non-ASCII consent got no stamp note; the party is not being told")
+	}
+
+	out, err := f.runBatch()
+	if err != nil {
+		t.Fatalf("run batch: %v", err)
+	}
+	data, err := f.deps.GetReceipt(out.Final)
+	if err != nil {
+		t.Fatalf("read receipt: %v", err)
+	}
+	var rec Receipt
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatalf("decode receipt: %v", err)
+	}
+	if len(rec.Parties) != 2 {
+		t.Fatalf("receipt has %d parties, want 2", len(rec.Parties))
+	}
+
+	// Ordered by party order, so [0] is the ASCII signer.
+	if !rec.Parties[0].StampShowsText {
+		t.Errorf("stamp_shows_text false for the ASCII signer %q", rec.Parties[0].SignatureText)
+	}
+	if rec.Parties[1].StampShowsText {
+		t.Errorf("stamp_shows_text true for %q, which the stamp cannot print", rec.Parties[1].SignatureText)
+	}
+	// The whole point: dropping the line from the picture does not touch the
+	// bytes of the record.
+	if rec.Parties[1].SignatureText != viet {
+		t.Errorf("receipt signature_text = %q, want the exact %q", rec.Parties[1].SignatureText, viet)
+	}
+	// And the document still verifies: dropping a drawn line is not a change to
+	// the signed bytes.
+	if !rec.Verification.Valid {
+		t.Errorf("document no longer verifies: %+v", rec.Verification)
+	}
+}
+
 // --- 7. receipt.json ------------------------------------------------------
 
 func TestBatchWritesReceipt(t *testing.T) {
