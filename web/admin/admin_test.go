@@ -161,6 +161,85 @@ func TestAdminDetailActionsExist(t *testing.T) {
 	}
 }
 
+// app.js body of one function, for asserting what a function does rather than
+// what some other function with the same words in it does. The match stops at
+// the first column-zero brace, which is the end of the body because every
+// nested block in this file is indented.
+func fnBody(t *testing.T, b, name string) string {
+	t.Helper()
+	fn := regexp.MustCompile(`(?s)function ` + name + `\(.*?\n\}`).FindString(b)
+	if fn == "" {
+		t.Fatalf("cannot find %s() in app.js", name)
+	}
+	return fn
+}
+
+// The three read links on the envelope page (/document, /report, /audit.zip)
+// answer some seconds after the click, because the archive is assembled and the
+// report re-verifies the signatures on demand. They did present an answer, but
+// they presented it by splicing a fresh "Open/Save" row into the top of the
+// page and removing nothing — so a click looked like it had done nothing, and
+// had in fact added another row. Three clicks left three rows; clicking all
+// morning left the page full of them, each pointing at a stale copy of the same
+// file. The rules that keep it to one:
+//
+//   - the answer goes into a <dialog> opened with showModal(), so it lands in
+//     front of the operator instead of above or below whatever they scrolled to;
+//   - the open dialog is closed and removed before the next one is built, so
+//     any number of clicks leaves exactly one thing on screen;
+//   - the blob URL is revoked when the dialog goes, so replacing a dialog does
+//     not keep every PDF and archive fetched this session in memory;
+//   - the control reports that it is fetching, which is what a slow link needed
+//     in the first place: a click that changes nothing looks like a link that
+//     does nothing.
+func TestAdminResultOpensOneDialog(t *testing.T) {
+	b := mustRead(t, "app.js")
+
+	dlg := fnBody(t, b, "showResultDialog")
+	for _, want := range []string{`el("dialog"`, "showModal(", "closeResultDialog()", "resultDialog = dl"} {
+		if !strings.Contains(dlg, want) {
+			t.Fatalf("showResultDialog() does not contain %s", want)
+		}
+	}
+	// The assignment is the registration: without it there is no open dialog
+	// for the next click to find, closeResultDialog() closes nothing, and the
+	// boxes stack two deep — which is the same bug with a nicer backdrop. It
+	// was caught by clicking one link twice, not by reading the code.
+	if strings.Index(dlg, "resultDialog = dl") > strings.Index(dlg, "showModal(") {
+		t.Fatal("showResultDialog() opens the dialog before registering it, so its close listener cannot recognise it")
+	}
+	// Replaced, not stacked: the teardown has to run before the new dialog
+	// exists, not after — a dialog opened on top of the last one is a wall of
+	// dialogs, which is the bug in a slightly nicer costume.
+	if strings.Index(dlg, "closeResultDialog()") > strings.Index(dlg, `el("dialog"`) {
+		t.Fatal("showResultDialog() builds its dialog before closing the open one, so dialogs stack up")
+	}
+
+	drop := fnBody(t, b, "dropResultDialog")
+	for _, want := range []string{"revokeObjectURL", ".remove()"} {
+		if !strings.Contains(drop, want) {
+			t.Fatalf("dropResultDialog() does not contain %s", want)
+		}
+	}
+
+	// The answer must not also be spliced into the page: the dialog is the
+	// single place it goes.
+	if strings.Contains(b, "insertBefore(row") {
+		t.Fatal(`app.js still splices a result row into the page, which is where the pile of buttons came from`)
+	}
+
+	link := fnBody(t, b, "apiLink")
+	if !strings.Contains(link, "Fetching") {
+		t.Fatal("a read link gives no sign it is fetching, so a slow answer reads as a dead link")
+	}
+
+	// Navigating away takes the dialog with it: it is modal, and a dialog over
+	// a page that has been replaced describes an envelope the operator has left.
+	if !strings.Contains(fnBody(t, b, "clear"), "closeResultDialog()") {
+		t.Fatal("clear() leaves the result dialog open across a route change")
+	}
+}
+
 // A cancel needs a reason, and the page says so instead of sending an empty
 // body that the server would refuse.
 func TestAdminCancelRequiresReason(t *testing.T) {

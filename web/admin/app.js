@@ -122,6 +122,10 @@ function card(title, lede) {
 }
 
 function clear() {
+  // A result dialog belongs to the view that fetched it, and it is modal: a
+  // route away from that view takes it down rather than leaving a dialog
+  // floating over a page that has just been replaced.
+  closeResultDialog();
   // The notice lives inside the page so it reads in order, which means a
   // re-render would take it down with the rest. Park it on the body first: an
   // action that shows a message and then reloads the view still has somewhere
@@ -169,31 +173,138 @@ function button(label, cls, onClick) {
   return b;
 }
 
+// The result dialog. There is one at a time, held here so the next one can
+// take the first one down; a dialog nobody has a reference to cannot be closed.
+let resultDialog = null;
+let resultURL = "";      // the blob URL the open dialog points at
+let resultSeq = 0;       // just so each dialog's heading has its own id
+
+// Take the dialog out of the document and free the bytes behind its URL.
+// revokeObjectURL matters: a removed element whose URL is still alive keeps
+// the whole document (a signed PDF, a whole audit archive) in memory.
+function dropResultDialog() {
+  if (resultURL) { URL.revokeObjectURL(resultURL); resultURL = ""; }
+  if (resultDialog) { resultDialog.remove(); resultDialog = null; }
+}
+
+// Closing is synchronous here on purpose. close() queues its "close" event
+// rather than firing it, so a replacement that waits for the event would have
+// the queued teardown take down the *new* dialog. The event listener is still
+// there for Esc, and it checks it is closing the dialog it was attached to.
+function closeResultDialog() {
+  const dl = resultDialog;
+  if (!dl) return;
+  if (dl.open) dl.close();
+  dropResultDialog();
+}
+
+// A zip and a PDF are hundreds of kilobytes, and "178813 bytes" makes the
+// operator count zeroes to find out how big.
+function sizeText(n) {
+  if (n === undefined || n === null) return "";
+  if (n < 1024) return n + " bytes";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1048576).toFixed(2) + " MB";
+}
+
+// The name to save as. The server names the file on /document and /audit.zip
+// through Content-Disposition, and its name is the better one: it carries the
+// envelope id and the extension. /report sends no filename, so the last path
+// segment and the media type's extension are what the operator gets.
+function saveName(path, res, blob) {
+  const cd = res.headers.get("Content-Disposition") || "";
+  const m = /filename="?([^";]+)"?/.exec(cd);
+  if (m) return m[1];
+  const name = path.split("/").pop() || "download";
+  if (name.indexOf(".") >= 0) return name;
+  const type = (blob && blob.type) || "";
+  if (type.indexOf("json") >= 0) return name + ".json";
+  if (type.indexOf("pdf") >= 0) return name + ".pdf";
+  if (type.indexOf("zip") >= 0) return name + ".zip";
+  return name;
+}
+
+// Present what a fetch brought back. The modal is the point: the notice strip
+// sits at the top of the page and a slow archive is ready after the operator
+// has scrolled past it, so the answer has to come to them.
+//
+// The heading is the label the operator clicked, so the box says which click
+// answered — they may have clicked two of the three before the first arrived.
+function showResultDialog(title, path, name, blob) {
+  closeResultDialog();   // one at a time: this replaced the last one
+  resultURL = URL.createObjectURL(blob);
+  const dl = el("dialog", undefined, "result");
+  const heading = el("h2", title);
+  // The labels repeat when the same link is clicked twice, and a labelled-by
+  // pointing at a stale id names the wrong box, so each dialog gets its own.
+  heading.id = "result-title-" + (++resultSeq);
+  dl.setAttribute("aria-labelledby", heading.id);
+  dl.appendChild(heading);
+  dl.appendChild(el("p", "Ready to open or save. This box replaced any other one that was open. Press Esc, or click outside it, to close it.", "lede"));
+  // The name, the size and the path it came from: the operator is about to
+  // save a file and needs all three to know they are saving the right one.
+  dl.appendChild(el("p", name + " · " + sizeText(blob.size) + " · /api/v1" + path, "meta"));
+  const row = el("div", undefined, "actions");
+  const open = el("a", "Open " + name);
+  open.href = resultURL; open.target = "_blank"; open.rel = "noopener";
+  const save = el("a", "Save " + name);
+  save.href = resultURL; save.download = name;
+  row.appendChild(open); row.appendChild(save);
+  row.appendChild(button("Close", "close", () => closeResultDialog()));
+  dl.appendChild(row);
+  // A click outside the panel, and Esc, are both "I have it, put it away".
+  // The panel fills the dialog box, so the only thing that can be the target
+  // is the backdrop.
+  dl.addEventListener("click", (ev) => { if (ev.target === dl) closeResultDialog(); });
+  dl.addEventListener("close", () => { if (resultDialog === dl) dropResultDialog(); });
+  // Register before opening: the "close" listener below compares against this,
+  // and without the assignment there is no open dialog to replace — which is
+  // how dialogs end up stacked two deep again.
+  resultDialog = dl;
+  document.body.appendChild(dl);
+  // showModal is what puts it over the page and makes Esc and the backdrop
+  // belong to it. On a browser without it the dialog still opens in place.
+  if (typeof dl.showModal === "function") dl.showModal(); else dl.setAttribute("open", "");
+}
+
 // A link straight at an API path. The token is in memory, so a bare href
-// would download an unauthorized body; these go through fetch and open the
+// would download an unauthorized body; these go through fetch and offer the
 // result as a blob instead.
+//
+// Three of them live on the envelope page — /document, /report, /audit.zip —
+// and none of the three is a read of a file sitting on disk: /audit.zip
+// assembles the archive and /report re-verifies the signatures on every click,
+// so the answer arrives some seconds after the click. Two things follow.
+//
+// The control says it is working, because a link that changes nothing while
+// the server works looks exactly like a link that does nothing.
+//
+// And the answer goes into the dialog, once. The first version spliced a fresh
+// "Open/Save" row into the page on every click and never removed one, so the
+// click that "did nothing" had in fact added a row at the top of the page, and
+// an operator trying three times got three rows and an archive to hunt for.
+// Clicking again now replaces the open dialog rather than stacking a copy, so
+// any number of clicks leaves exactly one thing on screen to deal with.
 function apiLink(path, label) {
   const a = el("a", label);
   a.href = "#";
   a.addEventListener("click", async (ev) => {
     ev.preventDefault();
+    if (a.classList.contains("busy")) return;   // this control is already fetching
+    const was = a.textContent;
+    a.classList.add("busy");
+    a.textContent = "Fetching…";
     try {
       const r = await api(path);
       if (!r.ok) { show(await problem(r), "bad"); return; }
       const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const name = path.split("/").pop();
-      const open = el("a", "Open " + name);
-      open.href = url; open.target = "_blank"; open.rel = "noopener";
-      const save = el("a", "Save " + name);
-      save.href = url; save.download = name;
-      show("", "");
-      const row = el("div", undefined, "actions");
-      row.appendChild(open); row.appendChild(save);
-      const box = document.getElementById("page");
-      if (box) box.insertBefore(row, box.childNodes[1] || null);
+      show("", "");   // a stale notice behind the dialog is noise
+      showResultDialog(label, path, saveName(path, r, blob), blob);
     } catch (err) {
       show(String(err.message || err), "bad");
+    } finally {
+      a.classList.remove("busy");
+      a.textContent = was;
     }
   });
   return a;

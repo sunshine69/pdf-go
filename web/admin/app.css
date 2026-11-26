@@ -211,6 +211,33 @@ button.mini { padding: .25rem .55rem; font-size: .8rem; }
 }
 .actions a:hover { background: #f2f5f8; }
 .actions .sep { width: 1px; height: 1.4rem; background: var(--line); margin: 0 .25rem; }
+/* The control is fetching. It is not a disabled control — the work is
+   happening — so it reads as waiting rather than as dead: cursor progress, and
+   a faded border rather than the opacity a :disabled rule would give. */
+.actions a.busy { color: var(--muted); cursor: progress; border-color: var(--line-soft); background: #fafbfc; }
+
+/* -------------------------------------------------------------- result box */
+
+/* The answer to "Download document" / "Verify report" / "Audit zip". Those
+   three are not reads of a file on disk: the archive is assembled and the
+   report re-verifies the signatures on every click, so the bytes land some
+   seconds after the click and the operator has moved on. A modal is the only
+   place that still has their attention, and one box that gets replaced on the
+   next click is the only shape that cannot pile up. */
+dialog.result {
+  border: 1px solid var(--line); border-radius: var(--r);
+  padding: 1.1rem 1.2rem; max-width: 34rem; width: calc(100% - 3rem);
+  margin: auto; box-shadow: 0 1px 2px rgba(16, 22, 29, .08), 0 12px 32px rgba(16, 22, 29, .18);
+}
+dialog.result > h2 { margin: 0 0 .2rem; }
+dialog.result > .lede { margin: 0 0 .8rem; font-size: .88rem; }
+dialog.result .meta {
+  margin: 0 0 1rem; color: var(--muted); font-family: var(--mono);
+  font-size: .82rem; overflow-wrap: anywhere;
+}
+dialog.result .actions { margin: 0; }
+dialog.result .actions .close { margin-left: auto; }
+dialog.result::backdrop { background: rgba(16, 22, 29, .45); }
 
 /* ----------------------------------------------------------------- forms */
 
