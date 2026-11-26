@@ -33,6 +33,17 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* hidden means hidden, whatever else the element's class says.
+
+   The browser's own [hidden] { display: none } lives in the user-agent sheet,
+   and any author declaration outranks it — so .field { display: block } below
+   silently overrode it and every `x.hidden = true` in app.js was a no-op. A
+   rule of the same specificity is decided by source order, and this sheet's
+   component rules come later, so the override has to be beaten rather than
+   out-ranked. #statusline[hidden] above was written per-element for the same
+   reason; this is the rule that makes the property work everywhere. */
+[hidden] { display: none !important; }
+
 * { box-sizing: border-box; }
 
 html { -webkit-text-size-adjust: 100%; }

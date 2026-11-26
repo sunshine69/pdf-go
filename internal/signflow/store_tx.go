@@ -17,7 +17,7 @@ import (
 const (
 	envelopeCols = "id, title, status, template_sha, filled_sha, current_sha, serial," +
 		" created_by, created_at, updated_at, expires_at, sent_at, delivered_at, cancelled_at, notify_email," +
-		" widget_field, widget_page, widget_x, widget_y"
+		" widget_field, widget_page, widget_x, widget_y, created_by_subject"
 	partyCols = "id, envelope_id, order_idx, email, name, status, token_hash, token_raw," +
 		" token_expires_at, claim_at, consent_at, delivered_at, session_hash, reason"
 	revisionCols = "id, envelope_id, sha256, prev_id, kind, sig_field, party_id," +
@@ -52,10 +52,11 @@ func insertEnvelope(ctx context.Context, tx *sql.Tx, e *signstore.Envelope) erro
 		notify = e.NotifyEmail
 	}
 	_, err := tx.ExecContext(ctx,
-		"insert into envelopes("+envelopeCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"insert into envelopes("+envelopeCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		e.ID, e.Title, string(e.Status), e.TemplateSHA, e.FilledSHA, e.CurrentSHA, e.Serial,
 		e.CreatedBy, e.CreatedAt, e.CreatedAt, e.ExpiresAt, e.SentAt, e.DeliveredAt, e.CancelledAt, notify,
-		widgetNil(e.WidgetField), widgetNum(e.WidgetPage), widgetNum(e.WidgetX), widgetNum(e.WidgetY))
+		widgetNil(e.WidgetField), widgetNum(e.WidgetPage), widgetNum(e.WidgetX), widgetNum(e.WidgetY),
+		e.CreatedBySubject)
 	return err
 }
 

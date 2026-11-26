@@ -104,12 +104,16 @@ type Envelope struct {
 	CurrentSHA  string
 	Serial      string // certification certificate serial
 	CreatedBy   int64
-	CreatedAt   string
-	UpdatedAt   string
-	ExpiresAt   string
-	SentAt      string
-	DeliveredAt string
-	CancelledAt string
+	// CreatedBySubject records the actor subject (e.g. client:7, admin:3) that
+	// created the envelope. It is the filter used by ListEnvelopes and GetEnvelope
+	// so a client can see only its own envelopes from a dashboard.
+	CreatedBySubject string
+	CreatedAt        string
+	UpdatedAt        string
+	ExpiresAt        string
+	SentAt           string
+	DeliveredAt      string
+	CancelledAt      string
 
 	// NotifyEmail is the drafter's address: who to tell when a party declines or
 	// when an invitation can never be delivered. Empty means nobody asked to be

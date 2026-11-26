@@ -83,7 +83,7 @@ func TestEmptyWidgetReadsBackAsNoOpinion(t *testing.T) {
 	}
 
 	// And the list query the API serves, not just the single-row read.
-	out, _, err := s.ListEnvelopes(ctx, "draft", "", 100, 0)
+	out, _, err := s.ListEnvelopes(ctx, "draft", "", "", 100, 0)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

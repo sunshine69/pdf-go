@@ -305,8 +305,31 @@ func scopesOf(s string) []string {
 // machine decides what is allowed, and the handler only maps the error to a
 // status. Cancel is the one that requires a body.
 
+// loadOwnEnvelope reads the envelope named by the path and refuses a client
+// that does not own it, in one step. The actions below used to hand the id
+// straight to the flow, which checks only that the row exists — so any client
+// holding envelope:write could cancel, remind or reissue any other client's
+// envelope. Reading the row here also costs nothing: the flow would have read
+// it anyway.
+// what names the action for the log line of a read that failed, so a database
+// fault during a cancel does not appear in the log as "envelope envelope".
+func (s *server) loadOwnEnvelope(w http.ResponseWriter, r *http.Request, id, what string) (*signstore.Envelope, bool) {
+	env, err := s.store.GetEnvelope(r.Context(), id)
+	if err != nil {
+		s.actionProblem(w, r, err, what, id)
+		return nil, false
+	}
+	if !s.ownsEnvelope(w, r, env) {
+		return nil, false
+	}
+	return env, true
+}
+
 func (s *server) handleEnvelopeRemind(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, ok := s.loadOwnEnvelope(w, r, id, "remind"); !ok {
+		return
+	}
 	deps := s.flowDeps()
 	n, err := deps.Remind(r.Context(), id, actor(r))
 	if err != nil {
@@ -331,6 +354,14 @@ func (s *server) handleEnvelopeCancel(w http.ResponseWriter, r *http.Request) {
 			"a cancel requires a reason", `{"reason":"the contract was withdrawn"}`)
 		return
 	}
+	// The body is validated before ownership is asked, so a request that was
+	// malformed is reported as malformed whether or not the envelope is the
+	// caller's. The order of those two complaints is the caller's problem to
+	// fix first either way; the one that must not be reordered is the gate
+	// relative to the Cancel call below, which notifies parties.
+	if _, ok := s.loadOwnEnvelope(w, r, id, "cancel"); !ok {
+		return
+	}
 	deps := s.flowDeps()
 	res, err := deps.Cancel(r.Context(), id, actor(r), strings.TrimSpace(body.Reason))
 	if err != nil {
@@ -345,6 +376,9 @@ func (s *server) handleEnvelopeCancel(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleEnvelopeReissue(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, ok := s.loadOwnEnvelope(w, r, id, "reissue"); !ok {
+		return
+	}
 	deps := s.flowDeps()
 	res, err := deps.Reissue(r.Context(), id, actor(r))
 	if err != nil {
@@ -366,6 +400,9 @@ func (s *server) handleEnvelopeSign(w http.ResponseWriter, r *http.Request) {
 	env, err := s.store.GetEnvelope(r.Context(), id)
 	if err != nil {
 		s.actionProblem(w, r, err, "sign", id)
+		return
+	}
+	if !s.ownsEnvelope(w, r, env) {
 		return
 	}
 	switch env.Status {
@@ -452,6 +489,11 @@ func (s *server) handleEnvelopeReport(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "internal", "the envelope read failed", "")
+		return
+	}
+	// The report describes someone's document: whose it is has to be settled
+	// before the bytes are read and verified, which is the expensive part.
+	if !s.ownsEnvelope(w, r, env) {
 		return
 	}
 	if env.CurrentSHA == "" {
@@ -544,8 +586,11 @@ func signedOf(out *signflow.BatchOutcome) int {
 // out with the envelope id as the download name.
 func (s *server) handleEnvelopeAuditZip(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.store.GetEnvelope(r.Context(), id); err != nil {
-		s.actionProblem(w, r, err, "audit zip", id)
+	// The archive is the whole story of one envelope: every party's email
+	// address, every link token, every event. Handing it to a client that did
+	// not create the envelope leaks all of that, so the gate goes before the
+	// bytes are assembled.
+	if _, ok := s.loadOwnEnvelope(w, r, id, "audit zip"); !ok {
 		return
 	}
 	data, err := s.flowDeps().AuditZip(r.Context(), id)

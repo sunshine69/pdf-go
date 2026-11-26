@@ -1,5 +1,9 @@
 # Run one rental contract end to end
 
+
+For the same procedure from **outside** the server — no `signsrv`, no server
+shell, only the endpoint and a machine key — see
+[`../external-client-procedures.md`](../external-client-procedures.md).
 `scripts/qld-sign-run.py` fills a Queensland tenancy PDF and creates the signing
 envelope in one command. It **creates, it does not dispatch** — the envelope
 lands in `ready` and an admin mails the parties from the dashboard.

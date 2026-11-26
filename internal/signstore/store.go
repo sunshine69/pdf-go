@@ -100,7 +100,7 @@ func (s *Store) Tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 
 const envelopeCols = "id, title, status, template_sha, filled_sha, current_sha, serial," +
 	" created_by, created_at, updated_at, expires_at, sent_at, delivered_at, cancelled_at, notify_email," +
-	" widget_field, widget_page, widget_x, widget_y"
+	" widget_field, widget_page, widget_x, widget_y, created_by_subject"
 
 // CreateEnvelope inserts a new envelope. Status is validated; the allowed
 // transitions are checked by signflow, not here.
@@ -116,11 +116,12 @@ func (s *Store) CreateEnvelope(ctx context.Context, e *Envelope) error {
 	}
 	e.UpdatedAt = timeNow()
 	_, err := s.db.ExecContext(ctx,
-		"insert into envelopes("+envelopeCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"insert into envelopes("+envelopeCols+") values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		e.ID, e.Title, string(e.Status), e.TemplateSHA, e.FilledSHA, e.CurrentSHA, e.Serial,
 		createdBy(e.CreatedBy), e.CreatedAt, e.UpdatedAt, e.ExpiresAt,
 		e.SentAt, e.DeliveredAt, e.CancelledAt, notifyEmail(e.NotifyEmail),
-		notifyEmail(e.WidgetField), widgetPage(e.WidgetPage), widgetCoord(e.WidgetX), widgetCoord(e.WidgetY))
+		notifyEmail(e.WidgetField), widgetPage(e.WidgetPage), widgetCoord(e.WidgetX), widgetCoord(e.WidgetY),
+		createdBySubject(e.CreatedBySubject))
 	return err
 }
 
@@ -156,6 +157,16 @@ func createdBy(v int64) any {
 // is not an address still gets stored, and the mail for it fails visibly and
 // retries visibly rather than being silently dropped here.
 func notifyEmail(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
+// createdBySubject stores the actor subject that created the envelope, so a
+// client's dashboard can filter ListEnvelopes to its own envelopes. Empty is
+// stored as NULL, which means "no owner recorded" (pre-version-9 envelopes).
+func createdBySubject(v string) any {
 	if v == "" {
 		return nil
 	}
@@ -270,13 +281,14 @@ func scanRow(r rowScanner, cols ...any) error {
 	return nil
 }
 
+// scanEnvelope reads one envelope.
 func scanEnvelope(r rowScanner) (*Envelope, error) {
 	var e Envelope
 	var status string
 	err := scanRow(r, &e.ID, &e.Title, &status, &e.TemplateSHA, &e.FilledSHA, &e.CurrentSHA,
 		&e.Serial, &e.CreatedBy, &e.CreatedAt, &e.UpdatedAt, &e.ExpiresAt,
 		&e.SentAt, &e.DeliveredAt, &e.CancelledAt, &e.NotifyEmail,
-		&e.WidgetField, &e.WidgetPage, &e.WidgetX, &e.WidgetY)
+		&e.WidgetField, &e.WidgetPage, &e.WidgetX, &e.WidgetY, &e.CreatedBySubject)
 	e.Status = EnvelopeStatus(status)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound

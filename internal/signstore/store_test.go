@@ -443,7 +443,7 @@ func TestListEnvelopesSearchAndPaging(t *testing.T) {
 		{"", "_", 0},
 	}
 	for _, c := range cases {
-		list, total, err := s.ListEnvelopes(ctx, c.status, c.search, 50, 0)
+		list, total, err := s.ListEnvelopes(ctx, c.status, c.search, "", 50, 0)
 		if err != nil {
 			t.Fatalf("list(%q,%q): %v", c.status, c.search, err)
 		}
@@ -452,11 +452,11 @@ func TestListEnvelopesSearchAndPaging(t *testing.T) {
 				c.status, c.search, len(list), total, c.want)
 		}
 	}
-	page1, total, err := s.ListEnvelopes(ctx, "", "", 2, 0)
+	page1, total, err := s.ListEnvelopes(ctx, "", "", "", 2, 0)
 	if err != nil || len(page1) != 2 || total != 3 {
 		t.Fatalf("page1 = %d/%d %v", len(page1), total, err)
 	}
-	page2, _, err := s.ListEnvelopes(ctx, "", "", 2, 2)
+	page2, _, err := s.ListEnvelopes(ctx, "", "", "", 2, 2)
 	if err != nil || len(page2) != 1 {
 		t.Fatalf("page2 = %d %v", len(page2), err)
 	}
@@ -631,7 +631,7 @@ func TestScanMapsNullToZeroValues(t *testing.T) {
 	}
 	// The same row read through the list query, which is the path the API
 	// uses. A NULL in a scanned column must not fail the call.
-	out, total, err := s.ListEnvelopes(ctx, "ready", "no creator", 100, 0)
+	out, total, err := s.ListEnvelopes(ctx, "ready", "no creator", "", 100, 0)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

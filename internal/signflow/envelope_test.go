@@ -529,7 +529,7 @@ func TestListFiltersAndPaging(t *testing.T) {
 	}
 
 	// status filter
-	ready, total, err := d.Store.ListEnvelopes(context.Background(), "ready", "", 50, 0)
+	ready, total, err := d.Store.ListEnvelopes(context.Background(), "ready", "", "", 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +543,7 @@ func TestListFiltersAndPaging(t *testing.T) {
 	}
 
 	// q filter on title
-	hits, total, err := d.Store.ListEnvelopes(context.Background(), "", "Beta", 50, 0)
+	hits, total, err := d.Store.ListEnvelopes(context.Background(), "", "Beta", "", 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +557,7 @@ func TestListFiltersAndPaging(t *testing.T) {
 	}
 
 	// q filter on party email
-	hits, total, err = d.Store.ListEnvelopes(context.Background(), "", "party1@example.test", 50, 0)
+	hits, total, err = d.Store.ListEnvelopes(context.Background(), "", "party1@example.test", "", 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,14 +566,14 @@ func TestListFiltersAndPaging(t *testing.T) {
 	}
 
 	// limit and offset are enforced, and page size is capped.
-	page, _, err := d.Store.ListEnvelopes(context.Background(), "", "", 5, 3)
+	page, _, err := d.Store.ListEnvelopes(context.Background(), "", "", "", 5, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page) != 5 {
 		t.Fatalf("limit 5 returned %d", len(page))
 	}
-	page, _, err = d.Store.ListEnvelopes(context.Background(), "", "", 500, 0)
+	page, _, err = d.Store.ListEnvelopes(context.Background(), "", "", "", 500, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +585,7 @@ func TestListFiltersAndPaging(t *testing.T) {
 	// (status, created_at) is what makes this a seek, not a scan.
 	seed1000(t, d.Store)
 	start := time.Now()
-	list, total, err := d.Store.ListEnvelopes(context.Background(), "ready", "", 100, 0)
+	list, total, err := d.Store.ListEnvelopes(context.Background(), "ready", "", "", 100, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

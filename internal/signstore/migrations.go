@@ -15,7 +15,7 @@ import (
 var schemaSQL string
 
 // CurrentVersion is the schema version this build expects.
-const CurrentVersion = 8
+const CurrentVersion = 9
 
 type migration struct {
 	version int

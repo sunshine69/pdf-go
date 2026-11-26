@@ -7,14 +7,15 @@ import (
 
 // ListEnvelopes returns envelopes, newest first. When status is non-empty it
 // filters; when search is non-empty it matches the title, the envelope id, or
-// a party's email or name. Every value is a bound parameter and the LIKE
-// escape character is declared, so a search string is matched literally.
-// MaxPageSize is the page size ceiling. The list is indexed, so a large page
-// is a large response body; the cap keeps one request from asking for the
-// whole table.
+// a party's email or name. When ownerSubject is non-empty (the client's own
+// view from a dashboard), it additionally filters by the row that created the
+// envelope. Every value is a bound parameter and the LIKE escape character is
+// declared, so a search string is matched literally. MaxPageSize is the page
+// size ceiling. The list is indexed, so a large page is a large response body;
+// the cap keeps one request from asking for the whole table.
 const MaxPageSize = 100
 
-func (s *Store) ListEnvelopes(ctx context.Context, status, search string, limit, offset int) ([]Envelope, int, error) {
+func (s *Store) ListEnvelopes(ctx context.Context, status, search, ownerSubject string, limit, offset int) ([]Envelope, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -31,14 +32,20 @@ func (s *Store) ListEnvelopes(ctx context.Context, status, search string, limit,
 		where = append(where, "e.status = ?")
 		args = append(args, status)
 	}
+	if ownerSubject != "" {
+		where = append(where, "e.created_by_subject = ?")
+		args = append(args, ownerSubject)
+	}
 	if search != "" {
-		where = append(where, `(e.title LIKE '%' || ? || '%' ESCAPE '\'
+		where = append(where, `(e.title LIKE ? ESCAPE '\'
 			OR e.id = ?
 			OR EXISTS (select 1 from parties p where p.envelope_id = e.id
-				and (p.email LIKE '%' || ? || '%' ESCAPE '\'
-				     or p.name LIKE '%' || ? || '%' ESCAPE '\')))`)
-		// One value, four positions: the driver binds positionally.
-		like := escapeLike(search)
+				and (p.email LIKE ? ESCAPE '\'
+				     or p.name LIKE ? ESCAPE '\')))`)
+		// The wildcards around the term make the search a substring match; the
+		// escaping inside it means a search for "%" or "_" still looks for
+		// those characters rather than for anything.
+		like := "%" + escapeLike(search) + "%"
 		args = append(args, like, like, like, like)
 	}
 	cond := strings.Join(where, " and ")

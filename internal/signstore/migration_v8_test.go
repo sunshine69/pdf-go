@@ -27,6 +27,15 @@ import (
 	"testing"
 )
 
+// preVersion is the schema state this fixture builds: the moment before the
+// migration under test. It is pinned to 7 rather than derived from
+// CurrentVersion, because building up to CurrentVersion-1 would apply v8 here,
+// create its unique index, and then refuse the very duplicate rows the
+// migration exists to collapse. Later versions must not change what a v7
+// database looks like.
+const preVersion = 7
+
+// openAtV7 builds a database by applying every migration up to but not
 // openAtV7 builds a database by applying every migration up to but not
 // including v8, which is the state of a live install the moment before the
 // upgrade. Rows go in as raw SQL after that, because a v7 database cannot hold
@@ -44,7 +53,7 @@ func openAtV7(t *testing.T) *sql.DB {
 		t.Fatalf("settings: %v", err)
 	}
 	for _, m := range migrations {
-		if m.version >= CurrentVersion {
+		if m.version > preVersion {
 			break
 		}
 		if err := migrateOne(ctx, db, m); err != nil {
@@ -53,8 +62,8 @@ func openAtV7(t *testing.T) *sql.DB {
 	}
 	if v, err := SchemaVersion(ctx, db); err != nil {
 		t.Fatal(err)
-	} else if v != CurrentVersion-1 {
-		t.Fatalf("built a version %d database, want %d", v, CurrentVersion-1)
+	} else if v != preVersion {
+		t.Fatalf("built a version %d database, want %d", v, preVersion)
 	}
 	return db
 }
@@ -118,8 +127,12 @@ func TestMigrateV8CollapsesQueueDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("%d migrations applied, want 1", applied)
+	// Every migration after the fixture's version runs, so this is v8 plus
+	// whatever the store has gained since. What matters here is that v8 is
+	// among them and that it did its job; the count is derived so a later
+	// version does not silently rewrite the expectation.
+	if want := CurrentVersion - preVersion; applied != want {
+		t.Fatalf("%d migrations applied, want %d", applied, want)
 	}
 	if v, err := SchemaVersion(ctx, db); err != nil {
 		t.Fatal(err)

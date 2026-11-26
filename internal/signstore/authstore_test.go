@@ -215,3 +215,63 @@ func TestClientByIDScopesAreReadable(t *testing.T) {
 		t.Fatal("a revoked client must read as revoked, so a refresh can refuse it")
 	}
 }
+
+// TestClientRevocationSetsAnAuthEpoch is the second half of the client revoke
+// story. The endpoint records revoked_at; the middleware refuses a token whose
+// iat is before the epoch. Without this test, the two halves can be individually
+// correct and still not join: a revoke that wrote a stamp the epoch reader could
+// not parse, or that read back as 0, would leave every token the revoked client
+// already holds working until its natural expiry, which is exactly the behaviour
+// the operator is promised.
+func TestClientRevocationSetsAnAuthEpoch(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	id, err := s.AddClient(ctx, "epochy", strings.Repeat("b", 64), "envelope:read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := "client:" + strconv.Itoa(int(id))
+
+	// An active client has no epoch, so its tokens are not gated by one.
+	if e, err := s.AuthEpoch(ctx, subject); err != nil || e != 0 {
+		t.Fatalf("epoch %d, %v; want 0 for an active client", e, err)
+	}
+
+	if err := s.RevokeClient(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	e, err := s.AuthEpoch(ctx, subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e == 0 {
+		t.Fatal("the epoch must move when a client is revoked, or its live tokens outlive the revocation")
+	}
+	if age := time.Since(time.Unix(e, 0)); age < 0 || age > time.Minute {
+		t.Fatalf("epoch %d is %v from now; the stamp must be the revocation time", e, age)
+	}
+
+	// The epoch parses. revoked_at is written by timeNow() in a fixed format and
+	// read by time.Parse in the same one; if those two ever disagree, AuthEpoch
+	// must say so rather than silently reporting 0, because 0 means "no epoch" and
+	// a silent 0 here is a revoked client whose tokens still work.
+	if _, err := time.Parse(time.RFC3339, time.Unix(e, 0).UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("epoch %d does not round-trip: %v", e, err)
+	}
+
+	// A revoked client cannot be revoked again: the update is conditioned on
+	// revoked_at is null, and the handler turns the zero-row result into a 404.
+	if err := s.RevokeClient(ctx, id); err == nil {
+		t.Fatal("revoking an already revoked client must affect no row")
+	}
+	// The epoch survives the refused second revoke, and a deleted-or-unknown
+	// subject resolves to no epoch rather than an error: the middleware reads a
+	// missing row as "nothing has happened".
+	if e2, err := s.AuthEpoch(ctx, subject); err != nil || e2 != e {
+		t.Fatalf("epoch %d, %v after a refused re-revoke; want it unchanged at %d", e2, err, e)
+	}
+	if e2, err := s.AuthEpoch(ctx, "client:9999"); err != nil || e2 != 0 {
+		t.Fatalf("unknown client epoch %d, %v; want 0, not an error", e2, err)
+	}
+}

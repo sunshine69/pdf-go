@@ -15,6 +15,7 @@ off, kept for the reasoning, not authoritative on behaviour).
 | --- | --- |
 | [`QUICK-START.md`](QUICK-START.md) | orientation: architecture, packages, flow, where to change X |
 | [`skills/prepare-and-dispatch-signing.md`](skills/prepare-and-dispatch-signing.md) | the fill-and-dispatch procedure, API-first. The runnable recipe an agent should follow. |
+| [`external-client-procedures.md`](external-client-procedures.md) | what a client **outside** the server does: the endpoint, a machine key, fill, create, review gate, send, confirm. No shell access to the server assumed. |
 | [`CONFIG.md`](CONFIG.md) | every setting: file key, `*` env var, default, and what refuses to start without it |
 | [`DEPLOY-DOCKER.md`](DEPLOY-DOCKER.md) | the Docker image: build, first run, process, settings, state and backups, upgrade and rollback |
 | [`DEB-PACKAGE.md`](DEB-PACKAGE.md) | the Debian package: building it, what an install sets up, first-boot modes, upgrade and purge semantics |

@@ -33,7 +33,8 @@ type envelopeView struct {
 
 // handleListEnvelopes answers GET /api/v1/envelopes?status=&q=. The scope is
 // envelope:read, so a machine client with only that scope can list, and an
-// admin can list because an admin carries every scope.
+// admin can list because an admin carries every scope. A client sees only the
+// envelopes it created; an admin sees everything.
 func (s *server) handleListEnvelopes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	status := q.Get("status")
@@ -51,7 +52,16 @@ func (s *server) handleListEnvelopes(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := intQuery(q.Get("offset"), 0)
 
-	out, total, err := s.store.ListEnvelopes(r.Context(), status, q.Get("q"), limit, offset)
+	// A client's dashboard should see only the envelopes it created. The
+	// middleware already gives us its subject; an empty ownerSubject means
+	// "no filter", which is what an admin sees.
+	ownerSubject := ""
+	claims := signauth.ClaimsFrom(r.Context())
+	if claims != nil && claims.Role == signauth.RoleClient {
+		ownerSubject = claims.Subject
+	}
+
+	out, total, err := s.store.ListEnvelopes(r.Context(), status, q.Get("q"), ownerSubject, limit, offset)
 	if err != nil {
 		s.logJSON(slog.LevelError, "list envelopes", "error", err, "request", requestID(r.Context()))
 		writeProblem(w, http.StatusInternalServerError, "internal", "the list failed", "")

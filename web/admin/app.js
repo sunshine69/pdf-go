@@ -16,6 +16,8 @@ let accessToken = "";   // in memory only
 let refreshToken = "";  // used by exactly one call: refresh
 let pendingPath = "";   // the route to follow once logged in
 let pollTimer = null;   // dashboard refresh, cancelled by every shell()
+let sessionRole = "";    // "admin" or "client", straight from the login answer
+let sessionScopes = [];  // what this session may call; a client holds envelope scopes only
 
 // ---------------------------------------------------------------- api layer
 
@@ -139,10 +141,14 @@ function show(msg, kind) {
   if (!msg) return;
   // The notice belongs under the page head, where the operator's eye already
   // is. A view with no head (the login card) gets it at the top of the body.
+  // A view with no head (the login card) gets it at the top of the body, so
+  // a failure on the login form is never thrown away — and never crashes:
+  // #page is absent until shell() builds a page, which is exactly when show()
+  // is called from a failed login.
   const page = document.getElementById("page");
   if (page && page.childNodes.length > 1) {
     page.insertBefore(statusline, page.childNodes[1]);
-  } else if (!page.contains(statusline)) {
+  } else if (!page || !page.contains(statusline)) {
     document.body.insertBefore(statusline, document.body.firstChild);
   }
 }
@@ -231,11 +237,14 @@ function shell(title, path) {
   const bar = el("div", undefined, "bar");
   const brand = el("div", undefined, "brand");
   brand.appendChild(el("b", "signsrv"));
-  brand.appendChild(el("span", "admin"));
+  brand.appendChild(el("span", sessionRole === "client" ? "client" : "admin"));
   bar.appendChild(brand);
   const nav = el("nav", undefined, "nav");
-  for (const [p, label] of [["/", "Dashboard"], ["/admin/envelopes", "Envelopes"],
-    ["/admin/clients", "Clients"], ["/admin/settings", "Settings"]]) {
+  // A client session holds envelope scopes only, so the operator views are not
+  // offered: they would fetch /admin/* and answer 403.
+  const links = [["/", "Dashboard"], ["/admin/envelopes", "Envelopes"]];
+  if (sessionRole !== "client") links.push(["/admin/clients", "Clients"], ["/admin/settings", "Settings"]);
+  for (const [p, label] of links) {
     const a = el("a", label);
     a.href = "#" + p;
     if (p === path) a.setAttribute("aria-current", "page");
@@ -269,12 +278,22 @@ function shell(title, path) {
 
 // ------------------------------------------------------------------- router
 
+// "admin" marks a view whose data lives behind ScopeAdminRead; a client
+// session cannot read it, so the route is refused rather than rendered empty.
 const routes = [
-  { path: "/", view: showDashboard },
-  { path: "/admin/envelopes", view: showEnvelopeList },
-  { path: "/admin/clients", view: showClients },
-  { path: "/admin/settings", view: showSettings },
+  { path: "/", view: () => (sessionRole === "client" ? showClientDashboard() : showDashboard()) },
+  { path: "/admin/envelopes", view: () => showEnvelopeList() },
+  { path: "/admin/clients", view: showClients, admin: true },
+  { path: "/admin/settings", view: showSettings, admin: true },
 ];
+
+function routeAllows(path) {
+  for (const r of routes) {
+    if (path === r.path) return !r.admin || sessionRole !== "client";
+  }
+  if (path.indexOf("/admin/envelopes/") === 0) return true;
+  return false;
+}
 
 let view = "/";
 
@@ -286,9 +305,19 @@ function currentPath() {
 function route(force) {
   if (!accessToken) { pendingPath = currentPath(); showLogin(); return; }
   const path = currentPath();
-  if (!force && path === view) { showDashboard(); return; }
+  if (!force && path === view) { route(true); return; }
   for (const r of routes) {
-    if (path === r.path) { view = path; r.view(); return; }
+    if (path === r.path) {
+      if (r.admin && sessionRole === "client") {
+        view = "/";
+        showClientDashboard();
+        show("This session is a machine client. The operator views read /admin/*, which needs the admin scope.", "bad");
+        return;
+      }
+      view = path;
+      r.view();
+      return;
+    }
   }
   if (path.indexOf("/admin/envelopes/") === 0) {
     view = path;
@@ -309,40 +338,119 @@ document.addEventListener("visibilitychange", () => {
 
 // -------------------------------------------------------------------- login
 
+// Two credentials reach this service, and they go to different endpoints:
+// an admin's email and password go to /auth/login, a machine client's key
+// goes to /auth/token. The dashboard used to offer only the first, so a
+// client key typed into the password box got a 401 whose failure then threw
+// inside show() (see the null #page guard there).
+//
+// A client session cannot hold admin scopes — admin.go only ever grants a
+// client envelope:read and envelope:write — so a client logs into a view of
+// its own envelopes, not the operator console.
+
+let loginMode = "password";
+
+// The key is the secret (db.go: "key_" + 32 random bytes, hex). A client's id
+// is a short number and its name is plain text, so anything that does not look
+// like the secret is reported as the thing the operator probably typed.
+const KEY_SHAPE = /^key_[0-9a-f]{64}$/;
+
+function loginHint(mode, cred) {
+  if (mode !== "key") return "";
+  const c = cred.trim();
+  if (c === "") return " — a client key looks like key_<64 hex>";
+  if (KEY_SHAPE.test(c)) return "";
+  if (c.indexOf("key_") === 0) {
+    return " — \"" + c + "\" starts like a key but is not one: after key_ it is "
+      + c.slice(4).length + " characters of hex, and it needs 64";
+  }
+  return " — \"" + c + "\" looks like a client id or name; /auth/token takes the key itself, not the id";
+}
 function showLogin(message) {
   clear();
   clearInterval(pollTimer);
   accessToken = "";
+  refreshToken = "";
+  sessionRole = "";
+  sessionScopes = [];
   const box = el("div", undefined, "card");
   box.style.maxWidth = "26rem";
   box.style.margin = "3rem auto";
   box.appendChild(el("h1", "signsrv admin"));
-  box.appendChild(el("p", "Administrator email and password.", "muted small"));
+  box.appendChild(el("p", "Administrator email and password, or a machine client key.", "muted small"));
   if (message) box.appendChild(el("p", message, "notice bad"));
+
+  const mode = el("select");
+  for (const opt of [["password", "Email and password"], ["key", "Client key"]]) {
+    const o = el("option", opt[1]);
+    o.value = opt[0];
+    if (loginMode === opt[0]) o.selected = true;
+    mode.appendChild(o);
+  }
   const email = el("input"); email.type = "email"; email.autocomplete = "username";
   const pw = el("input"); pw.type = "password"; pw.autocomplete = "current-password";
+  const cred = el("input"); cred.type = "text"; cred.autocomplete = "off";
+  cred.placeholder = "key_<64 hex>";
+  const f0 = el("label", "Credential", "field"); f0.appendChild(mode);
   const f1 = el("label", "Email", "field"); f1.appendChild(email);
   const f2 = el("label", "Password", "field"); f2.appendChild(pw);
-  box.appendChild(f1); box.appendChild(f2);
+  const f3 = el("label", "Client key", "field"); f3.appendChild(cred);
+  box.appendChild(f0); box.appendChild(f1); box.appendChild(f2); box.appendChild(f3);
+
+  // Exactly one pair is in the layout, in the tab order, and eligible for
+  // submit, so a key is never typed into the password box (which is how this
+  // failure was reached in the first place).
+  //
+  // hidden is the state; disabled is set alongside it rather than instead of
+  // it. A disabled input is skipped by the keyboard and ignored by a form
+  // submission, so the pair that is not in play cannot be reached by Tab or
+  // read back by anything that collects the form later. And hidden only
+  // removes the row while the stylesheet agrees: the [hidden] rule in app.css
+  // exists because .field sets display:block, which outranks the UA sheet's
+  // [hidden] rule, and without it the two greyed-out boxes stayed on screen
+  // and the operator saw a form asking for three credentials at once.
+  function applyMode() {
+    loginMode = mode.value;
+    const key = loginMode === "key";
+    for (const f of [f1, f2]) f.hidden = key;
+    f3.hidden = !key;
+    email.disabled = key;
+    pw.disabled = key;
+    cred.disabled = !key;
+    (key ? cred : email).focus();
+  }
+  mode.addEventListener("change", applyMode);
+  applyMode();
+
   const go = button("Log in", "primary", submit);
   box.appendChild(go);
   app.appendChild(box);
-  email.focus();
+  cred.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
   pw.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
 
   async function submit() {
     go.disabled = true;
+    const key = loginMode === "key";
     try {
-      const res = await rawFetch("/auth/login", {
+      const res = await rawFetch(key ? "/auth/token" : "/auth/login", {
         method: "POST",
-        body: JSON.stringify({ email: email.value.trim(), password: pw.value }),
+        body: JSON.stringify(key
+          ? { key: cred.value.trim() }
+          : { email: email.value.trim(), password: pw.value }),
       });
-      if (!res.ok) { show(await problem(res), "bad"); go.disabled = false; return; }
+      if (!res.ok) {
+        show(await problem(res) + loginHint(loginMode, key ? cred.value : email.value), "bad");
+        go.disabled = false;
+        return;
+      }
       const body = await res.json();
       accessToken = body.access;
       refreshToken = body.refresh;
-      const path = pendingPath; pendingPath = "";
-      if (path && path !== "/") { location.hash = "#" + path; }
+      sessionRole = body.role || (key ? "client" : "admin");
+      sessionScopes = body.scopes || [];
+      let path = pendingPath; pendingPath = "";
+      if (path && path !== "/" && !routeAllows(path)) path = "/";
+      if (path && path !== "/") location.hash = "#" + path;
       route(true);
     } catch (err) {
       show(String(err.message || err), "bad");
@@ -527,9 +635,17 @@ async function showEnvelopeList() {
     return;
   }
   show("");
+  main.appendChild(envelopeTable(body));
+}
+
+// The list table, shared by the operator view and the client view. The detail
+// link is /admin/envelopes/<id> for both: a client token reads the envelope
+// itself through /envelopes/<id>, which needs envelope:read rather than the
+// admin scope the search endpoint behind this table does not restrict.
+function envelopeTable(body) {
+  const rows = body.envelopes || [];
   const c = card(undefined, undefined);
   c.classList.add("flush");
-  const rows = body.envelopes || [];
   if (!rows.length) {
     c.appendChild(el("p", "No envelopes match.", "empty"));
   } else {
@@ -555,9 +671,28 @@ async function showEnvelopeList() {
     }
     c.appendChild(t);
   }
-  main.appendChild(c);
-  main.appendChild(el("p", rows.length + " shown of " + (body.total === undefined
+  c.appendChild(el("p", rows.length + " shown of " + (body.total === undefined
     ? rows.length : body.total) + " matching.", "muted small"));
+  return c;
+}
+
+// A machine client sees its own envelopes and nothing else. /envelopes is
+// scoped by the caller in the handler, so this is the whole surface a client
+// session can reach — no stats, no clients, no settings.
+async function showClientDashboard() {
+  const main = shell("Dashboard", "/", "Envelopes this client created.");
+  let body;
+  try {
+    body = await getJSON("/envelopes?limit=100");
+  } catch (err) {
+    main.appendChild(el("p", String(err.message || err), "notice bad"));
+    return;
+  }
+  show("");
+  main.appendChild(envelopeTable(body));
+  if (sessionScopes.length) {
+    main.appendChild(el("p", "Scopes this session holds: " + sessionScopes.join(", "), "muted small"));
+  }
 }
 
 // ------------------------------------------------------------ envelope view

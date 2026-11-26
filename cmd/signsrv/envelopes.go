@@ -290,8 +290,32 @@ func envelopeViewOf(e *signstore.Envelope) envelopeView {
 	}
 }
 
+// ownsEnvelope answers the row-level question the scope guard cannot: the
+// scope says a caller may use this endpoint, the created_by_subject column
+// says whether this particular envelope is its own. Only machine clients are
+// filtered. An admin carries every scope and is the one person who has to be
+// able to open a client's stuck envelope, so the filter is skipped for them
+// rather than widened.
+//
+// Every handler that reads or acts on one envelope has to ask this. A handler
+// that forgets it does not fail loudly — it answers with someone else's
+// document — so the question lives in one function that returns the answer and
+// writes the refusal together, and the call site is a single if.
+func (s *server) ownsEnvelope(w http.ResponseWriter, r *http.Request, env *signstore.Envelope) bool {
+	claims := signauth.ClaimsFrom(r.Context())
+	if claims != nil && claims.Role == signauth.RoleClient && env.CreatedBySubject != claims.Subject {
+		// 404 rather than 403. The envelope id is the only capability a signing
+		// link holder has, and a 403 would tell anyone guessing ids that the
+		// envelope exists. "Not yours" and "does not exist" are the same answer.
+		writeProblem(w, http.StatusNotFound, "not_found", "no envelope with this id", "")
+		return false
+	}
+	return true
+}
+
 // handleGetEnvelope answers GET /api/v1/envelopes/{id}: the envelope, its
-// parties in signing order, the revision chain, and the audit trail.
+// parties in signing order, the revision chain, and the audit trail. A client
+// sees only its own envelopes; an admin sees all.
 func (s *server) handleGetEnvelope(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -309,6 +333,9 @@ func (s *server) handleGetEnvelope(w http.ResponseWriter, r *http.Request) {
 		s.logJSON(slog.LevelError, "get envelope", "envelope", id, "error", err,
 			"request", requestID(r.Context()))
 		writeProblem(w, http.StatusInternalServerError, "internal", "the read failed", "")
+		return
+	}
+	if !s.ownsEnvelope(w, r, env) {
 		return
 	}
 
@@ -388,7 +415,7 @@ func (s *server) handleGetEnvelope(w http.ResponseWriter, r *http.Request) {
 // handleGetDocument streams the current PDF of an envelope. The body is the
 // stored bytes, so the hash of what is sent is exactly envelopes.current_sha;
 // the header X-Content-Sha256 lets a client check that without re-hashing the
-// envelope state.
+// envelope state. A client may only download its own envelopes.
 func (s *server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	env, err := s.store.GetEnvelope(r.Context(), id)
@@ -398,6 +425,9 @@ func (s *server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "internal", "the read failed", "")
+		return
+	}
+	if !s.ownsEnvelope(w, r, env) {
 		return
 	}
 	// The kind comes from the revision row, so the filename says what the
@@ -413,7 +443,8 @@ func (s *server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
 
 // handleGetRevision streams one revision of an envelope. The revision must
 // belong to the envelope in the path: a revision id from another envelope is
-// a 404, not a leak of someone else's document.
+// a 404, not a leak of someone else's document. A client may only view its
+// own envelopes' revisions.
 func (s *server) handleGetRevision(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rev, err := s.store.GetRevision(r.Context(), r.PathValue("rid"))
@@ -429,6 +460,19 @@ func (s *server) handleGetRevision(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotFound, "not_found",
 			"the revision does not belong to this envelope", "")
 		return
+	}
+	// A client may only view revisions of envelopes it created. Admins skip the filter.
+	claims := signauth.ClaimsFrom(r.Context())
+	if claims != nil && claims.Role == signauth.RoleClient {
+		env, err := s.store.GetEnvelope(r.Context(), id)
+		if err != nil {
+			writeProblem(w, http.StatusNotFound, "not_found", "no envelope with this id", "")
+			return
+		}
+		if env.CreatedBySubject != claims.Subject {
+			writeProblem(w, http.StatusNotFound, "not_found", "no revision with this id", "")
+			return
+		}
 	}
 	s.streamPDF(w, r, envTitleOf(r.Context(), s, id), rev.Kind, rev.SHA256)
 }
@@ -585,7 +629,8 @@ var _ = fmt.Sprintf
 // invitations, and moves the envelope to Sent. The tokens are returned so the
 // operator can read them once, at the moment the links are created. A send on
 // an envelope that is not ready is 409; a send that finds the envelope
-// missing is 404.
+// missing is 404. A client may only send envelopes it created; an admin can
+// send any.
 func (s *server) handleSendEnvelope(w http.ResponseWriter, r *http.Request) {
 	claims := signauth.ClaimsFrom(r.Context())
 	actor := "unknown"
@@ -602,6 +647,24 @@ func (s *server) handleSendEnvelope(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeProblem(w, http.StatusServiceUnavailable, "store_unavailable",
 			"this node has no store", "start with a storage directory")
+		return
+	}
+
+	// The envelope is read and its ownership checked before anything happens to
+	// it. Send queues a message per party and moves the status, so a client
+	// that is not allowed to touch this envelope must not be able to mail its
+	// parties as a side effect of being refused — which is what happens when
+	// the send runs first and the filter is applied afterwards.
+	env, err := s.store.GetEnvelope(r.Context(), id)
+	if err == signstore.ErrNotFound {
+		writeProblem(w, http.StatusNotFound, "not_found", "no envelope with this id", "")
+		return
+	}
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "internal", "the send failed", "")
+		return
+	}
+	if !s.ownsEnvelope(w, r, env) {
 		return
 	}
 
@@ -627,10 +690,11 @@ func (s *server) handleSendEnvelope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	env, err := s.store.GetEnvelope(r.Context(), id)
-	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, "internal", "the send failed", "")
-		return
+	// The answer describes the envelope as it now is, so it is read again
+	// rather than echoing the pre-send copy the gate above used. A client has
+	// to see the status it just caused, not the one it started from.
+	if sent, err := s.store.GetEnvelope(r.Context(), id); err == nil {
+		env = sent
 	}
 
 	s.logJSON(slog.LevelInfo, "envelope sent", "envelope", id, "actor", actor,

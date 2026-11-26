@@ -349,16 +349,17 @@ func (d *Deps) Create(ctx context.Context, r CreateRequest) (*Created, error) {
 		envExpiry = now.Add(r.ExpiresIn)
 	}
 	envelope := &signstore.Envelope{
-		ID:          id,
-		Title:       r.Title,
-		Status:      Draft,
-		TemplateSHA: templateSHA,
-		FilledSHA:   filledSHA,
-		CurrentSHA:  certifiedSHA,
-		Serial:      out.Serial,
-		ExpiresAt:   expiresAt,
-		CreatedAt:   formatTime(now),
-		NotifyEmail: r.NotifyEmail,
+		ID:               id,
+		Title:            r.Title,
+		Status:           Draft,
+		TemplateSHA:      templateSHA,
+		FilledSHA:        filledSHA,
+		CurrentSHA:       certifiedSHA,
+		Serial:           out.Serial,
+		ExpiresAt:        expiresAt,
+		CreatedAt:        formatTime(now),
+		CreatedBySubject: actorSubject(r.Actor),
+		NotifyEmail:      r.NotifyEmail,
 		// The placement travels with the envelope. Until now the create
 		// accepted a widget, wrote it into the audit event, and the batch
 		// signed without it — so every signature landed on page 1 whatever the
@@ -504,3 +505,28 @@ func linkURL(base, token string) string {
 // linkURLRegex is exported for tests that check a built link: 52 lowercase
 // base32 characters, the URL-safe form of 32 random bytes.
 var linkURLRegex = regexp.MustCompile(`^/s/[a-z2-7]{52}$`)
+
+// actorSubject records the actor subject that created the envelope, so a
+// client's dashboard can filter ListEnvelopes to its own envelopes. It accepts
+// the same strings minted as auth claims (client:3, admin:5, user:7) and
+// returns "" for anything that is not one of those subjects, letting pre-
+// schema-9 rows read back with no owner.
+func actorSubject(s string) string {
+	if s == "" || s == "unknown" || s == "system" {
+		return ""
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return ""
+	}
+	kind := parts[0]
+	if kind != "admin" && kind != "client" && kind != "user" {
+		return ""
+	}
+	for _, c := range parts[1] {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return s
+}
